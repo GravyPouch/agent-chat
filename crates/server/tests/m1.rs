@@ -395,11 +395,11 @@ async fn messages_and_iqs_route_between_accounts() {
         other => panic!("{other:?}"),
     }
 
-    // Unknown account, remote domain, rooms (not yet): errors.
+    // Unknown account, remote domain, a room that does not exist: errors.
     for (to, cond) in [
         ("nobody@hubtest.local", DefinedCondition::ServiceUnavailable),
         ("carol@example.org", DefinedCondition::RemoteServerNotFound),
-        ("room@conference.hubtest.local", DefinedCondition::ServiceUnavailable),
+        ("room@conference.hubtest.local", DefinedCondition::ItemNotFound),
     ] {
         a.send(chat(to, "hello?")).await;
         let m = next_message(&mut a).await;
@@ -421,6 +421,7 @@ fn cond_name(c: &DefinedCondition) -> String {
     match c {
         DefinedCondition::ServiceUnavailable => "service-unavailable".into(),
         DefinedCondition::RemoteServerNotFound => "remote-server-not-found".into(),
+        DefinedCondition::ItemNotFound => "item-not-found".into(),
         other => format!("{other:?}"),
     }
 }

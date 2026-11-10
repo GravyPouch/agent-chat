@@ -15,6 +15,7 @@ pub mod disco;
 pub mod forms;
 pub mod hub;
 pub mod mam;
+pub mod muc;
 pub mod net;
 pub mod paths;
 pub mod router;

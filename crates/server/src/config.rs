@@ -43,7 +43,41 @@ pub struct Config {
     #[serde(default)]
     pub archive: Archive,
     #[serde(default)]
+    pub muc: Muc,
+    #[serde(default)]
     pub log: Log,
+}
+
+/// XEP-0045 group chat on `<host>.<domain>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Muc {
+    pub enabled: bool,
+    /// The subdomain: `conference` → `conference.<domain>`.
+    pub host: String,
+    /// `"local-users"` (any account of this hub) or `"admins"`.
+    pub room_creation: String,
+    /// New rooms are persistent unless configured otherwise.
+    pub default_persistent: bool,
+    /// Keep an archive of every room (room MAM), like Prosody's `muc_log_all_rooms`.
+    pub archive: bool,
+    /// Messages of history a joining client gets when it doesn't say.
+    pub default_history: usize,
+    pub max_occupants: usize,
+}
+
+impl Default for Muc {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            host: "conference".into(),
+            room_creation: "local-users".into(),
+            default_persistent: true,
+            archive: true,
+            default_history: 20,
+            max_occupants: 200,
+        }
+    }
 }
 
 /// XEP-0198 stream management.
@@ -259,6 +293,7 @@ impl Config {
             limits: Limits::default(),
             sm: Sm::default(),
             archive: Archive::default(),
+            muc: Muc::default(),
             log: Log::default(),
         }
     }
@@ -316,6 +351,12 @@ impl Config {
         if l.session_rate.0 == 0 || l.session_burst.0 == 0 {
             bail!("limits.session_rate and session_burst must be positive");
         }
+        if !matches!(self.muc.room_creation.as_str(), "local-users" | "admins") {
+            bail!("muc.room_creation must be \"local-users\" or \"admins\"");
+        }
+        if self.muc.host.is_empty() || self.muc.host.contains('.') && normalize_domain(&self.muc.host).is_err() {
+            bail!("muc.host must be a subdomain label such as \"conference\"");
+        }
         Ok(())
     }
 
@@ -330,9 +371,14 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// The MUC service's JID, if enabled.
+    pub fn muc_host(&self) -> Option<String> {
+        self.muc.enabled.then(|| format!("{}.{}", self.muc.host, self.domain))
+    }
+
     /// Names for the self-signed certificate.
     pub fn certificate_names(&self) -> Vec<String> {
-        let mut names = vec![self.domain.clone(), format!("conference.{}", self.domain)];
+        let mut names = vec![self.domain.clone(), format!("{}.{}", self.muc.host, self.domain)];
         for n in &self.tls.extra_names {
             if !names.contains(n) {
                 names.push(n.clone());

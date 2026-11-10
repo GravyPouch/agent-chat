@@ -354,6 +354,99 @@ fn omemo_between_two_daemons() {
     assert!(!devices.as_array().unwrap().is_empty(), "{devices}");
 }
 
+/// Poll `inbox` until a message with `body` shows up.
+fn inbox_until(env: &Env, profile: &str, body: &str) -> Value {
+    let start = Instant::now();
+    loop {
+        let inbox = env.json(&["--profile", profile, "inbox"]);
+        if let Some(m) = inbox.as_array().unwrap().iter().find(|m| m["body"] == body) {
+            return m.clone();
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "{profile} never got {body:?}"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// M5 acceptance test 1 (§8.3 scenarios 6 and 4): a private room with
+/// OMEMO and an invitation, then a public room, with real daemons.
+#[test]
+fn private_omemo_room_and_public_room() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    hub_with_profiles(&env, &[("alice", "alice-password-123"), ("bob", "bob-password-4567")]);
+    let room = "secret@conference.hubtest.local";
+
+    // Scenario 6: alice creates a private room and invites bob.
+    let joined = env.json(&["--profile", "alice", "rooms", "join", room, "--private"]);
+    assert_eq!(joined["jid"], room, "{joined}");
+    env.json(&["--profile", "alice", "rooms", "invite", room, "bob@hubtest.local"]);
+    let start = Instant::now();
+    loop {
+        let invites = env.json(&["--profile", "bob", "rooms", "invites"]);
+        if invites.as_array().unwrap().iter().any(|i| i["room"] == room) {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "no invitation: {invites}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    env.json(&["--profile", "bob", "rooms", "join", room]);
+    // alice learns bob's real JID from his presence, then encrypts for him.
+    let start = Instant::now();
+    loop {
+        let out = env.run(&[
+            "--profile",
+            "alice",
+            "send",
+            room,
+            "team secret",
+            "--require-encryption",
+        ]);
+        if out.status.success() {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "encrypted room send failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let m = inbox_until(&env, "bob", "team secret");
+    assert_eq!(m["kind"], "groupchat", "{m}");
+    assert_eq!(m["conversation"], room);
+    assert!(m["encryption"]["protocol"].is_string(), "{m}");
+    assert!(m["encryption"].get("error").is_none_or(|e| e.is_null()), "{m}");
+    // And back.
+    env.json(&["--profile", "bob", "send", room, "got it", "--require-encryption"]);
+    let m = inbox_until(&env, "alice", "got it");
+    assert!(m["encryption"]["protocol"].is_string(), "{m}");
+
+    // Scenario 4: a public room, plaintext, `wait --room`.
+    let public = "lobby@conference.hubtest.local";
+    env.json(&["--profile", "alice", "rooms", "join", public]);
+    env.json(&["--profile", "bob", "rooms", "join", public]);
+    let waiter = env
+        .cmd(&["--profile", "alice", "wait", "--room", public, "--timeout", "30"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    env.json(&["--profile", "bob", "send", public, "hello lobby"]);
+    let m = ok_json(waiter.wait_with_output().unwrap(), &["wait --room"]);
+    assert_eq!(
+        (m["body"].as_str(), m["kind"].as_str()),
+        (Some("hello lobby"), Some("groupchat"))
+    );
+}
+
 #[test]
 fn account_add_hub_creates_and_configures_an_account() {
     if !hub_server_selected() {

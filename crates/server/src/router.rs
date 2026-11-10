@@ -77,7 +77,7 @@ impl Default for Settings {
 
 /// Handles stanzas for `conference.<domain>` (M5).
 pub trait Component: Send + Sync {
-    fn deliver(&self, el: Element);
+    fn deliver(self: Arc<Self>, el: Element);
 }
 
 #[derive(Clone)]
@@ -95,6 +95,8 @@ pub struct Router {
     /// XEP-0115 ver → features.
     caps: Mutex<HashMap<String, Arc<Vec<String>>>>,
     component: OnceLock<Arc<dyn Component>>,
+    /// Component JIDs listed in the domain's disco#items.
+    components: OnceLock<Vec<String>>,
 }
 
 impl Router {
@@ -107,6 +109,7 @@ impl Router {
             next_actor: AtomicU64::new(1),
             caps: Mutex::default(),
             component: OnceLock::new(),
+            components: OnceLock::new(),
         })
     }
 
@@ -122,8 +125,15 @@ impl Router {
         &self.settings
     }
 
-    pub fn set_component(&self, c: Arc<dyn Component>) {
+    /// Register the subdomain component (the MUC service) at `jid`.
+    pub fn set_component(&self, jid: &str, c: Arc<dyn Component>) {
         let _ = self.component.set(c);
+        let _ = self.components.set(vec![jid.to_owned()]);
+    }
+
+    /// Component JIDs, for the domain's disco#items.
+    pub fn components(&self) -> &[String] {
+        self.components.get().map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn user_actors(&self) -> usize {
@@ -226,7 +236,7 @@ impl Router {
         };
         match classify(&self.domain, &to) {
             Target::Domain => {
-                if let Some(reply) = disco::handle_domain_stanza(&self.domain, &el) {
+                if let Some(reply) = disco::handle_domain_stanza(&self.domain, self.components(), &el) {
                     self.deliver_reply(reply);
                 }
             }
@@ -251,7 +261,7 @@ impl Router {
                 }
             }
             Target::Component(_) => match self.component.get() {
-                Some(c) => c.deliver(el),
+                Some(c) => c.clone().deliver(el),
                 None => self.bounce(&el, Condition::ServiceUnavailable, Some(&to.to_string())),
             },
             Target::Remote(_) => self.bounce(&el, Condition::RemoteServerNotFound, Some(&to.to_string())),
@@ -293,7 +303,7 @@ impl Router {
             }
             Target::Component(_) => {
                 if let Some(c) = self.component.get() {
-                    c.deliver(reply);
+                    c.clone().deliver(reply);
                 }
             }
             _ => {}

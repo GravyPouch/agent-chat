@@ -289,6 +289,22 @@ impl RunningHub {
             config,
         });
 
+        if let Some(host) = ctx.config.muc_host() {
+            let m = &ctx.config.muc;
+            let muc = crate::muc::MucService::new(
+                &host,
+                &ctx.router,
+                crate::muc::Settings {
+                    admins_only: m.room_creation == "admins",
+                    default_persistent: m.default_persistent,
+                    archive: m.archive,
+                    default_history: m.default_history,
+                    max_occupants: m.max_occupants,
+                    mam_max_page: ctx.config.archive.max_page,
+                },
+            );
+            ctx.router.set_component(&host, muc);
+        }
         for l in bound {
             let addr = l.local_addr()?;
             tracing::info!(%addr, domain = %ctx.domain, "listening for clients");

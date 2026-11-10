@@ -1,6 +1,6 @@
 # Embedded XMPP server ("agent-chat hub"): implementation plan
 
-- **Status:** being implemented. Each milestone in §9 has status notes; M1–M4 are done.
+- **Status:** being implemented. Each milestone in §9 has status notes; M1–M5 are done.
 - **Date:** 2026-11-10
 - **Decision already made by the user:**
   - We build a small XMPP server of our own that `agent-chat` can run itself: a local hub for people and AI agents on one machine or a LAN.
@@ -1580,6 +1580,29 @@ Also tested: unacknowledged messages go offline when resumption times out, `<res
 3. Harness: room MAM results for a non-anonymous room carry `muc#user item@jid`.
 4. Differential transcript against Prosody for create → configure → join → message → invite → leave, with only allowlisted differences.
 5. Interop suite: XEP-0045 tests. Manual: the Gajim and Dino rows for rooms.
+
+#### M5 status and implementation notes (2026-11-10)
+
+**Done.** MUC on `conference.<domain>`: locked creation, instant and custom configuration, members-only and non-anonymous rooms, affiliations and roles, mediated invitations that grant membership, declines, subject, history, private messages, room MAM with real JIDs, destroy, XEP-0410 self-ping, and persistence across restarts.
+
+| Test | Where |
+|---|---|
+| 1 | `crates/cli/tests/hub_e2e.rs::private_omemo_room_and_public_room`: alice runs `rooms join --private`, `rooms invite`; bob sees the invitation, joins, and both exchange OMEMO messages with `--require-encryption`. Then scenario 4 in a public room with `wait --room`. |
+| 2 | `tests/m5.rs::at2_locked_room_and_status_codes`: `item-not-found` for a missing room (disco) and for others while locked; 110 + 201 for the creator; 110, 100 and 170 after configuration; `conflict` for a taken nick; the service's disco#items; leaving. |
+| 3 | `at3_private_room_invites_messages_and_archive_with_real_jids`: `registration-required` for non-members, membership by `muc#admin` and by invitation, the member list, real JIDs in presence, one stanza-id (`by` the room) for every copy of a message, `muc#user item@jid` in room MAM results, private messages, 321 on removal, and the last owner can't step down. |
+| 4 | Differential transcripts against Prosody: not done. |
+| 5 | The interop suite and the stock-client rows: not done (no stock client was available in this session). |
+
+Also tested: `rooms_survive_a_restart_and_history_is_served` (members-only config and membership survive a hub restart; `maxstanzas` history with `<delay/>`), and config-form round trips as unit tests.
+
+**Design as built and deviations**
+1. **Defaults match production** (`server/deploy/prosody.cfg.lua`): new rooms are persistent (`muc.default_persistent`), every room is archived (`muc.archive`, like `muc_log_all_rooms`), and any local account may create rooms (`muc.room_creation = "local-users"`, like `restrict_room_creation = "local"`). The `[muc]` section also sets the host label, default history (20) and maximum occupants (200).
+2. **Only local accounts** reach the service (no federation); others get `not-allowed`.
+3. **Real JIDs in the archive.** In non-anonymous rooms the archived copy of a message carries `<x xmlns='…muc#user'><item jid='real@bare'/></x>`; the live copy doesn't. Room archives use the same table as user archives, with `archive_jid` = the room, and the same retention.
+4. **Who may read what.** Owners and admins read every affiliation list; members read the owner, admin and member lists; role lists are for moderators. Room MAM is open to members (or occupants) of members-only rooms, and to anyone not banned in open rooms.
+5. **Multiple sessions under one nick** share one occupant: all sessions get the room's traffic, and the room shows the first session's presence. Renaming one of several sessions is refused (`not-acceptable`).
+6. **IQs to occupants** other than self-ping are not relayed (`service-unavailable`). There is no XEP-0421 occupant-id, no voice requests, and no room registration (reserved nicks).
+7. **Temporary rooms** (`persistentroom = 0`) and rooms left while still locked are destroyed when the last occupant leaves, archive included.
 
 ### M6: registration and LAN mode (2 weeks)
 

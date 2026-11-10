@@ -31,7 +31,7 @@ pub fn account_features(archive: bool) -> Vec<&'static str> {
 }
 
 /// The reply to a stanza addressed to the domain, if any.
-pub fn handle_domain_stanza(domain: &str, el: &Element) -> Option<Element> {
+pub fn handle_domain_stanza(domain: &str, components: &[String], el: &Element) -> Option<Element> {
     if Kind::of(el) != Some(Kind::Iq) {
         // Messages and presence to the server are dropped.
         return None;
@@ -63,8 +63,11 @@ pub fn handle_domain_stanza(domain: &str, el: &Element) -> Option<Element> {
             if p.attr("node").is_some() {
                 return stanza::error_reply(el, Condition::ServiceUnavailable, Some(domain));
             }
-            // conference.<domain> is listed from M5.
-            stanza::iq_result(el, Some(domain), Some(Element::bare("query", ns::DISCO_ITEMS)))
+            let mut q = Element::bare("query", ns::DISCO_ITEMS);
+            for c in components {
+                q.append_child(stanza::element("item", ns::DISCO_ITEMS, &[("jid", c)]));
+            }
+            stanza::iq_result(el, Some(domain), Some(q))
         }
         _ => return stanza::error_reply(el, Condition::ServiceUnavailable, Some(domain)),
     };
@@ -97,13 +100,14 @@ mod tests {
 
     #[test]
     fn ping_and_session() {
-        let r = handle_domain_stanza("hub.local", &iq("<ping xmlns='urn:xmpp:ping'/>", "get")).unwrap();
+        let r = handle_domain_stanza("hub.local", &[], &iq("<ping xmlns='urn:xmpp:ping'/>", "get")).unwrap();
         assert_eq!(
             (r.attr("type"), r.attr("id"), r.attr("to")),
             (Some("result"), Some("q1"), Some("a@hub.local/r"))
         );
         let r = handle_domain_stanza(
             "hub.local",
+            &[],
             &iq("<session xmlns='urn:ietf:params:xml:ns:xmpp-session'/>", "set"),
         )
         .unwrap();
@@ -114,6 +118,7 @@ mod tests {
     fn disco_info_parses() {
         let r = handle_domain_stanza(
             "hub.local",
+            &[],
             &iq("<query xmlns='http://jabber.org/protocol/disco#info'/>", "get"),
         )
         .unwrap();
@@ -124,17 +129,17 @@ mod tests {
 
     #[test]
     fn unknown_requests_get_service_unavailable() {
-        let r = handle_domain_stanza("hub.local", &iq("<query xmlns='jabber:iq:last'/>", "get")).unwrap();
+        let r = handle_domain_stanza("hub.local", &[], &iq("<query xmlns='jabber:iq:last'/>", "get")).unwrap();
         assert_eq!(r.attr("type"), Some("error"));
         assert!(
             r.get_child("error", "jabber:client")
                 .unwrap()
                 .has_child("service-unavailable", ns::XMPP_STANZAS)
         );
-        assert!(handle_domain_stanza("hub.local", &iq("", "result")).is_none());
+        assert!(handle_domain_stanza("hub.local", &[], &iq("", "result")).is_none());
         let msg: Element = "<message xmlns='jabber:client' to='hub.local'><body>x</body></message>"
             .parse()
             .unwrap();
-        assert!(handle_domain_stanza("hub.local", &msg).is_none());
+        assert!(handle_domain_stanza("hub.local", &[], &msg).is_none());
     }
 }

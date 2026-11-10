@@ -120,7 +120,7 @@ impl UserActor {
             self.carbons(resource, &el, p.name() == "enable").await;
             return;
         }
-        if let Some(reply) = disco::handle_domain_stanza(self.router.domain(), &el) {
+        if let Some(reply) = disco::handle_domain_stanza(self.router.domain(), self.router.components(), &el) {
             self.send(resource, reply);
         }
     }
