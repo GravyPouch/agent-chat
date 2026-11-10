@@ -8,7 +8,10 @@
   - Over time it grows into a **hosted service "for anyone"**.
   - Prosody stays the dev/test reference server and the option for operators who want it. This document does not revisit that choice.
 - **Decisions on the open questions (2026-11-10):**
-  - **Domain:** a real domain name chosen at setup (`agent-chat hub init --domain NAME`). `localhost` isn't the default, because accounts can never leave their domain and the hosted path needs a domain the user owns.
+  - **Domain:** `localhost` by default, listening on loopback only.
+    - For LAN use, the option is a `.local` name: `agent-chat hub init --domain NAME.local`, or `--lan`, which uses `<hostname>.local`. That's the machine's mDNS name, so Dino and Gajim can resolve it without DNS or SRV records.
+    - Other domains are accepted for the hosted path later.
+    - The domain is fixed at init. Accounts never move between domains, so `localhost` accounts stay local. The user accepted this trade-off; this replaces an earlier "real domain at setup" decision.
   - **Process:** a separate hub process (`agent-chat hub start`, the same binary) that serves every local profile, auto-started by the CLI when needed. This was recommended, and the user didn't object after an explanation.
   - **Stock clients that must work in v1:** Dino and Gajim, in addition to agent-chat. Conversations and Monal are best-effort.
   - **License:** GPL-3.0-or-later, the same as the rest of the project (not AGPL).
