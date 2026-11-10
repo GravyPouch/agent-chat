@@ -35,7 +35,8 @@ pub struct Credentials {
     pub salt: Vec<u8>,
     pub iterations: u32,
     pub sha1: ScramKeys,
-    pub sha256: ScramKeys,
+    /// `None` for accounts imported with SCRAM-SHA-1 keys only (Prosody).
+    pub sha256: Option<ScramKeys>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +98,8 @@ pub enum CreatedVia {
     Invite,
     Pow,
     Open,
+    /// Imported from another server (Prosody).
+    Import,
 }
 
 impl CreatedVia {
@@ -106,6 +109,7 @@ impl CreatedVia {
             CreatedVia::Invite => "invite",
             CreatedVia::Pow => "pow",
             CreatedVia::Open => "open",
+            CreatedVia::Import => "import",
         }
     }
 
@@ -115,6 +119,7 @@ impl CreatedVia {
             "invite" => CreatedVia::Invite,
             "pow" => CreatedVia::Pow,
             "open" => CreatedVia::Open,
+            "import" => CreatedVia::Import,
             other => anyhow::bail!("unknown creation method {other:?}"),
         })
     }
@@ -454,10 +459,10 @@ pub(crate) async fn contract_tests(store: &dyn Store) {
             stored_key: vec![b; 20],
             server_key: vec![b + 1; 20],
         },
-        sha256: ScramKeys {
+        sha256: Some(ScramKeys {
             stored_key: vec![b; 32],
             server_key: vec![b + 1; 32],
-        },
+        }),
     };
     store.ensure_host("hub.local").await.unwrap();
     store.ensure_host("hub.local").await.unwrap();

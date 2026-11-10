@@ -198,7 +198,11 @@ fn agent_text(domain: &str) -> String {
 }
 
 async fn handle(ctx: &Arc<HubCtx>, mut tcp: TcpStream, peer: SocketAddr) -> Result<()> {
-    let Some(req) = read_request(&mut tcp).await? else {
+    // A whole request within 20 s (each read also has its own timeout).
+    let Ok(read) = tokio::time::timeout(Duration::from_secs(20), read_request(&mut tcp)).await else {
+        return Ok(());
+    };
+    let Some(req) = read? else {
         return Ok(());
     };
     let domain = ctx.domain.clone();

@@ -98,7 +98,7 @@ pub async fn derive_credentials(password: &str, iterations: u32) -> Result<Crede
     let salt = random_bytes::<16>().to_vec();
     tokio::task::spawn_blocking(move || Credentials {
         sha1: Hash::Sha1.keys(&prepped, &salt, iterations),
-        sha256: Hash::Sha256.keys(&prepped, &salt, iterations),
+        sha256: Some(Hash::Sha256.keys(&prepped, &salt, iterations)),
         salt,
         iterations,
     })
@@ -221,7 +221,7 @@ mod tests {
         let pw = c.generated_password.unwrap();
         // The stored keys match the password, and nothing else is stored.
         let salt = &c.account.credentials.salt;
-        assert_eq!(c.account.credentials.sha256, Hash::Sha256.keys(&pw, salt, 4096));
+        assert_eq!(c.account.credentials.sha256, Some(Hash::Sha256.keys(&pw, salt, 4096)));
         assert!(matches!(
             create(&store, "hub.local", 4096, req("alice", Some("another password"))).await,
             Err(AccountError::Exists(_))

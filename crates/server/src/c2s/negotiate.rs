@@ -615,13 +615,19 @@ async fn scram_exchange(
     let account = ctx.store.account(&ctx.domain, &username).await?;
     // Unknown users get a stable fake salt, the normal iteration count and
     // random keys, so the exchange is indistinguishable until the end.
+    let random_keys = || ScramKeys {
+        stored_key: random_bytes::<32>()[..hash.output_len()].to_vec(),
+        server_key: random_bytes::<32>()[..hash.output_len()].to_vec(),
+    };
     let (salt, iterations, scram_keys) = match &account {
         Some(a) => (
             a.credentials.salt.clone(),
             a.credentials.iterations,
             match hash {
                 scram::Hash::Sha1 => a.credentials.sha1.clone(),
-                scram::Hash::Sha256 => a.credentials.sha256.clone(),
+                // An imported account without SHA-256 keys: fails like a
+                // wrong password (offer only SCRAM-SHA-1 on migrated hubs).
+                scram::Hash::Sha256 => a.credentials.sha256.clone().unwrap_or_else(random_keys),
             },
         ),
         None => (
@@ -680,27 +686,52 @@ async fn plain_exchange(ctx: &Arc<HubCtx>, initial: &[u8], ch: &ChannelState) ->
         return Ok(SaslOutcome::Failure(Failure::TemporaryAuthFailure));
     }
     let account = ctx.store.account(&ctx.domain, &username).await?;
-    let (salt, iterations, stored) = match &account {
-        Some(a) => (
-            a.credentials.salt.clone(),
-            a.credentials.iterations,
-            a.credentials.sha256.stored_key.clone(),
-        ),
+    // Verify with SHA-256 keys, or SHA-1 keys for imported accounts.
+    let (salt, iterations, hash, stored) = match &account {
+        Some(a) => match &a.credentials.sha256 {
+            Some(k) => (
+                a.credentials.salt.clone(),
+                a.credentials.iterations,
+                scram::Hash::Sha256,
+                k.stored_key.clone(),
+            ),
+            None => (
+                a.credentials.salt.clone(),
+                a.credentials.iterations,
+                scram::Hash::Sha1,
+                a.credentials.sha1.stored_key.clone(),
+            ),
+        },
         None => (
             sasl::fake_salt(&ctx.mock_key, &ctx.domain, &username),
             ctx.config.auth.scram_iterations,
+            scram::Hash::Sha256,
             random_bytes::<32>().to_vec(),
         ),
     };
-    let password = msg.password;
+    let password = zeroize::Zeroizing::new(msg.password);
+    let prepped = stringprep::saslprep(&password)
+        .ok()
+        .map(|p| zeroize::Zeroizing::new(p.into_owned()));
     // Same PBKDF2 work for known and unknown users.
-    let derived = tokio::task::spawn_blocking(move || {
-        stringprep::saslprep(&password)
-            .ok()
-            .map(|p| scram::Hash::Sha256.keys(&p, &salt, iterations).stored_key)
-    })
-    .await?;
+    let check = prepped.clone();
+    let salt2 = salt.clone();
+    let derived =
+        tokio::task::spawn_blocking(move || check.map(|p| hash.keys(&p, &salt2, iterations).stored_key)).await?;
     let ok = derived.is_some_and(|d| bool::from(d.ct_eq(&stored)));
+    if ok
+        && hash == scram::Hash::Sha1
+        && let (Some(a), Some(p)) = (&account, prepped)
+    {
+        // Upgrade an imported account: we have the password now.
+        let mut creds = a.credentials.clone();
+        let keys = tokio::task::spawn_blocking(move || scram::Hash::Sha256.keys(&p, &salt, iterations)).await?;
+        creds.sha256 = Some(keys);
+        match ctx.store.set_credentials(&ctx.domain, &a.localpart, creds).await {
+            Ok(_) => tracing::info!(user = %a.localpart, "added SCRAM-SHA-256 keys to an imported account"),
+            Err(e) => tracing::warn!("upgrading imported credentials failed: {e:#}"),
+        }
+    }
     let outcome = match account {
         Some(a) if ok && a.state == AccountState::Active => SaslOutcome::Success {
             localpart: a.localpart,

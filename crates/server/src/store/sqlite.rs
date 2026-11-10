@@ -22,6 +22,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("0001_init", include_str!("migrations/0001_init.sql")),
     ("0002_im", include_str!("migrations/0002_im.sql")),
     ("0003_invites", include_str!("migrations/0003_invites.sql")),
+    (
+        "0004_optional_sha256",
+        include_str!("migrations/0004_optional_sha256.sql"),
+    ),
 ];
 
 const READERS: usize = 4;
@@ -168,9 +172,9 @@ fn account_from_row(r: &Row<'_>) -> rusqlite::Result<Result<Account>> {
                 stored_key: r.get(10)?,
                 server_key: r.get(11)?,
             },
-            sha256: ScramKeys {
-                stored_key: r.get(12)?,
-                server_key: r.get(13)?,
+            sha256: match (r.get::<_, Option<Vec<u8>>>(12)?, r.get::<_, Option<Vec<u8>>>(13)?) {
+                (Some(stored_key), Some(server_key)) => Some(ScramKeys { stored_key, server_key }),
+                _ => None,
             },
         },
         r.get::<_, i64>(14)?,
@@ -274,8 +278,8 @@ impl Store for SqliteStore {
                     a.credentials.iterations as i64,
                     a.credentials.sha1.stored_key,
                     a.credentials.sha1.server_key,
-                    a.credentials.sha256.stored_key,
-                    a.credentials.sha256.server_key,
+                    a.credentials.sha256.as_ref().map(|k| k.stored_key.clone()),
+                    a.credentials.sha256.as_ref().map(|k| k.server_key.clone()),
                 ],
             )?;
             let created = get_account(&tx, &a.domain, &a.localpart)?;
@@ -328,8 +332,8 @@ impl Store for SqliteStore {
                     c.iterations as i64,
                     c.sha1.stored_key,
                     c.sha1.server_key,
-                    c.sha256.stored_key,
-                    c.sha256.server_key,
+                    c.sha256.as_ref().map(|k| k.stored_key.clone()),
+                    c.sha256.as_ref().map(|k| k.server_key.clone()),
                     now_ms(),
                 ],
             )?;

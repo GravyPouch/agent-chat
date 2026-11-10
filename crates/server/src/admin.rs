@@ -174,6 +174,13 @@ pub struct UserInfo {
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_login_at: Option<DateTime<Utc>>,
+    /// Has SCRAM-SHA-256 keys (imported accounts may have SHA-1 keys only).
+    #[serde(default = "yes")]
+    pub scram_sha256: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl From<&Account> for UserInfo {
@@ -186,6 +193,7 @@ impl From<&Account> for UserInfo {
             created_via: a.created_via,
             created_at: ts(a.created_ms),
             last_login_at: a.last_login_ms.map(ts),
+            scram_sha256: a.credentials.sha256.is_some(),
         }
     }
 }

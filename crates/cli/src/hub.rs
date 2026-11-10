@@ -62,6 +62,17 @@ pub enum HubCmd {
     /// Manage accounts.
     #[command(subcommand)]
     User(UserCmd),
+    /// Import a stopped Prosody's internal storage (its data_path, e.g. a
+    /// copy of /var/lib/prosody) into this hub, which must be stopped too.
+    ImportProsody {
+        data_path: std::path::PathBuf,
+        /// The Prosody host to import (default: this hub's domain).
+        #[arg(long)]
+        host: Option<String>,
+        /// Skip message archives (MAM and room logs).
+        #[arg(long)]
+        no_archives: bool,
+    },
     /// Create an invitation: registration without proof of work (XEP-0445).
     Invite {
         /// How many accounts it may create.
@@ -185,6 +196,22 @@ pub async fn run(cmd: HubCmd, fmt: Format) -> Result<()> {
             }
         }
         HubCmd::User(cmd) => user(&paths, cmd, fmt).await?,
+        HubCmd::ImportProsody {
+            data_path,
+            host,
+            no_archives,
+        } => {
+            let imported = agent_chat_server::import::import_prosody(
+                &paths,
+                agent_chat_server::import::ImportOptions {
+                    data_path,
+                    host,
+                    archives: !no_archives,
+                },
+            )
+            .await?;
+            print_json(&imported);
+        }
         HubCmd::Invite { uses, expires, note } => {
             let expires = agent_chat_server::config::parse_duration(&expires)?;
             let v = connect(&paths)

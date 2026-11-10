@@ -1,6 +1,6 @@
 # Embedded XMPP server ("agent-chat hub"): implementation plan
 
-- **Status:** being implemented. Each milestone in §9 has status notes; M1–M5 are done.
+- **Status:** being implemented. Each milestone in §9 has status notes. M1–M5, public mode with web onboarding, and the deployment files and Prosody importer are done; M6 (LAN mode) and M7 (hardening) remain.
 - **Date:** 2026-11-10
 - **Decision already made by the user:**
   - We build a small XMPP server of our own that `agent-chat` can run itself: a local hub for people and AI agents on one machine or a LAN.
@@ -349,7 +349,7 @@ I derived this "client contract" from the daemon source [V]. It is the acceptanc
 - **Clustering, Postgres, multiple domains**, a web admin UI.
 - **Windows.** The admin socket is a Unix socket, like the daemon's.
 - **Legacy auth** (XEP-0078) and pre-1.0 streams.
-- Importing Prosody data (XEP-0227) comes later.
+- XEP-0227 import and export come later. (Importing Prosody's own storage was added for the migration; see "Deployment and migration from Prosody" in §9.)
 
 ### 4.3 Features by tier
 
@@ -1634,7 +1634,7 @@ Also tested: `rooms_survive_a_restart_and_history_is_served` (members-only confi
 
 The reported 4 minutes for 215M hashes on 8 cores (about 0.9 MH/s in total) fits a **debug build** of `agent-chat`; the user's running daemon is `target/debug/agent-chat`. A release build solves 25 × 8 in about 6 s on 8 cores. In a browser, JavaScript is only about half as fast as native code; phones are the slow case. Default **`web_pow_bits = 22`, `web_pow_count = 8`**: about 33M expected hashes, roughly 2 s on an 8-core desktop browser and around 10 s on a typical phone (estimated at 3–4 MH/s over all cores). As `pow-registration.md` §4 says, SHA-256 PoW hardly slows a GPU, so the per-IP limit and escalation do the real work. In-band registration stays at 25 × 8.
 
-**Tests:** `tests/public.rs` covers open registration (form and legacy fields), PoW with each error condition, escalation and the throttle, invitations, password change and removal, the page, `/healthz`, web sign-up end to end over HTTP (and that a web token fails in-band), and certificate reload. `crates/cli/tests/hub_e2e.rs` covers `account register` against a PoW hub with the real client, and `hub init --public` with the certificate fallback. `register::tests` and `register::pow::tests` cover the rest. The JavaScript solver was checked against Node's crypto and the §5.7 vector by hand; CI doesn't run JavaScript.
+**Tests:** `tests/public.rs` covers open registration (form and legacy fields), PoW with each error condition, escalation and the throttle, invitations, password change and removal, the page, `/healthz`, web sign-up end to end over HTTP (and that a web token fails in-band), and certificate reload. `crates/cli/tests/hub_e2e.rs` covers `account register` against a PoW hub with the real client, and `hub init --public` with the certificate fallback. `register::tests` and `register::pow::tests` cover the rest. The JavaScript solver was checked by hand against Node's crypto and the §5.7 vector, and in headless Chrome: on a public-mode hub with PoW required on loopback, the page solved 22 bits × 8 in about 6 s (5.8 MH/s) and created the account. CI doesn't run JavaScript.
 
 **Not done:** XEP-0478 limits advertisement, a per-session stanza rate limit (the byte rate limit covers floods), mDNS, the local CA mode, probation for PoW accounts (§5.7), and storing the escalation state.
 
@@ -1681,6 +1681,29 @@ The reported 4 minutes for 215M hashes on 8 cores (about 0.9 MH/s in total) fits
 2. The full interop suite with `failOnImpossibleTest=true` for the enabled specifications.
 3. Load test: p99 routing latency < 50 ms and RSS < 300 MB for the target load [I target].
 4. Every Must row in §4.3 has at least one automated test referenced in the checklist.
+
+### Deployment and migration from Prosody (2026-11-10)
+
+**Done (not deployed).** `server/deploy-hub/` holds a Dockerfile, a `hub.toml` matching `server/deploy/prosody.cfg.lua`, an entrypoint, and a cutover runbook (its README). `server/deploy/` is unchanged. The importer for Prosody's internal storage is in `crates/server/src/import/`.
+
+1. **Image.** A multi-stage build of `agent-chat-hub` only (no client, no libomemo-c) on `debian:bookworm-slim`, run as an unprivileged user under tini. The image's `HEALTHCHECK` is `agent-chat-hub health` (it queries the admin socket); `GET /healthz` on the HTTP port works too. The standalone binary gained `health`, `status`, `user …`, `invite` and `import-prosody` for `docker exec`.
+2. **Certificates.** As in `start-prosody.sh`, the entrypoint copies `/certs/xmpp/*.pem` from the shared volume whenever they change; the hub's file watcher (`tls.reload_interval`) swaps them in without a restart.
+3. **Importing Prosody's data is feasible, and is implemented** (`hub import-prosody DATA_PATH`; replaces §4.2's "XEP-0227 later" for Prosody). It reads Prosody's `internal` storage directly (`.dat` and `.list` files of serialized Lua) and imports:
+   - accounts with their **SCRAM-SHA-1 keys as stored**;
+   - rosters with pending requests;
+   - PEP nodes and items (OMEMO in both versions);
+   - MAM archives with **their original ids**;
+   - offline messages, block lists, private XML;
+   - rooms with affiliations and room archives.
+4. **Credentials.** Prosody 13's `internal_hashed` defaults to SHA-1 (`password_hash`), storing `stored_key`/`server_key` in hex, the salt string and `iteration_count`. These are exactly RFC 5802's verifier, so the hub verifies them unchanged. `import::prosody::tests::prosody_scram_sha1_keys_verify_as_they_are` checks the dev Prosody's real `bob.dat` against `bob-pass`.
+   - Migration 0004 makes the SHA-256 keys optional. SCRAM-SHA-256 fails for SHA-1-only accounts.
+   - The importer therefore drops SCRAM-SHA-256 from `auth.mechanisms`, leaving what Prosody offers today. Otherwise tokio-xmpp would pick SHA-256 and fail.
+   - A PLAIN login over TLS, or a password change, adds SHA-256 keys. `hub user list` shows `scram_sha256` per account.
+5. **Verified:**
+   - `tests/import.rs` imports a synthetic Prosody tree, then checks the SCRAM-SHA-1 login, roster, PEP, MAM id continuity, rooms, and the PLAIN upgrade;
+   - a manual rehearsal against a copy of the dev Prosody's `/var/lib/prosody` (15 accounts, 131 archived messages, 7 rooms): bob signed in through a real daemon with his old password, and saw his roster, history and alice's OMEMO devices;
+   - the image: `docker build -f server/deploy-hub/Dockerfile .` succeeds. A container started with that same copy mounted read-only and `PROSODY_IMPORT` set imported it once, runs the hub as uid 10001, answers STARTTLS with TLS 1.3 (temporary certificate, since no `/certs` was mounted) and `/healthz`, and Docker reported it `healthy`.
+6. **Not done:** deploying anything, a rehearsal with production's data (it needs access to the Sliplane volume), and XEP-0227 export and import.
 
 ---
 

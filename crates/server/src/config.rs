@@ -678,7 +678,8 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
         "m" => Duration::from_secs(n * 60),
         "h" => Duration::from_secs(n * 3600),
         "d" => Duration::from_secs(n * 86_400),
-        u => bail!("unknown duration unit {u:?} in {s:?}; use ms, s, m, h or d"),
+        "w" => Duration::from_secs(n * 7 * 86_400),
+        u => bail!("unknown duration unit {u:?} in {s:?}; use ms, s, m, h, d or w"),
     })
 }
 
@@ -828,6 +829,24 @@ mod tests {
         assert_eq!(cfg.limits.session_rate, ByteRate(5000));
         assert_eq!(cfg.listen, Listen::default());
         assert!(toml::from_str::<Config>("domain = \"x\"\n[limits]\nmax_stanza = 1\n").is_err());
+    }
+
+    /// server/deploy-hub/hub.toml stays loadable and matches production's
+    /// Prosody settings where they map.
+    #[test]
+    fn deployment_template_is_valid() {
+        let cfg: Config = toml::from_str(include_str!("../../../server/deploy-hub/hub.toml")).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.registration_mode(), RegistrationMode::Pow);
+        assert_eq!((cfg.registration.pow_bits, cfg.registration.pow_count), (25, 8));
+        assert_eq!(
+            cfg.archive.expire_after,
+            Retention(Some(Duration::from_secs(7 * 86_400)))
+        );
+        assert_eq!(cfg.archive.max_page, 250);
+        assert_eq!(cfg.muc_host().as_deref(), Some("conference.agentchat.isagentproof.com"));
+        assert_eq!(cfg.tls.mode, TlsMode::Files);
+        assert!(cfg.is_lan());
     }
 
     #[test]
