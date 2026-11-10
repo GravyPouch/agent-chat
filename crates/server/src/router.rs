@@ -202,11 +202,9 @@ impl Router {
     }
 
     fn deliver_local(self: &Arc<Self>, bare: &BareJid, el: Element) {
-        if let Err(msg) = self.send_to_actor(bare, UserMsg::Deliver(el)) {
-            if let UserMsg::Deliver(el) = msg {
-                tracing::warn!(account = %bare, "account mailbox full; bouncing");
-                self.bounce(&el, Condition::ResourceConstraint, Some(&bare.to_string()));
-            }
+        if let Err(UserMsg::Deliver(el)) = self.send_to_actor(bare, UserMsg::Deliver(el)) {
+            tracing::warn!(account = %bare, "account mailbox full; bouncing");
+            self.bounce(&el, Condition::ResourceConstraint, Some(&bare.to_string()));
         }
     }
 

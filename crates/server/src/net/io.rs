@@ -428,12 +428,9 @@ mod tests {
         let start = Instant::now();
         let mut got = 0;
         while got < 3000 {
-            let n = {
-                let buf = std::future::poll_fn(|cx| Pin::new(&mut io).poll_fill_buf(cx).map(|r| r.map(|b| b.len())))
-                    .await
-                    .unwrap();
-                buf
-            };
+            let n = std::future::poll_fn(|cx| Pin::new(&mut io).poll_fill_buf(cx).map(|r| r.map(|b| b.len())))
+                .await
+                .unwrap();
             Pin::new(&mut io).consume(n);
             got += n;
         }

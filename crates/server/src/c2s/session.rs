@@ -137,7 +137,7 @@ fn inbound(ctx: &HubCtx, jid: &xmpp_parsers::jid::FullJid, mut el: Element) -> I
         return Inbound::StreamError(StreamCondition::UnsupportedStanzaType, "Unsupported element");
     };
     if let Some(from) = el.attr("from") {
-        let ok = Jid::new(from).is_ok_and(|f| f == Jid::from(jid.clone()) || f == Jid::from(jid.to_bare()));
+        let ok = Jid::new(from).is_ok_and(|f| f == *jid || f == jid.to_bare());
         if !ok {
             return Inbound::StreamError(StreamCondition::InvalidFrom, "The from address is not yours");
         }

@@ -400,9 +400,9 @@ fn parse_bytes(s: &str) -> Result<u64> {
 }
 
 fn format_bytes(n: u64) -> String {
-    if n >= 1_000_000 && n % 1_000_000 == 0 {
+    if n >= 1_000_000 && n.is_multiple_of(1_000_000) {
         format!("{}MB", n / 1_000_000)
-    } else if n >= 1000 && n % 1000 == 0 {
+    } else if n >= 1000 && n.is_multiple_of(1000) {
         format!("{}KB", n / 1000)
     } else {
         format!("{n}B")
@@ -426,15 +426,15 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
 
 fn format_duration(d: Duration) -> String {
     let ms = d.as_millis();
-    if ms % 1000 != 0 {
+    if !ms.is_multiple_of(1000) {
         return format!("{ms}ms");
     }
     let s = d.as_secs();
-    if s != 0 && s % 86_400 == 0 {
+    if s != 0 && s.is_multiple_of(86_400) {
         format!("{}d", s / 86_400)
-    } else if s != 0 && s % 3600 == 0 {
+    } else if s != 0 && s.is_multiple_of(3600) {
         format!("{}h", s / 3600)
-    } else if s != 0 && s % 60 == 0 {
+    } else if s != 0 && s.is_multiple_of(60) {
         format!("{}m", s / 60)
     } else {
         format!("{s}s")
