@@ -44,7 +44,19 @@ pub struct TestHub {
 
 impl TestHub {
     pub async fn start() -> Self {
+        Self::start_with(|_| {}).await
+    }
+
+    /// Start with changes to the default `hub.toml`.
+    pub async fn start_with(edit: impl FnOnce(&mut agent_chat_server::Config)) -> Self {
         install_crypto_provider();
+        // HUB_TEST_LOG=debug shows the hub's log (with --nocapture).
+        if let Ok(level) = std::env::var("HUB_TEST_LOG") {
+            agent_chat_server::init_logging(&agent_chat_server::config::Log {
+                level,
+                ..Default::default()
+            });
+        }
         let dir = tempfile::tempdir().unwrap();
         let paths = HubPaths::at(dir.path().join("hub"));
         agent_chat_server::init(
@@ -57,9 +69,12 @@ impl TestHub {
         )
         .await
         .unwrap();
+        let mut cfg = agent_chat_server::Config::load(paths.config()).unwrap();
+        edit(&mut cfg);
+        std::fs::write(paths.config(), cfg.to_toml().unwrap()).unwrap();
         let hub = RunningHub::start(paths.clone()).await.unwrap();
         let addr = hub.listeners()[0];
-        let pin = hub.ctx.tls.as_ref().unwrap().pin.clone();
+        let pin = hub.ctx.tls.current().pin.clone();
         Self {
             hub: Some(hub),
             dir,
@@ -155,6 +170,119 @@ pub async fn online(s: &mut StanzaStream) -> Jid {
         _ => None,
     })
     .await
+}
+
+/// Parse literal XML into a stanza to send.
+pub fn st(xml: &str) -> Box<tokio_xmpp::Stanza> {
+    use xmpp_parsers::{iq::Iq, message::Message, presence::Presence};
+    let el: tokio_xmpp::minidom::Element = xml.parse().unwrap();
+    Box::new(match el.name() {
+        "message" => Message::try_from(el).unwrap().into(),
+        "presence" => Presence::try_from(el).unwrap().into(),
+        _ => Iq::try_from(el).unwrap().into(),
+    })
+}
+
+/// The next stanza matching `f`, as an element.
+pub async fn next_el(
+    s: &mut StanzaStream,
+    mut f: impl FnMut(&tokio_xmpp::minidom::Element) -> bool,
+) -> tokio_xmpp::minidom::Element {
+    next_event(s, |ev| match ev {
+        Event::Stanza(stanza) => {
+            let el: tokio_xmpp::minidom::Element = stanza.into();
+            f(&el).then_some(el)
+        }
+        _ => None,
+    })
+    .await
+}
+
+pub fn body(el: &tokio_xmpp::minidom::Element) -> Option<String> {
+    el.get_child("body", "jabber:client").map(|b| b.text())
+}
+
+/// A connected (bound) plaintext client.
+pub async fn connect(hub: &TestHub, jid: &str, pw: &str) -> StanzaStream {
+    let mut c = hub.plaintext_client(jid, pw);
+    online(&mut c).await;
+    c
+}
+
+/// Round-trip a ping, so everything sent before it has been processed.
+pub async fn sync(s: &mut StanzaStream) {
+    let id = format!("sync-{}", rand_id());
+    s.send(st(&format!(
+        "<iq xmlns='jabber:client' type='get' id='{id}'><ping xmlns='urn:xmpp:ping'/></iq>"
+    )))
+    .await;
+    next_el(s, |e| e.attr("id") == Some(id.as_str())).await;
+}
+
+fn rand_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(1);
+    N.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Send initial presence (optionally with a priority) and wait for the
+/// server to reflect it (RFC 6121 §4.2.2), so bare-JID messages reach us.
+pub async fn available(s: &mut StanzaStream, priority: i8) {
+    let p: tokio_xmpp::minidom::Element =
+        format!("<presence xmlns='jabber:client'><priority>{priority}</priority></presence>")
+            .parse()
+            .unwrap();
+    let p = xmpp_parsers::presence::Presence::try_from(p).unwrap();
+    s.send(Box::new(p.into())).await;
+    next_event(s, |ev| match ev {
+        Event::Stanza(tokio_xmpp::Stanza::Presence(p)) if p.type_ == xmpp_parsers::presence::Type::None => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+/// A TCP proxy in front of the hub whose connections can be cut, to
+/// simulate network drops (XEP-0198 resumption).
+pub struct Proxy {
+    pub addr: SocketAddr,
+    conns: Arc<std::sync::Mutex<Vec<tokio::task::AbortHandle>>>,
+}
+
+impl Proxy {
+    pub async fn start(target: SocketAddr) -> Self {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let conns: Arc<std::sync::Mutex<Vec<tokio::task::AbortHandle>>> = Arc::default();
+        let list = conns.clone();
+        tokio::spawn(async move {
+            while let Ok((mut inbound, _)) = l.accept().await {
+                let h = tokio::spawn(async move {
+                    if let Ok(mut out) = TcpStream::connect(target).await {
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut out).await;
+                    }
+                });
+                list.lock().unwrap().push(h.abort_handle());
+            }
+        });
+        Self { addr, conns }
+    }
+
+    /// Drop every proxied connection (both ends see the socket close).
+    pub fn cut(&self) {
+        for h in self.conns.lock().unwrap().drain(..) {
+            h.abort();
+        }
+    }
+
+    pub fn client(&self, jid: &str, password: &str) -> StanzaStream {
+        StanzaStream::new_c2s(
+            TcpServerConnector(DnsConfig::addr(&self.addr.to_string())),
+            Jid::new(jid).unwrap(),
+            password.into(),
+            Timeouts::tight(),
+            16,
+        )
+    }
 }
 
 /// Raw TCP client speaking literal XML, for byte-level checks.

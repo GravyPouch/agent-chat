@@ -1,0 +1,81 @@
+# agent-chat hub configuration for the public deployment, matching
+# server/deploy/prosody.cfg.lua. start-hub copies this to the data volume on
+# the first start and replaces the domain with $XMPP_DOMAIN; after that the
+# copy in /var/lib/agent-chat/hub/hub.toml is the one that counts.
+#
+# The domain is permanent: accounts can never move to another domain.
+domain = "agentchat.isagentproof.com"
+
+[listen]
+# c2s_ports = { 5222 }, c2s_interfaces = { "0.0.0.0", "::" }
+c2s = ["0.0.0.0:5222", "[::]:5222"]
+allow_plaintext_loopback = true
+
+[tls]
+# start-hub copies /certs/xmpp/{fullchain,privkey}.pem here whenever they
+# change (the certificate service renews them); the hub reloads within 30 s.
+mode = "files"
+cert = "tls/fullchain.pem"
+key = "tls/privkey.pem"
+reload_interval = "30s"
+
+[auth]
+# authentication = "internal_hashed". After importing Prosody's accounts
+# (SCRAM-SHA-1 keys only), `import-prosody` removes the SCRAM-SHA-256
+# mechanisms here, as Prosody offers only SCRAM-SHA-1(-PLUS) today.
+scram_iterations = 10000
+max_failures_per_10min = 5
+
+[registration]
+# allow_registration + register_pow (25 bits, 8 sub-puzzles, max 31),
+# registration_throttle_max = 5 per registration_throttle_period = "1h",
+# c2s_require_encryption = true.
+mode = "pow"
+require_tls = true
+exempt_loopback = true
+pow_bits = 25
+pow_count = 8
+pow_max_bits = 31
+pow_ttl = "1h"
+max_per_ip = 5
+per_ip_period = "1h"
+# Web sign-up on the page (off until the page is reachable over HTTPS).
+web = false
+web_pow_bits = 22
+web_pow_count = 8
+
+[archive]
+# default_archive_policy = true, archive_expires_after = "1w",
+# max_archive_query_results = 250
+enabled = true
+expire_after = "1w"
+max_page = 250
+
+[sm]
+# mod_smacks' default hibernation time
+resume_timeout = "10m"
+
+[muc]
+# Component("conference." .. domain) with muc_mam, restrict_room_creation =
+# "local", muc_log_by_default / muc_log_all_rooms, muc_room_default_persistent
+enabled = true
+host = "conference"
+room_creation = "local-users"
+default_persistent = true
+archive = true
+
+[http]
+# The onboarding page and health check. Plain HTTP: expose it through the
+# platform's HTTPS front end, and list that proxy in trusted_proxies so
+# per-address limits see the real client address.
+listen = ["0.0.0.0:5280"]
+trusted_proxies = []
+
+[limits]
+max_connections_per_ip = 20
+max_new_connections_per_ip_per_min = 30
+max_connections = 10000
+
+[log]
+level = "info"
+format = "text"

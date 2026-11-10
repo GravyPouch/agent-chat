@@ -65,7 +65,7 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        for p in ["alice", "bob"] {
+        for p in ["alice", "bob", "agent"] {
             let _ = self.run(&["--profile", p, "daemon", "stop"]);
         }
         let _ = self.run(&["hub", "stop"]);
@@ -206,6 +206,352 @@ fn two_agents_chat_through_the_hub_and_survive_a_restart() {
     let m = exchange(&env, "bob", "alice", "alice@hubtest.local", "after the restart");
     assert_eq!(m["body"], "after the restart");
     assert_eq!(env.json(&["hub", "status"])["sessions"], 2);
+}
+
+/// A started hub on a free port with plaintext-loopback profiles for `users`.
+fn hub_with_profiles(env: &Env, users: &[(&str, &str)]) -> u16 {
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    env.json(&["hub", "init", "--domain", "hubtest.local", "--listen", &listen]);
+    env.json(&["hub", "start"]);
+    for (user, pw) in users {
+        ok_json(
+            env.run_with_stdin(&["hub", "user", "add", user, "--password-stdin"], pw),
+            &["user add"],
+        );
+        let jid = format!("{user}@hubtest.local");
+        let port = port.to_string();
+        let status = ok_json(
+            env.run_with_stdin(
+                &[
+                    "--profile",
+                    user,
+                    "account",
+                    "add",
+                    &jid,
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    &port,
+                    "--insecure-plaintext",
+                    "--store",
+                    "config",
+                    "--password-stdin",
+                ],
+                pw,
+            ),
+            &["account add"],
+        );
+        assert_eq!(status["state"], "online", "{status}");
+    }
+    port
+}
+
+/// M3 demo and acceptance test 1 (§8.3 scenario 2 with 120 messages): a
+/// daemon that was offline gets everything exactly once, from offline
+/// storage and MAM (which share stanza-ids).
+#[test]
+fn offline_daemon_catches_up_exactly_once() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    hub_with_profiles(&env, &[("alice", "alice-password-123"), ("bob", "bob-password-4567")]);
+    env.json(&["--profile", "alice", "daemon", "stop"]);
+    for i in 0..120 {
+        env.json(&[
+            "--profile",
+            "bob",
+            "send",
+            "alice@hubtest.local",
+            &format!("catch-up {i}"),
+        ]);
+    }
+    env.json(&["--profile", "alice", "daemon", "start"]);
+    wait_for_state(&env, "alice", "online", Duration::from_secs(30));
+    let start = Instant::now();
+    let mut seen = std::collections::BTreeMap::<String, usize>::new();
+    while start.elapsed() < Duration::from_secs(30) {
+        let inbox = env.json(&["--profile", "alice", "inbox"]);
+        for m in inbox.as_array().unwrap() {
+            *seen
+                .entry(m["body"].as_str().unwrap_or_default().to_owned())
+                .or_default() += 1;
+        }
+        if seen.len() >= 120 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert_eq!(
+        seen.len(),
+        120,
+        "missing messages: {:?}",
+        seen.keys().collect::<Vec<_>>()
+    );
+    let dups: Vec<_> = seen.iter().filter(|(_, n)| **n > 1).collect();
+    assert!(dups.is_empty(), "duplicates: {dups:?}");
+    // Nothing more arrives later (e.g. a second copy from MAM).
+    std::thread::sleep(Duration::from_secs(2));
+    let late = env.json(&["--profile", "alice", "inbox"]);
+    assert_eq!(late.as_array().unwrap().len(), 0, "{late}");
+}
+
+/// `send --require-encryption` (retried while the peer's devices are still
+/// being published), then the receiving side's `inbox` entry for it.
+fn encrypted_exchange(env: &Env, from: &str, to: &str, to_jid: &str, body: &str) -> Value {
+    let start = Instant::now();
+    loop {
+        let out = env.run(&["--profile", from, "send", to_jid, body, "--require-encryption"]);
+        if out.status.success() {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "encrypted send failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let start = Instant::now();
+    loop {
+        let inbox = env.json(&["--profile", to, "inbox"]);
+        if let Some(m) = inbox.as_array().unwrap().iter().find(|m| m["body"] == body) {
+            return m.clone();
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{to} never got {body:?}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// M4 acceptance test 1 (§8.3 scenario 5): OMEMO between two agent-chat
+/// daemons over the hub's PEP, both directions. The daemons prefer
+/// OMEMO:2; legacy OMEMO is covered by `dev/omemo-bot/interop-test.sh`
+/// with `XMPP_SERVER=hub` (python-omemo).
+#[test]
+fn omemo_between_two_daemons() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    hub_with_profiles(&env, &[("alice", "alice-password-123"), ("bob", "bob-password-4567")]);
+    for (from, to, to_jid, from_jid) in [
+        ("bob", "alice", "alice@hubtest.local", "bob@hubtest.local"),
+        ("alice", "bob", "bob@hubtest.local", "alice@hubtest.local"),
+    ] {
+        let body = format!("encrypted hello from {from}");
+        let m = encrypted_exchange(&env, from, to, to_jid, &body);
+        assert_eq!(m["from"], from_jid);
+        assert_eq!(m["encryption"]["protocol"], "omemo2", "{m}");
+        assert!(m["encryption"].get("error").is_none_or(|e| e.is_null()), "{m}");
+    }
+    // Each side sees the other's device.
+    let devices = env.json(&["--profile", "alice", "omemo", "devices", "bob@hubtest.local"]);
+    assert!(!devices.as_array().unwrap().is_empty(), "{devices}");
+}
+
+/// Poll `inbox` until a message with `body` shows up.
+fn inbox_until(env: &Env, profile: &str, body: &str) -> Value {
+    let start = Instant::now();
+    loop {
+        let inbox = env.json(&["--profile", profile, "inbox"]);
+        if let Some(m) = inbox.as_array().unwrap().iter().find(|m| m["body"] == body) {
+            return m.clone();
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "{profile} never got {body:?}"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// M5 acceptance test 1 (§8.3 scenarios 6 and 4): a private room with
+/// OMEMO and an invitation, then a public room, with real daemons.
+#[test]
+fn private_omemo_room_and_public_room() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    hub_with_profiles(&env, &[("alice", "alice-password-123"), ("bob", "bob-password-4567")]);
+    let room = "secret@conference.hubtest.local";
+
+    // Scenario 6: alice creates a private room and invites bob.
+    let joined = env.json(&["--profile", "alice", "rooms", "join", room, "--private"]);
+    assert_eq!(joined["jid"], room, "{joined}");
+    env.json(&["--profile", "alice", "rooms", "invite", room, "bob@hubtest.local"]);
+    let start = Instant::now();
+    loop {
+        let invites = env.json(&["--profile", "bob", "rooms", "invites"]);
+        if invites.as_array().unwrap().iter().any(|i| i["room"] == room) {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "no invitation: {invites}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    env.json(&["--profile", "bob", "rooms", "join", room]);
+    // alice learns bob's real JID from his presence, then encrypts for him.
+    let start = Instant::now();
+    loop {
+        let out = env.run(&[
+            "--profile",
+            "alice",
+            "send",
+            room,
+            "team secret",
+            "--require-encryption",
+        ]);
+        if out.status.success() {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "encrypted room send failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let m = inbox_until(&env, "bob", "team secret");
+    assert_eq!(m["kind"], "groupchat", "{m}");
+    assert_eq!(m["conversation"], room);
+    assert!(m["encryption"]["protocol"].is_string(), "{m}");
+    assert!(m["encryption"].get("error").is_none_or(|e| e.is_null()), "{m}");
+    // And back.
+    env.json(&["--profile", "bob", "send", room, "got it", "--require-encryption"]);
+    let m = inbox_until(&env, "alice", "got it");
+    assert!(m["encryption"]["protocol"].is_string(), "{m}");
+
+    // Scenario 4: a public room, plaintext, `wait --room`.
+    let public = "lobby@conference.hubtest.local";
+    env.json(&["--profile", "alice", "rooms", "join", public]);
+    env.json(&["--profile", "bob", "rooms", "join", public]);
+    let waiter = env
+        .cmd(&["--profile", "alice", "wait", "--room", public, "--timeout", "30"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    env.json(&["--profile", "bob", "send", public, "hello lobby"]);
+    let m = ok_json(waiter.wait_with_output().unwrap(), &["wait --room"]);
+    assert_eq!(
+        (m["body"].as_str(), m["kind"].as_str()),
+        (Some("hello lobby"), Some("groupchat"))
+    );
+}
+
+/// Public-mode registration: `agent-chat account register` solves the hub's
+/// `urn:xmpp:ibr-pow:0` challenge (low difficulty for the test) and the
+/// new account logs in. Loopback is normally exempt; here it isn't.
+#[test]
+fn account_register_solves_the_hubs_proof_of_work() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    let port = free_port();
+    env.json(&[
+        "hub",
+        "init",
+        "--domain",
+        "hubtest.local",
+        "--listen",
+        &format!("127.0.0.1:{port}"),
+    ]);
+    let paths = agent_chat_server::HubPaths::at(env.hub_dir());
+    let mut cfg = agent_chat_server::Config::load(paths.config()).unwrap();
+    cfg.registration.mode = Some(agent_chat_server::config::RegistrationMode::Pow);
+    cfg.registration.exempt_loopback = false;
+    cfg.registration.pow_bits = 14;
+    cfg.registration.pow_count = 8;
+    std::fs::write(paths.config(), cfg.to_toml().unwrap()).unwrap();
+    env.json(&["hub", "start"]);
+    let out = env.run(&[
+        "--profile",
+        "agent",
+        "account",
+        "register",
+        "--server",
+        "hubtest.local",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &port.to_string(),
+        "--insecure-plaintext",
+        "--store",
+        "config",
+    ]);
+    let r = ok_json(out, &["account register"]);
+    let jid = r["jid"].as_str().unwrap().to_owned();
+    assert!(jid.ends_with("@hubtest.local"), "{r}");
+    assert_eq!(r["pow"]["bits"], 14, "solved the hub's challenge: {r}");
+    wait_for_state(&env, "agent", "online", Duration::from_secs(30));
+    let users = env.json(&["hub", "user", "list"]);
+    let created = users
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["jid"] == jid.as_str())
+        .unwrap();
+    assert_eq!(created["created_via"], "pow");
+}
+
+/// `hub init --public`: certificate files (absent at first: a temporary
+/// certificate), PoW registration, the web page with sign-up.
+#[test]
+fn hub_init_public_writes_a_public_configuration() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    let (port, http) = (free_port(), free_port());
+    let certs = env.home.path().join("certs");
+    let out = env.run(&["hub", "init", "--public", "--domain", "localhost"]);
+    assert!(!out.status.success(), "a public hub needs a real domain");
+    let init = env.json(&[
+        "hub",
+        "init",
+        "--public",
+        "--domain",
+        "chat.example.org",
+        "--listen",
+        &format!("127.0.0.1:{port}"),
+        "--cert",
+        certs.join("fullchain.pem").to_str().unwrap(),
+        "--key",
+        certs.join("privkey.pem").to_str().unwrap(),
+        "--http",
+        &format!("127.0.0.1:{http}"),
+        "--web-signup",
+    ]);
+    assert_eq!(init["tls_mode"], "files", "{init}");
+    let cfg = agent_chat_server::Config::load(&env.hub_dir().join("hub.toml")).unwrap();
+    assert_eq!(
+        cfg.registration_mode(),
+        agent_chat_server::config::RegistrationMode::Pow
+    );
+    assert!(cfg.registration.web);
+    env.json(&["hub", "start"]);
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", http)).unwrap();
+    use std::io::{Read, Write};
+    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut body = String::new();
+    s.read_to_string(&mut body).unwrap();
+    assert!(
+        body.starts_with("HTTP/1.1 200") && body.contains("\"ok\":true"),
+        "{body}"
+    );
 }
 
 #[test]

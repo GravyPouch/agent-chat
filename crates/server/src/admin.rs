@@ -44,7 +44,35 @@ pub enum AdminRequest {
         password: Option<String>,
     },
     UserList,
+    /// Create an XEP-0445 invitation (registration without proof of work).
+    InviteCreate {
+        #[serde(default = "one")]
+        uses: u32,
+        /// Seconds until it expires.
+        #[serde(default = "week")]
+        expires_secs: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
     Shutdown,
+}
+
+fn one() -> u32 {
+    1
+}
+
+fn week() -> u64 {
+    7 * 86_400
+}
+
+/// A new invitation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InviteCreated {
+    pub token: String,
+    /// `xmpp:domain?register;preauth=TOKEN` (XEP-0401), for stock clients.
+    pub uri: String,
+    pub uses: u32,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -88,7 +116,7 @@ impl std::error::Error for AdminError {}
 impl From<AccountError> for AdminError {
     fn from(e: AccountError) -> Self {
         let code = match &e {
-            AccountError::InvalidUsername(..) | AccountError::WeakPassword | AccountError::InvalidPassword => {
+            AccountError::InvalidUsername(..) | AccountError::WeakPassword(_) | AccountError::InvalidPassword => {
                 AdminErrorCode::BadRequest
             }
             AccountError::Exists(_) => AdminErrorCode::Exists,
@@ -122,6 +150,11 @@ pub struct HubStatus {
     pub connections: u64,
     /// Bound client sessions.
     pub sessions: u64,
+    /// Sessions waiting for their client to resume (XEP-0198).
+    #[serde(default)]
+    pub hibernating: u64,
+    #[serde(default)]
+    pub sm_resumes: u64,
     pub accounts: u64,
     pub user_actors: usize,
     pub connections_total: u64,
@@ -141,6 +174,13 @@ pub struct UserInfo {
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_login_at: Option<DateTime<Utc>>,
+    /// Has SCRAM-SHA-256 keys (imported accounts may have SHA-1 keys only).
+    #[serde(default = "yes")]
+    pub scram_sha256: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl From<&Account> for UserInfo {
@@ -153,6 +193,7 @@ impl From<&Account> for UserInfo {
             created_via: a.created_via,
             created_at: ts(a.created_ms),
             last_login_at: a.last_login_ms.map(ts),
+            scram_sha256: a.credentials.sha256.is_some(),
         }
     }
 }
@@ -290,6 +331,31 @@ async fn dispatch(ctx: &Arc<HubCtx>, req: AdminRequest) -> Result<Value, AdminEr
             let accounts = ctx.store.list_accounts(&ctx.domain).await.map_err(internal)?;
             json(accounts.iter().map(UserInfo::from).collect::<Vec<_>>())
         }
+        AdminRequest::InviteCreate {
+            uses,
+            expires_secs,
+            note,
+        } => {
+            if uses == 0 || expires_secs == 0 {
+                return Err(AdminError {
+                    code: AdminErrorCode::BadRequest,
+                    message: "uses and expiry must be positive".into(),
+                });
+            }
+            let token = crate::register::new_invite_token();
+            let expires_ms = crate::util::now_ms() + (expires_secs.min(365 * 86_400) * 1000) as i64;
+            ctx.store
+                .invite_put(&crate::register::invite_hash(&token), expires_ms, uses, note)
+                .await
+                .map_err(internal)?;
+            tracing::info!(uses, "invitation created");
+            json(InviteCreated {
+                uri: format!("xmpp:{}?register;preauth={token}", ctx.domain),
+                token,
+                uses,
+                expires_at: Utc.timestamp_millis_opt(expires_ms).single().unwrap_or_default(),
+            })
+        }
         AdminRequest::Shutdown => {
             tracing::info!("shutdown requested over the admin socket");
             ctx.shutdown.cancel();
@@ -308,9 +374,11 @@ pub async fn status(ctx: &HubCtx) -> Result<HubStatus, AdminError> {
         uptime_secs: ctx.started.elapsed().as_secs(),
         c2s: ctx.listeners.iter().map(|a| a.to_string()).collect(),
         tls_mode: ctx.config.tls.mode,
-        pin: ctx.tls.as_ref().map(|t| t.pin.clone()),
+        pin: Some(ctx.tls.current().pin.clone()),
         connections: Stats::get(&s.connections),
         sessions: Stats::get(&s.sessions),
+        hibernating: Stats::get(&s.hibernating),
+        sm_resumes: Stats::get(&s.sm_resumes),
         accounts: ctx.store.count_accounts(&ctx.domain).await.map_err(internal)?,
         user_actors: ctx.router.user_actors(),
         connections_total: Stats::get(&s.connections_total),

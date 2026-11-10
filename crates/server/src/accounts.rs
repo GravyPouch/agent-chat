@@ -20,8 +20,8 @@ pub const GENERATED_PASSWORD_LEN: usize = 24;
 pub enum AccountError {
     #[error("invalid username {0:?}: {1}")]
     InvalidUsername(String, String),
-    #[error("the password must be at least {MIN_PASSWORD_LEN} characters")]
-    WeakPassword,
+    #[error("the password must be at least {0} characters")]
+    WeakPassword(usize),
     #[error("the password contains characters SASLprep rejects")]
     InvalidPassword,
     #[error("account {0} already exists")]
@@ -98,7 +98,7 @@ pub async fn derive_credentials(password: &str, iterations: u32) -> Result<Crede
     let salt = random_bytes::<16>().to_vec();
     tokio::task::spawn_blocking(move || Credentials {
         sha1: Hash::Sha1.keys(&prepped, &salt, iterations),
-        sha256: Hash::Sha256.keys(&prepped, &salt, iterations),
+        sha256: Some(Hash::Sha256.keys(&prepped, &salt, iterations)),
         salt,
         iterations,
     })
@@ -106,23 +106,35 @@ pub async fn derive_credentials(password: &str, iterations: u32) -> Result<Crede
     .map_err(|e| AccountError::Other(anyhow::anyhow!("key derivation failed: {e}")))
 }
 
-fn check_password(password: Option<String>) -> Result<(String, bool), AccountError> {
+fn check_password(password: Option<String>, min: usize) -> Result<(String, bool), AccountError> {
     match password {
-        Some(p) if p.chars().count() < MIN_PASSWORD_LEN => Err(AccountError::WeakPassword),
+        Some(p) if p.chars().count() < min => Err(AccountError::WeakPassword(min)),
         Some(p) => Ok((p, false)),
         None => Ok((generate_password(), true)),
     }
 }
 
-/// Create an account on `domain`.
+/// Create an account on `domain` (admin rules: passwords of at least
+/// [`MIN_PASSWORD_LEN`] characters).
 pub async fn create(
     store: &Arc<dyn Store>,
     domain: &str,
     iterations: u32,
     req: CreateRequest,
 ) -> Result<Created, AccountError> {
+    create_with_min(store, domain, iterations, req, MIN_PASSWORD_LEN).await
+}
+
+/// Create an account with a given minimum password length (self-registration).
+pub async fn create_with_min(
+    store: &Arc<dyn Store>,
+    domain: &str,
+    iterations: u32,
+    req: CreateRequest,
+    min_password: usize,
+) -> Result<Created, AccountError> {
     let localpart = normalize_username(&req.username)?;
-    let (password, generated) = check_password(req.password)?;
+    let (password, generated) = check_password(req.password, min_password)?;
     let password = Zeroizing::new(password);
     let credentials = derive_credentials(&password, iterations).await?;
     let account = store
@@ -149,8 +161,20 @@ pub async fn set_password(
     username: &str,
     password: Option<String>,
 ) -> Result<Option<String>, AccountError> {
+    set_password_min(store, domain, iterations, username, password, MIN_PASSWORD_LEN).await
+}
+
+/// [`set_password`] with a given minimum length (XEP-0077 password changes).
+pub async fn set_password_min(
+    store: &Arc<dyn Store>,
+    domain: &str,
+    iterations: u32,
+    username: &str,
+    password: Option<String>,
+    min: usize,
+) -> Result<Option<String>, AccountError> {
     let localpart = normalize_username(username)?;
-    let (password, generated) = check_password(password)?;
+    let (password, generated) = check_password(password, min)?;
     let password = Zeroizing::new(password);
     let credentials = derive_credentials(&password, iterations).await?;
     if !store.set_credentials(domain, &localpart, credentials).await? {
@@ -197,14 +221,14 @@ mod tests {
         let pw = c.generated_password.unwrap();
         // The stored keys match the password, and nothing else is stored.
         let salt = &c.account.credentials.salt;
-        assert_eq!(c.account.credentials.sha256, Hash::Sha256.keys(&pw, salt, 4096));
+        assert_eq!(c.account.credentials.sha256, Some(Hash::Sha256.keys(&pw, salt, 4096)));
         assert!(matches!(
             create(&store, "hub.local", 4096, req("alice", Some("another password"))).await,
             Err(AccountError::Exists(_))
         ));
         assert!(matches!(
             create(&store, "hub.local", 4096, req("bob", Some("short"))).await,
-            Err(AccountError::WeakPassword)
+            Err(AccountError::WeakPassword(_))
         ));
         assert_eq!(
             set_password(&store, "hub.local", 4096, "alice", Some("a new long password".into()))

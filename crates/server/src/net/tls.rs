@@ -73,6 +73,74 @@ pub fn load(cert_path: &Path, key_path: &Path) -> Result<TlsMaterial> {
     })
 }
 
+/// The certificate in use, swappable while the hub runs (§5.9 "On SIGHUP,
+/// the hub reloads … the certificate"; files mode also polls for changes,
+/// so certificates renewed into a shared volume are picked up).
+pub struct Reloadable {
+    current: std::sync::RwLock<Arc<TlsMaterial>>,
+    cert: std::path::PathBuf,
+    key: std::path::PathBuf,
+    /// SHA-256 of the loaded files' contents.
+    loaded: std::sync::Mutex<Option<Vec<u8>>>,
+}
+
+fn files_digest(cert: &Path, key: &Path) -> Option<Vec<u8>> {
+    let c = std::fs::read(cert).ok()?;
+    let k = std::fs::read(key).ok()?;
+    let mut h = Sha256::new();
+    h.update(&c);
+    h.update([0]);
+    h.update(&k);
+    Some(h.finalize().to_vec())
+}
+
+impl Reloadable {
+    /// Load `cert`/`key`. If they can't be used and `fallback` is given
+    /// (cert, key, names), serve a generated self-signed certificate until
+    /// [`Reloadable::reload_if_changed`] finds usable files.
+    pub fn open(cert: &Path, key: &Path, fallback: Option<(&Path, &Path, &[String])>) -> Result<Self> {
+        let (material, digest) = match load(cert, key) {
+            Ok(m) => (m, files_digest(cert, key)),
+            Err(e) => {
+                let Some((fc, fk, names)) = fallback else {
+                    return Err(e);
+                };
+                tracing::warn!(
+                    "no usable certificate at {} ({e:#}); using a temporary self-signed one until it appears",
+                    cert.display()
+                );
+                ensure_self_signed(fc, fk, names)?;
+                (load(fc, fk)?, None)
+            }
+        };
+        Ok(Self {
+            current: std::sync::RwLock::new(Arc::new(material)),
+            cert: cert.to_owned(),
+            key: key.to_owned(),
+            loaded: std::sync::Mutex::new(digest),
+        })
+    }
+
+    pub fn current(&self) -> Arc<TlsMaterial> {
+        self.current.read().unwrap().clone()
+    }
+
+    /// Reload if the files changed and are usable. `Ok(true)`: reloaded.
+    pub fn reload_if_changed(&self) -> Result<bool> {
+        let Some(digest) = files_digest(&self.cert, &self.key) else {
+            return Ok(false);
+        };
+        if self.loaded.lock().unwrap().as_deref() == Some(digest.as_slice()) {
+            return Ok(false);
+        }
+        let material = load(&self.cert, &self.key)?;
+        tracing::info!(cert = %self.cert.display(), pin = %material.pin, "TLS certificate reloaded");
+        *self.current.write().unwrap() = Arc::new(material);
+        *self.loaded.lock().unwrap() = Some(digest);
+        Ok(true)
+    }
+}
+
 /// The `tls-exporter` channel binding (RFC 9266). Only TLS 1.3: rustls has
 /// no `tls-unique`, so `-PLUS` is offered on TLS 1.3 only.
 pub fn channel_binding(conn: &ServerConnection) -> Option<Vec<u8>> {

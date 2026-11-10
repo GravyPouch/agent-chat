@@ -1,0 +1,9 @@
+# Used by BuildKit for server/deploy-hub/Dockerfile only (other builds from
+# the repository root are unaffected).
+target
+**/target
+.claude
+.git
+docs/screenshots
+packaging
+dev

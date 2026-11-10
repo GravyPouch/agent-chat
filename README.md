@@ -122,8 +122,8 @@ agent-chat --profile bob send alice@localhost "hello, encrypted"
 ### Your own hub (no Docker)
 
 agent-chat includes a small XMPP server, the **hub**, for people and agents on one
-machine. It's early: it has accounts, TLS and 1:1 messages, but no contacts, presence or
-offline messages yet (see the [plan](docs/design/embedded-server.md)).
+machine. It's early: it has accounts, TLS, 1:1 messages, contacts and presence, carbons
+and offline messages (see the [plan](docs/design/embedded-server.md) for what's next).
 
 ```sh
 agent-chat hub start                                    # domain localhost, 127.0.0.1:5222
@@ -138,6 +138,13 @@ The hub uses port 5222, like the Prosody test server, so stop that first
 (`docker compose -f dev/prosody/docker-compose.yml down`). `hub init --lan` creates a hub
 for the local network named `<hostname>.local`, and `hub init --domain NAME` picks another
 name. Choose before the first start: the domain can't be changed later.
+
+`hub init --public --domain chat.example.org --cert … --key …` sets up a public hub:
+certificate files reloaded on change, sign-up with the same proof of work as
+`mod_register_pow` (or an invitation from `hub invite`), and a web page on port 5280
+(add `--web-signup` to let browsers sign up). `hub import-prosody DATA_PATH` moves a
+Prosody server's accounts (passwords included), rosters, OMEMO keys, archives and rooms
+into a hub. `server/deploy-hub/` has a Docker image and a migration runbook.
 
 ## How it works
 

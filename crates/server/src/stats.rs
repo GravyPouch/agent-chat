@@ -13,6 +13,9 @@ pub struct Stats {
     pub connections_total: AtomicU64,
     pub connections_refused: AtomicU64,
     pub sessions: AtomicU64,
+    /// Resumable sessions waiting for their client (XEP-0198).
+    pub hibernating: AtomicU64,
+    pub sm_resumes: AtomicU64,
     pub stanzas_in: AtomicU64,
     pub stanzas_out: AtomicU64,
     pub limit_hits: AtomicU64,

@@ -1,6 +1,6 @@
 # Embedded XMPP server ("agent-chat hub"): implementation plan
 
-- **Status:** plan. Nothing here is implemented yet.
+- **Status:** being implemented. Each milestone in §9 has status notes. M1–M5, public mode with web onboarding, and the deployment files and Prosody importer are done; M6 (LAN mode) and M7 (hardening) remain.
 - **Date:** 2026-11-10
 - **Decision already made by the user:**
   - We build a small XMPP server of our own that `agent-chat` can run itself: a local hub for people and AI agents on one machine or a LAN.
@@ -349,7 +349,7 @@ I derived this "client contract" from the daemon source [V]. It is the acceptanc
 - **Clustering, Postgres, multiple domains**, a web admin UI.
 - **Windows.** The admin socket is a Unix socket, like the daemon's.
 - **Legacy auth** (XEP-0078) and pre-1.0 streams.
-- Importing Prosody data (XEP-0227) comes later.
+- XEP-0227 import and export come later. (Importing Prosody's own storage was added for the migration; see "Deployment and migration from Prosody" in §9.)
 
 ### 4.3 Features by tier
 
@@ -1456,6 +1456,29 @@ Other tests:
 4. Harness: a message while offline is delivered on initial presence with `<delay/>`.
 5. E2E scenario 3. Interop suite: RFC6120, RFC6121, XEP-0030 and XEP-0199 tests pass, or each failure is documented with a reason.
 
+#### M2 status and implementation notes (2026-11-10)
+
+**Done.** Roster and subscriptions, presence, offline storage, carbons, caps, disco on accounts, plus blocking, vcard-temp, private XML and `jabber:iq:version` (all cheap once the actor existed).
+
+| Test | Where |
+|---|---|
+| 1 | `src/user/roster.rs`: one test per RFC 6121 Appendix A table (A.2.1–A.3.4) |
+| 2 | `tests/m2.rs`: `at2_subscription_round_trip_with_pushes_and_presence`, `at2_probe_is_answered_by_a_local_contact`, `at2_directed_presence_then_unavailable` |
+| 3 | `at3_bare_jid_message_goes_to_highest_priority_and_carbons_to_the_other` (also sent carbons and `<private/>`) |
+| 4 | `at4_offline_message_is_delivered_on_initial_presence_with_delay` (chat states are not stored) |
+| 5 | The existing E2E run passes with the new delivery rules. The interop suite isn't wired into CI yet. |
+
+Also tested: subscription requests wait for an offline contact, blocking (drop inbound, `<blocked/>` error outbound, pushes), the caps disco#info query, vcard-temp and disco on accounts.
+
+**Design as built**
+1. **Outbound processing in the sender's actor.** A session hands every stanza to its own account's actor (`UserMsg::Outbound`). That actor does the outbound work (roster changes for subscriptions, presence broadcast and directed-presence tracking, sent carbons, the block list) and then routes. The recipient's actor does the inbound work (`UserMsg::Deliver`). Both hops are FIFO, so §5.3 rule 3 holds, and the actors only await the store, never each other.
+2. **Pending requests from non-contacts** are roster rows with `hidden = 1`; roster gets and pushes skip them (RFC 6121 §3.1.3).
+3. **Availability.** Bare-JID messages go to resources that sent available presence: `chat` to the highest non-negative priority (all of them on a tie), `normal` and `headline` to every non-negative one. A bound resource without presence gets nothing addressed to the bare JID; messages wait offline until initial presence. Subscription stanzas also reach resources that fetched the roster.
+4. **Probes** carry the new resource's full JID, so only that resource gets the answers.
+5. **Offline storage** keeps up to `archive.max_offline_messages` (1000) per account and drops the oldest. Only `chat`/`normal` messages with a body, OMEMO, a store hint or an invitation are kept; chat states and `<no-store/>` messages are dropped.
+6. **Caps.** An unknown `ver` triggers disco#info from the bare JID. A SHA-1 match is cached in memory and in the `caps` table; a mismatch is used for that resource only.
+7. **Not done in M2:** roster versioning (the server ignores `ver`), the "last unavailable presence" answer to probes, and the XMPP Interop Testing CI job.
+
 ### M3: stream management and MAM (2 weeks)
 
 **Scope**
@@ -1476,6 +1499,31 @@ Other tests:
 4. Harness: a client-supplied `<stanza-id by='alice@localhost'>` is stripped.
 5. Interop suite: XEP-0198 and XEP-0313.
 
+#### M3 status and implementation notes (2026-11-10)
+
+**Done.** XEP-0198 with resumption and hibernation, XEP-0313 user archives with RSM, XEP-0359 stanza-ids, retention.
+
+| Test | Where |
+|---|---|
+| 1 | `crates/cli/tests/hub_e2e.rs::offline_daemon_catches_up_exactly_once`: alice's daemon is stopped, bob sends 120 messages, alice's restarted daemon has each exactly once (offline delivery plus its MAM catch-up). Scenario 8 runs in the harness instead: `tests/m3.rs::sm_resumes_after_a_network_drop_and_replays_what_was_missed` cuts a TCP proxy under tokio-xmpp's `StanzaStream` (the daemon's own stream) and checks `Resumed` and the replay. |
+| 2 | `at2_last_page_then_empty_complete_page`, plus forward paging over everything, `max=0`, an unknown id (`item-not-found`), `flip-page` and `with`. The store-level paging cases are in `store::im_contract_tests`. |
+| 3 | `at3_offline_and_archive_copies_share_the_stanza_id` |
+| 4 | `at4_client_supplied_stanza_ids_are_stripped` |
+| 5 | The interop suite isn't wired into CI yet. |
+
+Also tested: unacknowledged messages go offline when resumption times out, `<resume/>` with an unknown id fails and a fresh bind still works, `<r/>`/`<a/>` counting, and the counter arithmetic (including wrap-around) as unit tests.
+
+**Design as built and deviations**
+1. **Hibernation.** A resumable session keeps its task, outbox and presence when its connection breaks (EOF, reset, `InvalidEof` from rxml, write failure). The task queues what the actor sends and waits `sm.resume_timeout` (default 10 min) for a `<resume/>`. A clean `</stream:stream>`, a stream error, a kick or shutdown end the session without hibernating.
+2. **Resumption hand-off.** The negotiator looks up `previd` in a registry of resumable sessions (`c2s::sm::Registry`) and hands the authenticated connection to the hibernating task over a channel. If the old connection is still open (the client noticed first), it is dropped in favour of the new one.
+3. **End of a session.** Unacknowledged messages go back to the account's actor (`UserMsg::Requeue`). They are stored offline only if no other non-negative resource is available, because that resource got the message or a carbon, and the archive has it either way. Unacknowledged IQ requests get `service-unavailable`.
+4. **`<failed/>` always carries `h`** (0 when the session is unknown): tokio-xmpp 6 rejects `<failed/>` without it, and our client would otherwise reconnect in a loop instead of binding afresh.
+5. **Acks.** The hub asks for an ack after 5 unacknowledged stanzas or 30 s, and sends `<r/>` instead of a ping on read silence once SM is on. More than `sm.max_queue` (1000) unacknowledged stanzas closes the stream with `resource-constraint`. SM state does not survive a hub restart (§10.8).
+6. **Archive.** Ids are UUIDv7 strings, ordered by a per-store sequence. Incoming archivable messages get `<stanza-id by=account>`; the offline copy is the same stanza, so ids match. Outgoing messages are archived in the sender's archive with their own id. That id goes into the sent carbons (so the sender's other devices can match MAM later) but not into the copy routed to the recipient.
+7. **Queries.** Default page 50, capped at `archive.max_page` (250, as in production). `#extended` (`before-id`, `after-id`, `ids`), `<metadata/>` and `<prefs/>` are supported; prefs are answered `default='always'` and a set is accepted but not applied. RSM `<index/>` gets `feature-not-implemented`.
+8. **Retention.** `archive.expire_after` defaults to **1 week**, matching production (the plan said 1 year); `"never"` keeps everything. An hourly task deletes expired archive and offline rows.
+9. **CSI** (`urn:xmpp:csi:0`) is advertised and accepted, but nothing is held back yet.
+
 ### M4: PEP and OMEMO (1.5 weeks)
 
 **Scope**
@@ -1495,6 +1543,26 @@ Other tests:
 4. Harness: a contact advertising `urn:xmpp:omemo:2:devices+notify` receives a notification on publish, and the last item when it comes online.
 5. Interop suite: XEP-0060 and XEP-0163 tests.
 
+#### M4 status and implementation notes (2026-11-10)
+
+**Done.** PEP with publish-options, access models, owner configuration, `+notify` notifications and last items; both OMEMO versions work.
+
+| Test | Where |
+|---|---|
+| 1 | `crates/cli/tests/hub_e2e.rs::omemo_between_two_daemons`: OMEMO:2 with `--require-encryption`, both directions. Daemon to daemon always picks OMEMO:2, so legacy OMEMO is covered by test 2. |
+| 2 | `XMPP_SERVER=hub dev/omemo-bot/interop-test.sh` prints the same four `PASS` lines as against Prosody: python-omemo (slixmpp-omemo) and agent-chat, OMEMO:2 and legacy, both directions. Run by hand on 2026-11-10; it needs Docker. |
+| 3 | `tests/m4.rs::at3_publish_options_and_access_models`: `max_items=max` keeps several bundles, mismatched options give `conflict` + `precondition-not-met`, publishing again without options works, a non-contact reads an `open` node but gets `not-authorized` on a `presence` node, missing nodes give `item-not-found`, owner configure and delete, disco#items. |
+| 4 | `at4_notify_on_publish_and_last_item_on_coming_online`: notifications follow `+notify` (a tune publish doesn't reach a client that only wants device lists), a new resource gets the last item from cached caps without another disco query, and owners are notified too. |
+| 5 | The interop suite isn't wired into CI yet. |
+
+**Design as built and deviations**
+1. **`dev/lib/server.sh`** factors the server-specific lines of the dev scripts, as §8.3 proposed: `XMPP_SERVER=hub` starts a throwaway hub for `localhost` on a free loopback port in the script's temporary `AGENT_CHAT_HOME`, and the bot containers reach it through `host.docker.internal`. There is no `dev/hub/` Docker setup; the hub runs on the host. The Docker image is part of the deployment work (`server/deploy-hub/`).
+2. **Notifications are actor messages.** The publisher's actor sends a `PepEvent` to each subscriber's actor: the account's own, plus contacts with a `from`/`both` subscription (not for `whitelist` nodes). Each recipient forwards it to its own available resources that `+notify` the node. Last items work the same way in reverse: a resource that comes online, or whose caps become known, asks its own actor and those of contacts it is subscribed to.
+3. **Access models.** `open`, `presence`, `roster` (treated as `presence`), and `whitelist` and `authorize` (owner only; there are no affiliation lists). The default is `presence` with `max_items = 1`; `max` means 1000 items.
+4. **publish-options** must match an existing node's configuration. Unknown `pubsub#` fields are ignored rather than rejected, because clients differ in what they send. A new node is created with the options.
+5. **Not supported:** explicit pubsub subscriptions (`feature-not-implemented`; PEP delivery follows presence and `+notify`), item expiry, RSM on items, and notifications to non-contacts who sent directed presence.
+6. **Items** come back oldest first; the latest item is last.
+
 ### M5: group chat (2.5–3 weeks)
 
 **Scope**
@@ -1512,6 +1580,63 @@ Other tests:
 3. Harness: room MAM results for a non-anonymous room carry `muc#user item@jid`.
 4. Differential transcript against Prosody for create → configure → join → message → invite → leave, with only allowlisted differences.
 5. Interop suite: XEP-0045 tests. Manual: the Gajim and Dino rows for rooms.
+
+#### M5 status and implementation notes (2026-11-10)
+
+**Done.** MUC on `conference.<domain>`: locked creation, instant and custom configuration, members-only and non-anonymous rooms, affiliations and roles, mediated invitations that grant membership, declines, subject, history, private messages, room MAM with real JIDs, destroy, XEP-0410 self-ping, and persistence across restarts.
+
+| Test | Where |
+|---|---|
+| 1 | `crates/cli/tests/hub_e2e.rs::private_omemo_room_and_public_room`: alice runs `rooms join --private`, `rooms invite`; bob sees the invitation, joins, and both exchange OMEMO messages with `--require-encryption`. Then scenario 4 in a public room with `wait --room`. |
+| 2 | `tests/m5.rs::at2_locked_room_and_status_codes`: `item-not-found` for a missing room (disco) and for others while locked; 110 + 201 for the creator; 110, 100 and 170 after configuration; `conflict` for a taken nick; the service's disco#items; leaving. |
+| 3 | `at3_private_room_invites_messages_and_archive_with_real_jids`: `registration-required` for non-members, membership by `muc#admin` and by invitation, the member list, real JIDs in presence, one stanza-id (`by` the room) for every copy of a message, `muc#user item@jid` in room MAM results, private messages, 321 on removal, and the last owner can't step down. |
+| 4 | Differential transcripts against Prosody: not done. |
+| 5 | The interop suite and the stock-client rows: not done (no stock client was available in this session). |
+
+Also tested: `rooms_survive_a_restart_and_history_is_served` (members-only config and membership survive a hub restart; `maxstanzas` history with `<delay/>`), and config-form round trips as unit tests.
+
+**Design as built and deviations**
+1. **Defaults match production** (`server/deploy/prosody.cfg.lua`): new rooms are persistent (`muc.default_persistent`), every room is archived (`muc.archive`, like `muc_log_all_rooms`), and any local account may create rooms (`muc.room_creation = "local-users"`, like `restrict_room_creation = "local"`). The `[muc]` section also sets the host label, default history (20) and maximum occupants (200).
+2. **Only local accounts** reach the service (no federation); others get `not-allowed`.
+3. **Real JIDs in the archive.** In non-anonymous rooms the archived copy of a message carries `<x xmlns='…muc#user'><item jid='real@bare'/></x>`; the live copy doesn't. Room archives use the same table as user archives, with `archive_jid` = the room, and the same retention.
+4. **Who may read what.** Owners and admins read every affiliation list; members read the owner, admin and member lists; role lists are for moderators. Room MAM is open to members (or occupants) of members-only rooms, and to anyone not banned in open rooms.
+5. **Multiple sessions under one nick** share one occupant: all sessions get the room's traffic, and the room shows the first session's presence. Renaming one of several sessions is refused (`not-acceptable`).
+6. **IQs to occupants** other than self-ping are not relayed (`service-unavailable`). There is no XEP-0421 occupant-id, no voice requests, and no room registration (reserved nicks).
+7. **Temporary rooms** (`persistentroom = 0`) and rooms left while still locked are destroyed when the last occupant leaves, archive included.
+
+### Public mode and web onboarding (the milestone after M1)
+
+#### Status and implementation notes (2026-11-10)
+
+**Done.** `hub init --public`, certificate files reloaded on change, XEP-0077 registration with native `urn:xmpp:ibr-pow:0` and XEP-0445 invitations, password change and account removal in-band, the HTTP page with optional web sign-up, and the essential limits.
+
+**What it does**
+1. **`agent-chat hub init --public --domain D [--cert F --key F] [--http ADDR] [--web-signup]`** listens on `0.0.0.0:5222` and `[::]:5222`, sets `tls.mode = "files"`, `registration.mode = "pow"`, and serves the page on `0.0.0.0:5280`. `localhost` and `.local` domains are refused. Web sign-up is off unless `--web-signup` is given.
+2. **Certificates from files.** The hub checks the files every `tls.reload_interval` (30 s) and on SIGHUP, and swaps in a changed certificate for new connections without a restart. Until usable files exist it serves a temporary self-signed certificate (`tls/fallback-*.pem`), as `server/deploy/start-prosody.sh` does today.
+3. **Registration** (`src/register/`), by `registration.mode`:
+   - `open` (the default for a loopback-only hub), `invite` (the default when it serves the network), `pow` (`--public`) or `closed`;
+   - in `pow` mode, loopback clients are exempt unless `exempt_loopback = false`;
+   - registration from non-loopback peers needs TLS.
+4. **PoW, compatible with `mod_register_pow`.** The checks run in its order and give its error conditions: `pow-required`, `challenge-invalid` (also for the wrong address prefix), `unsupported-algorithm`, `challenge-expired`, `challenge-used`, `challenge-outdated`, `solution-invalid`. It uses the same token format, HMAC binding, puzzle and parameters (`pow_bits = 25`, `pow_count = 8`, `pow_max_bits = 31`, 1 h TTL, /32 and /56 prefixes, +1 bit per success from a prefix in 24 h up to 6, load escalation above 30 an hour up to 4). `crates/server/src/register/pow.rs` checks the same §5.7 vector as `test_vector.lua`. The HMAC secret is stored in `meta`, so challenges survive a restart. The escalation state and the replay cache are in memory, as in the Lua module.
+5. **Per-IP limit:** at most `max_per_ip` (5) registrations per `per_ip_period` (1 h) per address prefix, after the proof is checked (Prosody's `registration_throttle_max`, which `mod_register_limits` checks at the same point). The error is `policy-violation` of type `wait`.
+6. **Invitations.** `agent-chat hub invite [--uses N] [--expires 7d]` prints a token and an `xmpp:D?register;preauth=TOKEN` URI. `<preauth xmlns='urn:xmpp:pars:0'/>` on the unauthenticated stream skips the PoW and the mode check. Only a SHA-256 of each token is stored.
+7. **Web page** (`src/http/`): a small HTTP/1.1 server with `/` (the agent instructions to copy, the server details for apps, and the sign-up form if enabled), `/agent.txt`, `/healthz` (JSON) and the sign-up API (`GET /api/challenge`, `POST /api/register`, JSON only). There is no TLS: put it behind the operator's HTTPS front end, and list that proxy in `http.trusted_proxies` so `X-Forwarded-For` gives the client address.
+8. **Web sign-up.** The browser solves the same puzzle in Web Workers (`pow-worker.js`: SHA-256 with a precomputed midstate, one worker per core), and the hub verifies it with the same `Registrar::register` as in-band registration. Web challenges are bound to the `web:` channel in the HMAC, so their lower difficulty can't be used in-band. Both channels share the escalation and the per-IP limit.
+9. **Limits:** a global `limits.max_connections` (10,000; loopback exempt) next to the per-IP caps; at most 256 HTTP connections, a 10 s read timeout, and 16 KiB for the request head and for the body.
+
+**Difficulty for the browser (measured 2026-11-10 on the dev machine, an 8-core Apple Silicon laptop)**
+
+| Solver | Hash rate |
+|---|---|
+| Native, release build (the client's loop: midstate clone + 8-byte nonce) | 5.5 MH/s per thread |
+| Native, debug build | 0.22 MH/s per thread |
+| `pow-worker.js` in V8 (Node 25) | 2.85 MH/s per thread |
+
+The reported 4 minutes for 215M hashes on 8 cores (about 0.9 MH/s in total) fits a **debug build** of `agent-chat`; the user's running daemon is `target/debug/agent-chat`. A release build solves 25 × 8 in about 6 s on 8 cores. In a browser, JavaScript is only about half as fast as native code; phones are the slow case. Default **`web_pow_bits = 22`, `web_pow_count = 8`**: about 33M expected hashes, roughly 2 s on an 8-core desktop browser and around 10 s on a typical phone (estimated at 3–4 MH/s over all cores). As `pow-registration.md` §4 says, SHA-256 PoW hardly slows a GPU, so the per-IP limit and escalation do the real work. In-band registration stays at 25 × 8.
+
+**Tests:** `tests/public.rs` covers open registration (form and legacy fields), PoW with each error condition, escalation and the throttle, invitations, password change and removal, the page, `/healthz`, web sign-up end to end over HTTP (and that a web token fails in-band), and certificate reload. `crates/cli/tests/hub_e2e.rs` covers `account register` against a PoW hub with the real client, and `hub init --public` with the certificate fallback. `register::tests` and `register::pow::tests` cover the rest. The JavaScript solver was checked by hand against Node's crypto and the §5.7 vector, and in headless Chrome: on a public-mode hub with PoW required on loopback, the page solved 22 bits × 8 in about 6 s (5.8 MH/s) and created the account. CI doesn't run JavaScript.
+
+**Not done:** XEP-0478 limits advertisement, a per-session stanza rate limit (the byte rate limit covers floods), mDNS, the local CA mode, probation for PoW accounts (§5.7), and storing the escalation state.
 
 ### M6: registration and LAN mode (2 weeks)
 
@@ -1556,6 +1681,29 @@ Other tests:
 2. The full interop suite with `failOnImpossibleTest=true` for the enabled specifications.
 3. Load test: p99 routing latency < 50 ms and RSS < 300 MB for the target load [I target].
 4. Every Must row in §4.3 has at least one automated test referenced in the checklist.
+
+### Deployment and migration from Prosody (2026-11-10)
+
+**Done (not deployed).** `server/deploy-hub/` holds a Dockerfile, a `hub.toml` matching `server/deploy/prosody.cfg.lua`, an entrypoint, and a cutover runbook (its README). `server/deploy/` is unchanged. The importer for Prosody's internal storage is in `crates/server/src/import/`.
+
+1. **Image.** A multi-stage build of `agent-chat-hub` only (no client, no libomemo-c) on `debian:bookworm-slim`, run as an unprivileged user under tini. The image's `HEALTHCHECK` is `agent-chat-hub health` (it queries the admin socket); `GET /healthz` on the HTTP port works too. The standalone binary gained `health`, `status`, `user …`, `invite` and `import-prosody` for `docker exec`.
+2. **Certificates.** As in `start-prosody.sh`, the entrypoint copies `/certs/xmpp/*.pem` from the shared volume whenever they change; the hub's file watcher (`tls.reload_interval`) swaps them in without a restart.
+3. **Importing Prosody's data is feasible, and is implemented** (`hub import-prosody DATA_PATH`; replaces §4.2's "XEP-0227 later" for Prosody). It reads Prosody's `internal` storage directly (`.dat` and `.list` files of serialized Lua) and imports:
+   - accounts with their **SCRAM-SHA-1 keys as stored**;
+   - rosters with pending requests;
+   - PEP nodes and items (OMEMO in both versions);
+   - MAM archives with **their original ids**;
+   - offline messages, block lists, private XML;
+   - rooms with affiliations and room archives.
+4. **Credentials.** Prosody 13's `internal_hashed` defaults to SHA-1 (`password_hash`), storing `stored_key`/`server_key` in hex, the salt string and `iteration_count`. These are exactly RFC 5802's verifier, so the hub verifies them unchanged. `import::prosody::tests::prosody_scram_sha1_keys_verify_as_they_are` checks the dev Prosody's real `bob.dat` against `bob-pass`.
+   - Migration 0004 makes the SHA-256 keys optional. SCRAM-SHA-256 fails for SHA-1-only accounts.
+   - The importer therefore drops SCRAM-SHA-256 from `auth.mechanisms`, leaving what Prosody offers today. Otherwise tokio-xmpp would pick SHA-256 and fail.
+   - A PLAIN login over TLS, or a password change, adds SHA-256 keys. `hub user list` shows `scram_sha256` per account.
+5. **Verified:**
+   - `tests/import.rs` imports a synthetic Prosody tree, then checks the SCRAM-SHA-1 login, roster, PEP, MAM id continuity, rooms, and the PLAIN upgrade;
+   - a manual rehearsal against a copy of the dev Prosody's `/var/lib/prosody` (15 accounts, 131 archived messages, 7 rooms): bob signed in through a real daemon with his old password, and saw his roster, history and alice's OMEMO devices;
+   - the image: `docker build -f server/deploy-hub/Dockerfile .` succeeds. A container started with that same copy mounted read-only and `PROSODY_IMPORT` set imported it once, runs the hub as uid 10001, answers STARTTLS with TLS 1.3 (temporary certificate, since no `/certs` was mounted) and `/healthz`, and Docker reported it `healthy`.
+6. **Not done:** deploying anything, a rehearsal with production's data (it needs access to the Sliplane volume), and XEP-0227 export and import.
 
 ---
 

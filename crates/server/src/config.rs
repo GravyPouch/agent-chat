@@ -39,7 +39,208 @@ pub struct Config {
     #[serde(default)]
     pub limits: Limits,
     #[serde(default)]
+    pub sm: Sm,
+    #[serde(default)]
+    pub archive: Archive,
+    #[serde(default)]
+    pub muc: Muc,
+    #[serde(default)]
+    pub registration: Registration,
+    #[serde(default)]
+    pub http: Http,
+    #[serde(default)]
     pub log: Log,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RegistrationMode {
+    /// Anyone who can reach the hub (localhost default).
+    Open,
+    /// An XEP-0445 invitation is required (LAN default).
+    Invite,
+    /// `urn:xmpp:ibr-pow:0` proof of work, or an invitation (public default).
+    Pow,
+    /// Only the admin CLI creates accounts.
+    Closed,
+}
+
+/// In-band (XEP-0077) and web registration. The PoW parameters have the
+/// same names and defaults as `mod_register_pow`'s `register_pow_*`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Registration {
+    /// Unset: `open` for a loopback-only hub, `invite` when it serves the network.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<RegistrationMode>,
+    /// Registration from non-loopback peers needs TLS.
+    pub require_tls: bool,
+    /// Loopback clients skip the proof of work and the per-IP limit.
+    pub exempt_loopback: bool,
+    pub pow_bits: u32,
+    pub pow_count: u32,
+    pub pow_max_bits: u32,
+    pub pow_ttl: HumanDuration,
+    /// Bind challenges to the client's address prefix.
+    pub pow_bind_ip: bool,
+    pub ipv4_prefix: u8,
+    pub ipv6_prefix: u8,
+    /// Each success from a prefix within the window adds a bit (up to the cap).
+    pub prefix_window: HumanDuration,
+    pub prefix_escalation_cap: u32,
+    /// Registrations per hour (all prefixes) above which difficulty rises.
+    pub load_threshold: u32,
+    pub load_escalation_cap: u32,
+    /// Prosody's `registration_throttle_max` / `registration_throttle_period`.
+    pub max_per_ip: u32,
+    pub per_ip_period: HumanDuration,
+    pub min_password_length: usize,
+    /// Offer sign-up on the HTTP page (the browser solves the puzzle).
+    pub web: bool,
+    /// Browser difficulty: JavaScript hashes far slower than native code.
+    pub web_pow_bits: u32,
+    pub web_pow_count: u32,
+}
+
+impl Default for Registration {
+    fn default() -> Self {
+        Self {
+            mode: None,
+            require_tls: true,
+            exempt_loopback: true,
+            pow_bits: 25,
+            pow_count: 8,
+            pow_max_bits: 31,
+            pow_ttl: HumanDuration(Duration::from_secs(3600)),
+            pow_bind_ip: true,
+            ipv4_prefix: 32,
+            ipv6_prefix: 56,
+            prefix_window: HumanDuration(Duration::from_secs(86_400)),
+            prefix_escalation_cap: 6,
+            load_threshold: 30,
+            load_escalation_cap: 4,
+            max_per_ip: 5,
+            per_ip_period: HumanDuration(Duration::from_secs(3600)),
+            min_password_length: 8,
+            web: false,
+            web_pow_bits: 22,
+            web_pow_count: 8,
+        }
+    }
+}
+
+/// The onboarding page and web sign-up (HTTP, no TLS: put it behind the
+/// operator's HTTPS proxy when public).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Http {
+    /// e.g. `["127.0.0.1:5280"]`; empty disables the page.
+    pub listen: Vec<String>,
+    /// Use `X-Forwarded-For` from these proxy addresses (e.g. the HTTPS
+    /// front end) as the client address.
+    pub trusted_proxies: Vec<String>,
+    /// The public URL of the page, for links (optional).
+    pub public_url: Option<String>,
+}
+
+/// XEP-0045 group chat on `<host>.<domain>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Muc {
+    pub enabled: bool,
+    /// The subdomain: `conference` → `conference.<domain>`.
+    pub host: String,
+    /// `"local-users"` (any account of this hub) or `"admins"`.
+    pub room_creation: String,
+    /// New rooms are persistent unless configured otherwise.
+    pub default_persistent: bool,
+    /// Keep an archive of every room (room MAM), like Prosody's `muc_log_all_rooms`.
+    pub archive: bool,
+    /// Messages of history a joining client gets when it doesn't say.
+    pub default_history: usize,
+    pub max_occupants: usize,
+}
+
+impl Default for Muc {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            host: "conference".into(),
+            room_creation: "local-users".into(),
+            default_persistent: true,
+            archive: true,
+            default_history: 20,
+            max_occupants: 200,
+        }
+    }
+}
+
+/// XEP-0198 stream management.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Sm {
+    /// How long a dropped session can be resumed.
+    pub resume_timeout: HumanDuration,
+    /// Unacknowledged stanzas kept per session; past that the session closes.
+    pub max_queue: usize,
+}
+
+impl Default for Sm {
+    fn default() -> Self {
+        Self {
+            resume_timeout: HumanDuration(Duration::from_secs(600)),
+            max_queue: 1000,
+        }
+    }
+}
+
+/// XEP-0313 archives and offline storage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Archive {
+    pub enabled: bool,
+    /// Messages older than this are deleted; `"never"` keeps them.
+    pub expire_after: Retention,
+    /// Largest page a MAM query returns (RSM `max` is capped to it).
+    pub max_page: usize,
+    /// Offline messages kept per account; the oldest are dropped.
+    pub max_offline_messages: usize,
+}
+
+impl Default for Archive {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            expire_after: Retention(Some(Duration::from_secs(7 * 86_400))),
+            max_page: 250,
+            max_offline_messages: 1000,
+        }
+    }
+}
+
+/// A retention period, or `"never"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention(pub Option<Duration>);
+
+impl<'de> Deserialize<'de> for Retention {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match IntOrString::deserialize(d)? {
+            IntOrString::Int(n) => Ok(Retention(Some(Duration::from_secs(n)))),
+            IntOrString::Str(s) if s.trim() == "never" => Ok(Retention(None)),
+            IntOrString::Str(s) => parse_duration(&s)
+                .map(|d| Retention(Some(d)))
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+impl Serialize for Retention {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Some(d) => s.serialize_str(&format_duration(d)),
+            None => s.serialize_str("never"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,6 +290,8 @@ pub struct Tls {
     pub key: PathBuf,
     /// Extra subject alternative names, e.g. `["hub.lan", "192.168.1.20"]`.
     pub extra_names: Vec<String>,
+    /// Files mode: how often to check the files for a renewed certificate.
+    pub reload_interval: HumanDuration,
 }
 
 impl Default for Tls {
@@ -98,6 +301,7 @@ impl Default for Tls {
             cert: PathBuf::from("tls/cert.pem"),
             key: PathBuf::from("tls/key.pem"),
             extra_names: Vec::new(),
+            reload_interval: HumanDuration(Duration::from_secs(30)),
         }
     }
 }
@@ -133,6 +337,8 @@ pub struct Limits {
     pub max_new_connections_per_ip_per_min: u32,
     pub max_resources_per_account: usize,
     pub negotiation_timeout: HumanDuration,
+    /// All client connections together (loopback is exempt).
+    pub max_connections: u64,
 }
 
 impl Default for Limits {
@@ -146,6 +352,7 @@ impl Default for Limits {
             max_new_connections_per_ip_per_min: 30,
             max_resources_per_account: 10,
             negotiation_timeout: HumanDuration(Duration::from_secs(60)),
+            max_connections: 10_000,
         }
     }
 }
@@ -185,6 +392,11 @@ impl Config {
             tls: Tls::default(),
             auth: Auth::default(),
             limits: Limits::default(),
+            sm: Sm::default(),
+            archive: Archive::default(),
+            muc: Muc::default(),
+            registration: Registration::default(),
+            http: Http::default(),
             log: Log::default(),
         }
     }
@@ -242,6 +454,26 @@ impl Config {
         if l.session_rate.0 == 0 || l.session_burst.0 == 0 {
             bail!("limits.session_rate and session_burst must be positive");
         }
+        let r = &self.registration;
+        if r.pow_bits == 0 || r.pow_bits > 48 || r.pow_max_bits < r.pow_bits || r.pow_count == 0 || r.pow_count > 64 {
+            bail!("registration: need 1 <= pow_bits <= pow_max_bits, pow_bits <= 48, 1 <= pow_count <= 64");
+        }
+        if r.web_pow_bits == 0 || r.web_pow_bits > 48 || r.web_pow_count == 0 || r.web_pow_count > 64 {
+            bail!("registration: need 1 <= web_pow_bits <= 48 and 1 <= web_pow_count <= 64");
+        }
+        if r.ipv4_prefix > 32 || r.ipv6_prefix > 128 {
+            bail!("registration: ipv4_prefix <= 32 and ipv6_prefix <= 128");
+        }
+        if r.min_password_length == 0 {
+            bail!("registration.min_password_length must be at least 1");
+        }
+        self.http_addrs()?;
+        if !matches!(self.muc.room_creation.as_str(), "local-users" | "admins") {
+            bail!("muc.room_creation must be \"local-users\" or \"admins\"");
+        }
+        if self.muc.host.is_empty() || self.muc.host.contains('.') && normalize_domain(&self.muc.host).is_err() {
+            bail!("muc.host must be a subdomain label such as \"conference\"");
+        }
         Ok(())
     }
 
@@ -256,9 +488,28 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// The registration mode in effect (§ decisions: open on localhost,
+    /// invite-only on a LAN, PoW for public hubs).
+    pub fn registration_mode(&self) -> RegistrationMode {
+        self.registration.mode.unwrap_or(if self.is_lan() {
+            RegistrationMode::Invite
+        } else {
+            RegistrationMode::Open
+        })
+    }
+
+    pub fn http_addrs(&self) -> Result<Vec<SocketAddr>> {
+        self.http.listen.iter().map(|a| parse_listen_addr(a)).collect()
+    }
+
+    /// The MUC service's JID, if enabled.
+    pub fn muc_host(&self) -> Option<String> {
+        self.muc.enabled.then(|| format!("{}.{}", self.muc.host, self.domain))
+    }
+
     /// Names for the self-signed certificate.
     pub fn certificate_names(&self) -> Vec<String> {
-        let mut names = vec![self.domain.clone(), format!("conference.{}", self.domain)];
+        let mut names = vec![self.domain.clone(), format!("{}.{}", self.muc.host, self.domain)];
         for n in &self.tls.extra_names {
             if !names.contains(n) {
                 names.push(n.clone());
@@ -427,7 +678,8 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
         "m" => Duration::from_secs(n * 60),
         "h" => Duration::from_secs(n * 3600),
         "d" => Duration::from_secs(n * 86_400),
-        u => bail!("unknown duration unit {u:?} in {s:?}; use ms, s, m, h or d"),
+        "w" => Duration::from_secs(n * 7 * 86_400),
+        u => bail!("unknown duration unit {u:?} in {s:?}; use ms, s, m, h, d or w"),
     })
 }
 
@@ -577,6 +829,24 @@ mod tests {
         assert_eq!(cfg.limits.session_rate, ByteRate(5000));
         assert_eq!(cfg.listen, Listen::default());
         assert!(toml::from_str::<Config>("domain = \"x\"\n[limits]\nmax_stanza = 1\n").is_err());
+    }
+
+    /// server/deploy-hub/hub.toml stays loadable and matches production's
+    /// Prosody settings where they map.
+    #[test]
+    fn deployment_template_is_valid() {
+        let cfg: Config = toml::from_str(include_str!("../../../server/deploy-hub/hub.toml")).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.registration_mode(), RegistrationMode::Pow);
+        assert_eq!((cfg.registration.pow_bits, cfg.registration.pow_count), (25, 8));
+        assert_eq!(
+            cfg.archive.expire_after,
+            Retention(Some(Duration::from_secs(7 * 86_400)))
+        );
+        assert_eq!(cfg.archive.max_page, 250);
+        assert_eq!(cfg.muc_host().as_deref(), Some("conference.agentchat.isagentproof.com"));
+        assert_eq!(cfg.tls.mode, TlsMode::Files);
+        assert!(cfg.is_lan());
     }
 
     #[test]

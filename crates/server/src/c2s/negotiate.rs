@@ -20,17 +20,21 @@ use xmpp_parsers::jid::{BareJid, FullJid, Jid, ResourcePart};
 use xmpp_parsers::ns;
 use xmpp_parsers::sasl::{Challenge, Success};
 use xmpp_parsers::sasl_cb::{SaslChannelBinding, Type as CbType};
+use xmpp_parsers::sm::StreamManagement;
 use xmpp_parsers::starttls::{Proceed, StartTls};
 use xmpp_parsers::stream_error::{DefinedCondition as StreamCondition, StreamError};
 use xmpp_parsers::stream_features::StreamFeatures;
 
 use super::sasl::scram::{self, CbFlag, Exchange, ScramError};
 use super::sasl::{self, Channel, Failure, Mechanism, plain};
+use super::sm::{self, Conn, NS_CSI, NS_SM, ResumeRequest};
 use super::{Io, Stream, close, close_with_error, timeouts};
 use crate::accounts::normalize_username;
 use crate::hub::HubCtx;
 use crate::net::io::{Budget, ConnIo, RateLimit, Transport};
+use crate::net::listener::AdmissionGuard;
 use crate::net::tls;
+use crate::register::{NS_IBR_TOKEN, NS_PARS, NS_REGISTER, RegError, Registrar};
 use crate::stanza::{self, Condition, Kind, NS_CLIENT, NS_SESSION};
 use crate::stats::Stats;
 use crate::store::{AccountState, ScramKeys};
@@ -45,12 +49,19 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A connection that finished negotiation and bound a resource.
 pub struct Bound {
-    pub stream: Stream,
-    pub budget: Arc<Budget>,
+    pub conn: Conn,
     pub jid: FullJid,
     pub conn_id: u64,
     pub outbox: mpsc::Receiver<Element>,
     pub kick: Arc<Kick>,
+}
+
+/// How negotiation ended.
+pub enum Negotiated {
+    /// A new session.
+    Bound(Box<Bound>),
+    /// The connection was handed to a hibernating session (XEP-0198).
+    Resumed,
 }
 
 struct Authenticated {
@@ -59,7 +70,10 @@ struct Authenticated {
 
 /// What we know about the channel so far.
 struct ChannelState {
+    ip: IpAddr,
     loopback: bool,
+    /// A valid XEP-0445 token from `<preauth/>` on this stream.
+    invite: Option<String>,
     /// The peer's network prefix (/24 or /56), for throttling and logs.
     prefix: String,
     tls: bool,
@@ -111,7 +125,13 @@ async fn next(stream: &mut Stream, budget: &Budget, ctx: &HubCtx) -> Next {
 }
 
 /// Run stages A–C. `Ok(None)` means the connection ended (already handled).
-pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id: u64) -> Result<Option<Bound>> {
+pub async fn negotiate(
+    ctx: &Arc<HubCtx>,
+    tcp: TcpStream,
+    peer: IpAddr,
+    conn_id: u64,
+    guard: AdmissionGuard,
+) -> Result<Option<Negotiated>> {
     let loopback = is_loopback(peer);
     let limits = &ctx.config.limits;
     let budget = Budget::new(limits.unauth_stanza_bytes.0 as usize);
@@ -121,7 +141,9 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
         .await
         .context("reading the stream header")?;
     let mut ch = ChannelState {
+        ip: peer,
         loopback,
+        invite: None,
         prefix: ip_prefix(peer),
         tls: false,
         cb_data: None,
@@ -150,15 +172,11 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
                     return Ok(None);
                 };
                 if el.is("starttls", ns::TLS) {
-                    let Some(material) = ctx.tls.as_ref().filter(|_| !ch.tls) else {
-                        close_with_error(
-                            &mut stream,
-                            StreamCondition::PolicyViolation,
-                            "STARTTLS is not available",
-                        )
-                        .await;
+                    if ch.tls {
+                        close_with_error(&mut stream, StreamCondition::PolicyViolation, "TLS is already on").await;
                         return Ok(None);
-                    };
+                    }
+                    let material = ctx.tls.current();
                     stream.send(&Proceed).await?;
                     let io = stream.into_inner();
                     // Bytes pipelined after <starttls/> would be read as if
@@ -217,7 +235,11 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
                         SaslOutcome::End => return Ok(None),
                     }
                 }
-                // Stanzas (and registration, M6) before authentication.
+                // In-band registration (XEP-0077) and invitations (XEP-0445).
+                if let Some(reply) = registration_iq(ctx, &el, &mut ch).await {
+                    stream.send(&reply).await?;
+                    continue;
+                }
                 close_with_error(&mut stream, StreamCondition::NotAuthorized, "Authenticate first").await;
                 return Ok(None);
             }
@@ -226,8 +248,10 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
         // Stage C: authenticated, before bind.
         let mut features = StreamFeatures {
             bind: Some(BindFeature { required: false }),
+            stream_management: Some(StreamManagement { optional: false }),
             ..Default::default()
         };
+        features.others.push(Element::bare("csi", NS_CSI));
         let mut session = Element::bare("session", NS_SESSION);
         session.append_child(Element::bare("optional", NS_SESSION));
         features.others.push(session);
@@ -238,6 +262,29 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
             let Next::El(el) = next(&mut stream, &budget, ctx).await else {
                 return Ok(None);
             };
+            if el.is("resume", NS_SM) {
+                // XEP-0198 §5: continue a hibernating session instead of binding.
+                let h = el.attr("h").and_then(|h| h.parse::<u32>().ok());
+                let handle = el
+                    .attr("previd")
+                    .and_then(|id| ctx.sm.get(id))
+                    .filter(|hd| hd.bare == bare);
+                if let (Some(h), Some(hd)) = (h, handle) {
+                    let conn = Conn { stream, budget, guard };
+                    // If the session ended in between, the connection just closes.
+                    let _ = hd.tx.try_send(ResumeRequest { conn, h });
+                    return Ok(Some(Negotiated::Resumed));
+                }
+                stream.send(&sm::failed("item-not-found", 0)).await?;
+                continue;
+            }
+            if el.is("enable", NS_SM) {
+                stream.send(&sm::failed("unexpected-request", 0)).await?;
+                continue;
+            }
+            if el.ns() == NS_CSI {
+                continue;
+            }
             if Kind::of(&el) != Some(Kind::Iq) {
                 close_with_error(&mut stream, StreamCondition::NotAuthorized, "Bind a resource first").await;
                 return Ok(None);
@@ -278,14 +325,13 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
                     let mut result = stanza::iq_result(&el, Some(&ctx.domain), Some(response));
                     stanza::remove_attr(&mut result, "to");
                     stream.send(&result).await?;
-                    return Ok(Some(Bound {
-                        stream,
-                        budget,
+                    return Ok(Some(Negotiated::Bound(Box::new(Bound {
+                        conn: Conn { stream, budget, guard },
                         jid,
                         conn_id,
                         outbox,
                         kick,
-                    }));
+                    }))));
                 }
                 Err(cond) => {
                     tracing::info!(account = %bare, "bind refused: {}", cond.name());
@@ -333,9 +379,71 @@ async fn respond_to_header(ctx: &HubCtx, mut accepted: AcceptedStream<Io>) -> Re
     Ok(None)
 }
 
+/// Registration IQs on an unauthenticated stream. `None`: not one of ours.
+async fn registration_iq(ctx: &HubCtx, el: &Element, ch: &mut ChannelState) -> Option<Element> {
+    if Kind::of(el) != Some(Kind::Iq) || el.attr("to").is_some_and(|t| t != ctx.domain) {
+        return None;
+    }
+    let payload = el.children().next()?;
+    let ty = stanza::stanza_type(el);
+    let is_register = payload.is("query", NS_REGISTER);
+    let is_preauth = payload.is("preauth", NS_PARS);
+    if !(is_register || is_preauth) || !matches!(ty, "get" | "set") {
+        return None;
+    }
+    let reg = &ctx.registrar;
+    if !reg.offered(ch.ip, ch.tls) {
+        return stanza::error_reply_with(
+            el,
+            Condition::NotAllowed,
+            Some(&ctx.domain),
+            Some("Registration is not available on this connection (it needs TLS)."),
+            None,
+        );
+    }
+    if is_preauth {
+        let token = payload.attr("token").unwrap_or_default().to_owned();
+        if ty == "set" && reg.invite_valid(&token).await {
+            ch.invite = Some(token);
+            return Some(stanza::iq_result(el, Some(&ctx.domain), None));
+        }
+        return RegError::BadInvite.reply(el, &ctx.domain);
+    }
+    if ty == "get" {
+        let form = reg.form_query(ch.ip, ch.invite.is_some());
+        return Some(stanza::iq_result(el, Some(&ctx.domain), Some(form)));
+    }
+    if payload.has_child("remove", NS_REGISTER) {
+        return stanza::error_reply(el, Condition::BadRequest, Some(&ctx.domain));
+    }
+    let Some(req) = Registrar::parse_set(payload, ch.ip, ch.invite.clone()) else {
+        return stanza::error_reply_with(
+            el,
+            Condition::BadRequest,
+            Some(&ctx.domain),
+            Some("A username and a password are required."),
+            None,
+        );
+    };
+    match reg.register(req).await {
+        Ok(_) => {
+            ch.invite = None;
+            Some(stanza::iq_result(el, Some(&ctx.domain), None))
+        }
+        Err(e) => e.reply(el, &ctx.domain),
+    }
+}
+
 fn pre_auth_features(ctx: &HubCtx, ch: &ChannelState, offered: &[Mechanism]) -> StreamFeatures {
     let mut f = StreamFeatures::default();
-    if !ch.tls && ctx.tls.is_some() {
+    if ctx.registrar.offered(ch.ip, ch.tls) {
+        f.in_band_registration = true;
+        if ctx.registrar.mode() == crate::config::RegistrationMode::Pow {
+            f.others.push(Element::bare("register", crate::register::pow::NS));
+        }
+        f.others.push(Element::bare("register", NS_IBR_TOKEN));
+    }
+    if !ch.tls {
         f.starttls = Some(StartTls {
             required: !(ch.loopback && ctx.config.listen.allow_plaintext_loopback),
         });
@@ -507,13 +615,19 @@ async fn scram_exchange(
     let account = ctx.store.account(&ctx.domain, &username).await?;
     // Unknown users get a stable fake salt, the normal iteration count and
     // random keys, so the exchange is indistinguishable until the end.
+    let random_keys = || ScramKeys {
+        stored_key: random_bytes::<32>()[..hash.output_len()].to_vec(),
+        server_key: random_bytes::<32>()[..hash.output_len()].to_vec(),
+    };
     let (salt, iterations, scram_keys) = match &account {
         Some(a) => (
             a.credentials.salt.clone(),
             a.credentials.iterations,
             match hash {
                 scram::Hash::Sha1 => a.credentials.sha1.clone(),
-                scram::Hash::Sha256 => a.credentials.sha256.clone(),
+                // An imported account without SHA-256 keys: fails like a
+                // wrong password (offer only SCRAM-SHA-1 on migrated hubs).
+                scram::Hash::Sha256 => a.credentials.sha256.clone().unwrap_or_else(random_keys),
             },
         ),
         None => (
@@ -572,27 +686,52 @@ async fn plain_exchange(ctx: &Arc<HubCtx>, initial: &[u8], ch: &ChannelState) ->
         return Ok(SaslOutcome::Failure(Failure::TemporaryAuthFailure));
     }
     let account = ctx.store.account(&ctx.domain, &username).await?;
-    let (salt, iterations, stored) = match &account {
-        Some(a) => (
-            a.credentials.salt.clone(),
-            a.credentials.iterations,
-            a.credentials.sha256.stored_key.clone(),
-        ),
+    // Verify with SHA-256 keys, or SHA-1 keys for imported accounts.
+    let (salt, iterations, hash, stored) = match &account {
+        Some(a) => match &a.credentials.sha256 {
+            Some(k) => (
+                a.credentials.salt.clone(),
+                a.credentials.iterations,
+                scram::Hash::Sha256,
+                k.stored_key.clone(),
+            ),
+            None => (
+                a.credentials.salt.clone(),
+                a.credentials.iterations,
+                scram::Hash::Sha1,
+                a.credentials.sha1.stored_key.clone(),
+            ),
+        },
         None => (
             sasl::fake_salt(&ctx.mock_key, &ctx.domain, &username),
             ctx.config.auth.scram_iterations,
+            scram::Hash::Sha256,
             random_bytes::<32>().to_vec(),
         ),
     };
-    let password = msg.password;
+    let password = zeroize::Zeroizing::new(msg.password);
+    let prepped = stringprep::saslprep(&password)
+        .ok()
+        .map(|p| zeroize::Zeroizing::new(p.into_owned()));
     // Same PBKDF2 work for known and unknown users.
-    let derived = tokio::task::spawn_blocking(move || {
-        stringprep::saslprep(&password)
-            .ok()
-            .map(|p| scram::Hash::Sha256.keys(&p, &salt, iterations).stored_key)
-    })
-    .await?;
+    let check = prepped.clone();
+    let salt2 = salt.clone();
+    let derived =
+        tokio::task::spawn_blocking(move || check.map(|p| hash.keys(&p, &salt2, iterations).stored_key)).await?;
     let ok = derived.is_some_and(|d| bool::from(d.ct_eq(&stored)));
+    if ok
+        && hash == scram::Hash::Sha1
+        && let (Some(a), Some(p)) = (&account, prepped)
+    {
+        // Upgrade an imported account: we have the password now.
+        let mut creds = a.credentials.clone();
+        let keys = tokio::task::spawn_blocking(move || scram::Hash::Sha256.keys(&p, &salt, iterations)).await?;
+        creds.sha256 = Some(keys);
+        match ctx.store.set_credentials(&ctx.domain, &a.localpart, creds).await {
+            Ok(_) => tracing::info!(user = %a.localpart, "added SCRAM-SHA-256 keys to an imported account"),
+            Err(e) => tracing::warn!("upgrading imported credentials failed: {e:#}"),
+        }
+    }
     let outcome = match account {
         Some(a) if ok && a.state == AccountState::Active => SaslOutcome::Success {
             localpart: a.localpart,
