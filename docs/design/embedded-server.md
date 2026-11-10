@@ -1,6 +1,6 @@
 # Embedded XMPP server ("agent-chat hub"): implementation plan
 
-- **Status:** being implemented. Each milestone in §9 has status notes; M1–M3 are done.
+- **Status:** being implemented. Each milestone in §9 has status notes; M1–M4 are done.
 - **Date:** 2026-11-10
 - **Decision already made by the user:**
   - We build a small XMPP server of our own that `agent-chat` can run itself: a local hub for people and AI agents on one machine or a LAN.
@@ -1542,6 +1542,26 @@ Also tested: unacknowledged messages go offline when resumption times out, `<res
 3. Harness: publish-options mismatch gives `precondition-not-met`; `max_items=max` is accepted; a non-contact can read an `open` node but not a `presence` node.
 4. Harness: a contact advertising `urn:xmpp:omemo:2:devices+notify` receives a notification on publish, and the last item when it comes online.
 5. Interop suite: XEP-0060 and XEP-0163 tests.
+
+#### M4 status and implementation notes (2026-11-10)
+
+**Done.** PEP with publish-options, access models, owner configuration, `+notify` notifications and last items; both OMEMO versions work.
+
+| Test | Where |
+|---|---|
+| 1 | `crates/cli/tests/hub_e2e.rs::omemo_between_two_daemons`: OMEMO:2 with `--require-encryption`, both directions. Daemon to daemon always picks OMEMO:2, so legacy OMEMO is covered by test 2. |
+| 2 | `XMPP_SERVER=hub dev/omemo-bot/interop-test.sh` prints the same four `PASS` lines as against Prosody: python-omemo (slixmpp-omemo) and agent-chat, OMEMO:2 and legacy, both directions. Run by hand on 2026-11-10; it needs Docker. |
+| 3 | `tests/m4.rs::at3_publish_options_and_access_models`: `max_items=max` keeps several bundles, mismatched options give `conflict` + `precondition-not-met`, publishing again without options works, a non-contact reads an `open` node but gets `not-authorized` on a `presence` node, missing nodes give `item-not-found`, owner configure and delete, disco#items. |
+| 4 | `at4_notify_on_publish_and_last_item_on_coming_online`: notifications follow `+notify` (a tune publish doesn't reach a client that only wants device lists), a new resource gets the last item from cached caps without another disco query, and owners are notified too. |
+| 5 | The interop suite isn't wired into CI yet. |
+
+**Design as built and deviations**
+1. **`dev/lib/server.sh`** factors the server-specific lines of the dev scripts, as §8.3 proposed: `XMPP_SERVER=hub` starts a throwaway hub for `localhost` on a free loopback port in the script's temporary `AGENT_CHAT_HOME`, and the bot containers reach it through `host.docker.internal`. There is no `dev/hub/` Docker setup; the hub runs on the host. The Docker image is part of the deployment work (`server/deploy-hub/`).
+2. **Notifications are actor messages.** The publisher's actor sends a `PepEvent` to each subscriber's actor: the account's own, plus contacts with a `from`/`both` subscription (not for `whitelist` nodes). Each recipient forwards it to its own available resources that `+notify` the node. Last items work the same way in reverse: a resource that comes online, or whose caps become known, asks its own actor and those of contacts it is subscribed to.
+3. **Access models.** `open`, `presence`, `roster` (treated as `presence`), and `whitelist` and `authorize` (owner only; there are no affiliation lists). The default is `presence` with `max_items = 1`; `max` means 1000 items.
+4. **publish-options** must match an existing node's configuration. Unknown `pubsub#` fields are ignored rather than rejected, because clients differ in what they send. A new node is created with the options.
+5. **Not supported:** explicit pubsub subscriptions (`feature-not-implemented`; PEP delivery follows presence and `+notify`), item expiry, RSM on items, and notifications to non-contacts who sent directed presence.
+6. **Items** come back oldest first; the latest item is last.
 
 ### M5: group chat (2.5–3 weeks)
 

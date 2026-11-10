@@ -299,6 +299,61 @@ fn offline_daemon_catches_up_exactly_once() {
     assert_eq!(late.as_array().unwrap().len(), 0, "{late}");
 }
 
+/// `send --require-encryption` (retried while the peer's devices are still
+/// being published), then the receiving side's `inbox` entry for it.
+fn encrypted_exchange(env: &Env, from: &str, to: &str, to_jid: &str, body: &str) -> Value {
+    let start = Instant::now();
+    loop {
+        let out = env.run(&["--profile", from, "send", to_jid, body, "--require-encryption"]);
+        if out.status.success() {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "encrypted send failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let start = Instant::now();
+    loop {
+        let inbox = env.json(&["--profile", to, "inbox"]);
+        if let Some(m) = inbox.as_array().unwrap().iter().find(|m| m["body"] == body) {
+            return m.clone();
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{to} never got {body:?}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// M4 acceptance test 1 (§8.3 scenario 5): OMEMO between two agent-chat
+/// daemons over the hub's PEP, both directions. The daemons prefer
+/// OMEMO:2; legacy OMEMO is covered by `dev/omemo-bot/interop-test.sh`
+/// with `XMPP_SERVER=hub` (python-omemo).
+#[test]
+fn omemo_between_two_daemons() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    hub_with_profiles(&env, &[("alice", "alice-password-123"), ("bob", "bob-password-4567")]);
+    for (from, to, to_jid, from_jid) in [
+        ("bob", "alice", "alice@hubtest.local", "bob@hubtest.local"),
+        ("alice", "bob", "bob@hubtest.local", "alice@hubtest.local"),
+    ] {
+        let body = format!("encrypted hello from {from}");
+        let m = encrypted_exchange(&env, from, to, to_jid, &body);
+        assert_eq!(m["from"], from_jid);
+        assert_eq!(m["encryption"]["protocol"], "omemo2", "{m}");
+        assert!(m["encryption"].get("error").is_none_or(|e| e.is_null()), "{m}");
+    }
+    // Each side sees the other's device.
+    let devices = env.json(&["--profile", "alice", "omemo", "devices", "bob@hubtest.local"]);
+    assert!(!devices.as_array().unwrap().is_empty(), "{devices}");
+}
+
 #[test]
 fn account_add_hub_creates_and_configures_an_account() {
     if !hub_server_selected() {

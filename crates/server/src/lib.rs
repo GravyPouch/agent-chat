@@ -12,6 +12,7 @@ pub mod admin;
 pub mod c2s;
 pub mod config;
 pub mod disco;
+pub mod forms;
 pub mod hub;
 pub mod mam;
 pub mod net;

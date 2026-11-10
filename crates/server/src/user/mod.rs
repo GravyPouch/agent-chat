@@ -158,6 +158,25 @@ impl Session {
     fn available(&self) -> bool {
         self.presence.is_some()
     }
+
+    /// Whether this resource `+notify`s `node` (XEP-0163 §4).
+    fn notifies(&self, node: &str) -> bool {
+        self.features
+            .as_ref()
+            .is_some_and(|f| f.iter().any(|v| v.strip_suffix("+notify") == Some(node)))
+    }
+
+    fn notify_nodes(&self) -> Vec<String> {
+        self.features
+            .as_ref()
+            .map(|f| {
+                f.iter()
+                    .filter_map(|v| v.strip_suffix("+notify"))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// A request the server sent to one of our resources (caps disco).
@@ -176,6 +195,8 @@ pub struct UserActor {
     roster: Option<BTreeMap<String, RosterItem>>,
     blocklist: Option<BTreeSet<String>>,
     pending: HashMap<String, Pending>,
+    /// Our PEP service's node configurations, loaded on first use.
+    pep: Option<pep::Nodes>,
 }
 
 pub(crate) fn spawn(bare: BareJid, id: u64, router: Arc<Router>, rx: mpsc::Receiver<UserMsg>, max_resources: usize) {
@@ -189,6 +210,7 @@ pub(crate) fn spawn(bare: BareJid, id: u64, router: Arc<Router>, rx: mpsc::Recei
         roster: None,
         blocklist: None,
         pending: HashMap::new(),
+        pep: None,
     };
     tokio::spawn(actor.run(rx));
 }

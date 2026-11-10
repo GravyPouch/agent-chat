@@ -1,26 +1,34 @@
 #!/usr/bin/env bash
 # OMEMO interop regression test against python-omemo (slixmpp-omemo), both
-# protocol versions, both directions. Needs the dev Prosody running
-# (dev/prosody/setup.sh) and a built CLI (cargo build).
+# protocol versions, both directions. Needs a built CLI (cargo build) and
+# either the dev Prosody (dev/prosody/setup.sh) or, with XMPP_SERVER=hub, a
+# throwaway agent-chat hub that this script starts and stops.
 #
 #   dev/omemo-bot/interop-test.sh
+#   XMPP_SERVER=hub dev/omemo-bot/interop-test.sh
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 AC="$root/target/debug/agent-chat"
+export AC
 export AGENT_CHAT_HOME="$(mktemp -d)"
+# shellcheck source=../lib/server.sh
+source "$root/dev/lib/server.sh"
+export XMPP_SERVER
 user="interop$RANDOM"
 fail=0
 
 cleanup() {
   "$AC" --profile "$user" daemon stop >/dev/null 2>&1 || true
   docker rm -f "omemo-bot-it2-$user" "omemo-bot-itl-$user" >/dev/null 2>&1 || true
+  server_stop_hub
   rm -rf "$AGENT_CHAT_HOME"
 }
 trap cleanup EXIT
 
-docker exec agent-chat-prosody prosodyctl register "$user" localhost "$user-pass" >/dev/null
+server_start_hub
+server_register "$user" "$user-pass"
 echo "$user-pass" | "$AC" --profile "$user" account add "$user@localhost" \
-  --host 127.0.0.1 --insecure-plaintext --store config --password-stdin >/dev/null
+  --host 127.0.0.1 --port "$(server_port)" --insecure-plaintext --store config --password-stdin >/dev/null
 "$AC" --profile "$user" inbox --consumer it >/dev/null
 
 # Bots greet us first: they initiate the key exchange.
