@@ -183,6 +183,39 @@ enum AccountCmd {
     },
     /// Show the configured account and connection state.
     Show,
+    /// Create a new account on a server (solving its proof-of-work challenge
+    /// if it has one) and use it for this profile.
+    ///
+    /// Exit codes: 0 registered, 1 error, 2 timeout, 5 refused by the server,
+    /// 6 username taken.
+    Register {
+        /// Server domain, e.g. example.org.
+        #[arg(long)]
+        server: String,
+        /// Username (default: generated, like agent-k2m9qx4td7).
+        #[arg(long)]
+        username: Option<String>,
+        /// Read the password from stdin (default: generate a strong one).
+        #[arg(long)]
+        password_stdin: bool,
+        /// Server host (skips DNS SRV lookup).
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        port: Option<u16>,
+        /// Unencrypted connection; only allowed to localhost (development).
+        #[arg(long)]
+        insecure_plaintext: bool,
+        /// Solver threads (default: all cores).
+        #[arg(long)]
+        threads: Option<usize>,
+        /// Give up after this many seconds (whole operation).
+        #[arg(long, default_value_t = 900)]
+        timeout: u64,
+        /// Where to keep the password.
+        #[arg(long, value_enum, default_value_t = Storage::Keychain)]
+        store: Storage,
+    },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -345,6 +378,45 @@ async fn run(cli: Cli) -> Result<()> {
         }
     }
 
+    // Registration runs before there is an account (no daemon needed yet).
+    if let Cmd::Account(AccountCmd::Register { .. }) = &cli.cmd {
+        let Cmd::Account(AccountCmd::Register {
+            server,
+            username,
+            password_stdin,
+            host,
+            port,
+            insecure_plaintext,
+            threads,
+            timeout,
+            store,
+        }) = cli.cmd
+        else {
+            unreachable!()
+        };
+        return register(
+            &profile,
+            agent_chat_daemon::register::RegisterOptions {
+                domain: server,
+                username,
+                password: if password_stdin {
+                    read_password("new account", true)?
+                } else {
+                    agent_chat_daemon::register::generate_password()
+                },
+                host: host.clone(),
+                port,
+                insecure_plaintext,
+                threads: threads.unwrap_or_else(|| {
+                    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+                }),
+                timeout: std::time::Duration::from_secs(timeout),
+            },
+            store,
+        )
+        .await;
+    }
+
     let launcher = DaemonLauncher::new(std::env::current_exe()?);
     let client = IpcClient::connect_or_spawn(&profile, &launcher).await?;
 
@@ -461,6 +533,7 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Cmd::Account(AccountCmd::Register { .. }) => unreachable!("handled before connecting"),
         Cmd::Account(AccountCmd::Show) => {
             let status: StatusInfo = client.call(Request::Status).await?;
             print_status(fmt, &status);
@@ -640,6 +713,54 @@ async fn run(cli: Cli) -> Result<()> {
 }
 
 fn ok(_: serde_json::Value) {}
+
+/// `account register`: progress as JSON lines on stderr, one result object on stdout.
+async fn register(
+    profile: &Profile,
+    opts: agent_chat_daemon::register::RegisterOptions,
+    store: Storage,
+) -> Result<()> {
+    use agent_chat_daemon::register::{Progress, register as do_register};
+    let progress = |p: Progress| eprintln!("{}", serde_json::to_string(&p).expect("serializable"));
+    let registered = match do_register(&opts, &progress).await {
+        Ok(r) => r,
+        Err(e) => {
+            println!(
+                "{}",
+                serde_json::json!({"ok": false, "error": e.kind(), "message": e.to_string()})
+            );
+            return Err(Exit(e.exit_code(), String::new()).into());
+        }
+    };
+    // Use the new account for this profile (starts the daemon and logs in).
+    let launcher = DaemonLauncher::new(std::env::current_exe()?);
+    let client = IpcClient::connect_or_spawn(profile, &launcher).await?;
+    let status: StatusInfo = client
+        .call(Request::SetAccount(AccountParams {
+            jid: registered.jid.clone(),
+            password: opts.password.clone(),
+            host: opts.host.clone(),
+            port: opts.port,
+            insecure_plaintext: opts.insecure_plaintext,
+            password_storage: match store {
+                Storage::Keychain => PasswordStorage::Keychain,
+                Storage::Config => PasswordStorage::ConfigFile,
+            },
+        }))
+        .await?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "ok": true,
+            "jid": registered.jid,
+            "profile": profile.name,
+            "state": status.state,
+            "password_stored": match store { Storage::Keychain => "keychain", Storage::Config => "config" },
+            "pow": registered.pow,
+        })
+    );
+    Ok(())
+}
 
 fn read_password(jid: &str, from_stdin: bool) -> Result<String> {
     if from_stdin {

@@ -4,6 +4,7 @@ pub mod config;
 pub mod core;
 pub mod daemon;
 pub mod omemo;
+pub mod register;
 pub mod server;
 pub mod store;
 pub mod xmpp;

@@ -13,7 +13,8 @@ modules_enabled = {
     "mam";          -- XEP-0313
     "smacks";       -- XEP-0198
     "csi_simple";
-    "register";     -- XEP-0077 (used by the registration tests)
+    "register";     -- XEP-0077
+    "register_pow"; -- proof-of-work gate (server/prosody/mod_register_pow)
     "admin_shell";
 }
 
@@ -29,6 +30,13 @@ archive_expires_after = "1w"
 max_archive_query_results = 250
 
 log = { info = "*console" }
+
+-- Proof-of-work registration: low difficulty so tests run in well under a
+-- second (production default is 25 bits).
+register_pow_bits = 16
+register_pow_max_bits = 22
+registration_throttle_max = 1000
+registration_throttle_period = 60
 
 VirtualHost "localhost"
 

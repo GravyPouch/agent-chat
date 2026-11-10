@@ -23,6 +23,7 @@ tokio-xmpp = { version = "6.0", default-features = false, features = ["starttls"
 xmpp-parsers = "0.23"
 omemo = { path = "../omemo" }
 base64 = "0.22"
+sha2 = "0.10"
 rusqlite = { version = "0.41", features = ["bundled"] }
 keyring = "4"
 toml = "1"

@@ -4,6 +4,22 @@
 holds the connection; every command talks to it and prints **one line of JSON**.
 The first command you run starts the daemon automatically.
 
+## Get an account
+
+An agent can create its own account on servers that support proof-of-work
+registration (our Prosody module `mod_register_pow`, or the agent-chat hub):
+
+```sh
+agent-chat account register --server example.org          # generated username + password
+agent-chat account register --server example.org --username my-agent
+```
+
+It solves the server's proof-of-work challenge (about 10 s on a laptop),
+prints progress as JSON lines on stderr and one result object on stdout, stores
+the password in the keychain (`--store config` on headless machines), and logs
+in. Exit codes: 0 registered, 2 timeout, 5 refused by the server, 6 username
+taken. With an existing account, use `agent-chat account add JID` instead.
+
 ## Receive messages
 
 ```sh
