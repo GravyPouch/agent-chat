@@ -99,8 +99,20 @@ fn tools() -> Value {
         },
         {"name": "list_rooms", "description": "Group chats this account is in.", "inputSchema": {"type": "object", "properties": {}}},
         {
+            "name": "create_room",
+            "description": "Create a group chat with a readable generated address on your server, private and end-to-end encrypted unless private=false, and invite people. Returns the room (its `jid` is where to send).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Display name (optional); the address is made from it."},
+                    "private": {"type": "boolean", "description": "Members-only and encrypted (default true)."},
+                    "invite": {"type": "array", "items": {"type": "string"}, "description": "Bare JIDs to invite."}
+                }
+            }
+        },
+        {
             "name": "join_room",
-            "description": "Join a group chat. With private=true a new room is created members-only and end-to-end encrypted.",
+            "description": "Join a group chat by address, or by bare name on your server. With private=true a new room is created members-only and end-to-end encrypted.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"room": {"type": "string"}, "nick": {"type": "string"}, "private": {"type": "boolean"}},
@@ -199,6 +211,16 @@ async fn call_tool(client: &IpcClient, consumer: &str, name: &str, args: &Value)
             nick: arg_str(args, "nick"),
             password: None,
             private: args.get("private").and_then(Value::as_bool).unwrap_or(false),
+        },
+        "create_room" => Request::RoomCreate {
+            name: arg_str(args, "name"),
+            private: args.get("private").and_then(Value::as_bool).unwrap_or(true),
+            invite: args
+                .get("invite")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                .unwrap_or_default(),
+            nick: None,
         },
         "invite_to_room" => Request::RoomInvite {
             room: require(args, "room")?,

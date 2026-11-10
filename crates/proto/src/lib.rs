@@ -9,6 +9,7 @@ pub mod ipc;
 pub mod model;
 pub mod paths;
 pub mod phone;
+pub mod rooms;
 
 pub use client::{CallError, DaemonLauncher, IpcClient};
 pub use paths::Profile;

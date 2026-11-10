@@ -222,6 +222,19 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             Ok(Value::Null)
         }
         Request::Rooms => json(core.rooms().map_err(internal)?),
+        Request::RoomCreate {
+            name,
+            private,
+            invite,
+            nick,
+        } => {
+            let handle = core.session()?;
+            json(actions::create_room(core, &handle, name, private, invite, nick).await?)
+        }
+        Request::RoomService => {
+            let handle = core.session()?;
+            Ok(serde_json::json!({ "service": actions::muc_service(core, &handle).await }))
+        }
         Request::RoomJoin {
             jid,
             nick,

@@ -365,6 +365,24 @@ enum ContactsCmd {
 #[derive(Subcommand)]
 enum RoomsCmd {
     List,
+    /// Create a group chat with a readable generated address (like
+    /// quiet-otter-42@conference.example.org); private and encrypted unless
+    /// --public.
+    Create {
+        /// Display name; the address is made from it (default: generated).
+        #[arg(long)]
+        name: Option<String>,
+        /// A public room: not members-only, messages not encrypted.
+        #[arg(long)]
+        public: bool,
+        /// Invite someone (repeatable).
+        #[arg(long = "invite", value_name = "JID")]
+        invite: Vec<String>,
+        #[arg(long)]
+        nick: Option<String>,
+    },
+    /// Join a room by address, or by bare name on your server's group chat
+    /// service.
     Join {
         jid: String,
         #[arg(long)]
@@ -956,6 +974,29 @@ async fn run(cli: Cli) -> Result<()> {
                             );
                         }
                     }
+                }
+            }
+            RoomsCmd::Create {
+                name,
+                public,
+                invite,
+                nick,
+            } => {
+                let room: Room = client
+                    .call(Request::RoomCreate {
+                        name,
+                        private: !public,
+                        invite,
+                        nick,
+                    })
+                    .await?;
+                match fmt {
+                    Format::Json => print_json(&room),
+                    Format::Text => println!(
+                        "created {}{}",
+                        room.jid,
+                        if room.private { " (private, encrypted)" } else { "" }
+                    ),
                 }
             }
             RoomsCmd::Join {

@@ -740,14 +740,15 @@ fn on_room_presence(core: &Arc<Core>, handle: &SessionHandle, room: &str, from: 
         let core = core.clone();
         let handle = handle.clone();
         let room = room.to_owned();
-        let private = core
+        let (private, name) = core
             .state()
             .rooms
             .get(&room.to_lowercase())
-            .is_some_and(|r| r.create_private);
+            .map(|r| (r.create_private, r.create_name.clone()))
+            .unwrap_or_default();
         tokio::spawn(async move {
             let result = if created {
-                crate::xmpp::actions::configure_new_room(&core, &handle, &room, private).await
+                crate::xmpp::actions::configure_new_room(&core, &handle, &room, private, name.as_deref()).await
             } else {
                 crate::xmpp::actions::refresh_room_info(&core, &handle, &room).await
             };

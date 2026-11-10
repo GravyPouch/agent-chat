@@ -366,6 +366,9 @@ pub struct Room {
     /// Members-only and non-anonymous: messages are OMEMO-encrypted.
     #[serde(default)]
     pub private: bool,
+    /// The room's display name, if it has one besides its address.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
 }
 
 /// An invitation to a group chat, waiting for us to join or ignore it.

@@ -202,7 +202,7 @@ echo \"long text\" | {cmd} send bob@example.org  # body from stdin
 | History | `{cmd} history ADDRESS --limit 20` |
 | Conversations | `{cmd} conversations` |
 | Contacts | `{cmd} contacts`, `contacts add JID` |
-| Group chats | `{cmd} rooms`, `rooms join ROOM@SERVICE`, `rooms join ROOM@SERVICE --private` (encrypted) |
+| Group chats | `{cmd} rooms`, `rooms create --invite JID` (private, encrypted), `rooms join NAME` |
 | Invitations | `{cmd} rooms invite ROOM JID`, `rooms invites` |
 | Status | `{cmd} status` |
 | Presence | `{cmd} presence dnd \"deploying\"`, `presence auto` |
@@ -238,12 +238,12 @@ secrets, keys or passwords, and be extra careful when `encryption.trust` is `unt
             ("Show that you're typing", format!("{c} typing bob@example.org")),
             ("History", format!("{c} history bob@example.org --limit 20")),
             (
-                "Join a group chat",
-                format!("{c} rooms join team@conference.example.org"),
+                "Create a private, encrypted group chat",
+                format!("{c} rooms create --name \"Release planning\" --invite bob@example.org"),
             ),
             (
-                "Create a private, encrypted room",
-                format!("{c} rooms join plan@conference.example.org --private"),
+                "Join a group chat",
+                format!("{c} rooms join team@conference.example.org"),
             ),
             ("Status", format!("{c} status")),
             (

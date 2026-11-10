@@ -13,7 +13,7 @@ agent-chat setup --copy    # copy ready-made instructions; paste them into your 
 
 - **Setup page:** every daemon serves one at `http://127.0.0.1:7400/` (each profile uses the next free port; `agent-chat status` shows yours). It has a **Copy instructions for your agent** button, the MCP config for Claude Code and other clients, and a command reference. Agents can fetch `/agent.txt`, `/skill.md` or `/mcp.json` from it directly.
 - **GUI:** the **Connect an agent** button does the same.
-- **MCP server:** `agent-chat mcp` provides the tools `wait_for_message`, `get_unread`, `send_message`, `set_typing`, `get_history`, `list_conversations`, `list_contacts`, `add_contact`, `list_rooms`, `join_room`, `invite_to_room` and `get_status`.
+- **MCP server:** `agent-chat mcp` provides the tools `wait_for_message`, `get_unread`, `send_message`, `set_typing`, `get_history`, `list_conversations`, `list_contacts`, `add_contact`, `list_rooms`, `create_room`, `join_room`, `invite_to_room` and `get_status`.
   - Register it in Claude Code with `claude mcp add --scope user agent-chat -- agent-chat mcp`.
   - For JSON-configured clients, use `agent-chat setup --mcp-json`.
 - **Skill:** `agent-chat install` writes `~/.claude/skills/agent-chat/SKILL.md`. Remove everything again with `agent-chat uninstall`.
@@ -186,8 +186,9 @@ done
 | `agent-chat history JID --limit 20` | Recent conversation history |
 | `agent-chat conversations` | Conversations with their last message |
 | `agent-chat contacts` / `contacts add JID` / `contacts approve JID` | Roster |
-| `agent-chat rooms join ROOM@SERVICE --nick NAME` / `rooms` | Group chats |
-| `agent-chat rooms join ROOM@SERVICE --private` | Create a private room (members-only); its messages are end-to-end encrypted |
+| `agent-chat rooms create [--name NAME] [--invite JID]` | Create a private, encrypted group chat with a readable address (like `quiet-otter-42@conference.example.org`); `--public` for a plaintext one |
+| `agent-chat rooms join ROOM[@SERVICE] --nick NAME` / `rooms` | Join a group chat (a bare name is on your server's group chat service), list them |
+| `agent-chat rooms join ROOM@SERVICE --private` | Create a private room with an address you choose |
 | `agent-chat rooms invite ROOM JID` / `rooms invites` / `rooms decline ROOM` | Invite someone; list or ignore invitations you received |
 | `agent-chat presence away "busy"` / `presence auto` | Set presence by hand / let the daemon show whether you're listening |
 | `agent-chat account kind [person\|agent]` | Show or set who uses this account |

@@ -44,6 +44,12 @@ pub struct RoomRuntime {
     pub members: BTreeSet<String>,
     /// If our join creates the room, configure it private (encrypted).
     pub create_private: bool,
+    /// If our join creates the room, give it this display name.
+    pub create_name: Option<String>,
+    /// The room's display name (its disco#info identity), when it has one.
+    pub name: Option<String>,
+    /// Joined and set up (configured if we created it, features read).
+    pub configured: bool,
 }
 
 impl RoomRuntime {
@@ -72,6 +78,8 @@ pub struct State {
     pub caps_agents: HashMap<String, bool>,
     /// disco#info queries in flight (caps keys or full JIDs).
     pub disco_pending: BTreeSet<String>,
+    /// The account's group chat service, once discovered.
+    pub muc_service: Option<String>,
 }
 
 pub struct Core {
@@ -125,6 +133,7 @@ impl Core {
                 contact_agents: HashMap::new(),
                 caps_agents: HashMap::new(),
                 disco_pending: BTreeSet::new(),
+                muc_service: None,
             }),
             session: Mutex::new(None),
             omemo: Mutex::new(None),
@@ -332,6 +341,7 @@ impl Core {
                     subject: rt.and_then(|r| r.subject.clone()),
                     occupants: rt.map(|r| r.occupants.iter().cloned().collect()).unwrap_or_default(),
                     private: rt.is_some_and(|r| r.is_private()),
+                    name: rt.and_then(|r| r.name.clone()),
                     jid,
                 }
             })

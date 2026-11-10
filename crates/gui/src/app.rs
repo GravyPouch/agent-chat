@@ -1,6 +1,6 @@
 //! The chat window: sidebar (account, chats, rooms) + conversation pane.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -90,6 +90,8 @@ pub struct ChatApp {
     selected: Option<String>,
     /// Select this conversation once it appears (e.g. a room just joined).
     pending_select: Option<String>,
+    /// `pending_select` is a room: wait until it is in the room list.
+    pending_select_room: bool,
     messages: Rc<Vec<Message>>,
     devices: Vec<DeviceInfo>,
     own_devices: Vec<DeviceInfo>,
@@ -106,11 +108,20 @@ pub struct ChatApp {
     account_dialog_open: bool,
     /// Close the sign-in dialog on the next render (login finished).
     close_account_dialog: bool,
+    /// Close the open dialog on the next render (an async action finished).
+    close_dialog: bool,
     contact_jid: Entity<InputState>,
     contact_name: Entity<InputState>,
     room_jid: Entity<InputState>,
     room_nick: Entity<InputState>,
     room_private: bool,
+    /// "New group chat" dialog.
+    new_room_name: Entity<InputState>,
+    new_room_private: bool,
+    new_room_invites: BTreeSet<String>,
+    new_room_busy: bool,
+    /// The account's group chat service, once known.
+    muc_service: Option<String>,
     invite_jid: Entity<InputState>,
     /// What was just copied to the clipboard (shows "Copied" there briefly).
     copied: Option<SharedString>,
@@ -181,7 +192,8 @@ impl ChatApp {
         let account_host = input("Server host (optional, e.g. 127.0.0.1)", window, cx);
         let contact_jid = input("friend@example.org", window, cx);
         let contact_name = input("Name (optional)", window, cx);
-        let room_jid = input("room@conference.example.org", window, cx);
+        let room_jid = input("Room name, or room@conference.example.org", window, cx);
+        let new_room_name = input("Name", window, cx);
         let room_nick = input("Nickname (optional)", window, cx);
         let invite_jid = input("friend@example.org", window, cx);
 
@@ -196,7 +208,7 @@ impl ChatApp {
                 },
             )];
         // Enter in a dialog field submits the dialog.
-        let submit_on_enter: [(&Entity<InputState>, Submit); 8] = [
+        let submit_on_enter: [(&Entity<InputState>, Submit); 9] = [
             (&account_jid, Self::submit_account_dialog),
             (&account_password, Self::submit_account_dialog),
             (&account_host, Self::submit_account_dialog),
@@ -204,6 +216,7 @@ impl ChatApp {
             (&contact_name, Self::submit_add_contact),
             (&room_jid, Self::submit_join_room),
             (&room_nick, Self::submit_join_room),
+            (&new_room_name, Self::submit_new_room),
             (&invite_jid, Self::submit_invite),
         ];
         for (input, submit) in submit_on_enter {
@@ -215,6 +228,12 @@ impl ChatApp {
                 }),
             );
         }
+        // The new group chat's address follows its name as you type.
+        subscriptions.push(cx.subscribe(&new_room_name, |_, _, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                cx.notify();
+            }
+        }));
 
         let mut app = Self {
             client,
@@ -227,6 +246,7 @@ impl ChatApp {
             conversations: vec![],
             selected: None,
             pending_select: None,
+            pending_select_room: false,
             messages: Rc::new(vec![]),
             devices: vec![],
             own_devices: vec![],
@@ -241,11 +261,17 @@ impl ChatApp {
             account_error: None,
             account_dialog_open: false,
             close_account_dialog: false,
+            close_dialog: false,
             contact_jid,
             contact_name,
             room_jid,
             room_nick,
             room_private: true,
+            new_room_name,
+            new_room_private: true,
+            new_room_invites: BTreeSet::new(),
+            new_room_busy: false,
+            muc_service: None,
             invite_jid,
             copied: None,
             copied_reset: None,
@@ -471,6 +497,7 @@ impl ChatApp {
             move |a, r, cx| match r {
                 Ok(_) => {
                     a.pending_select = Some(target);
+                    a.pending_select_room = true;
                     a.reload_rooms(cx);
                 }
                 Err(e) => a.error = Some(format!("Couldn't join: {e}")),
@@ -900,7 +927,6 @@ impl ChatApp {
         if jid.is_empty() {
             return;
         }
-        let room = jid.clone();
         self.call::<Room>(
             Request::RoomJoin {
                 jid,
@@ -910,10 +936,12 @@ impl ChatApp {
             },
             cx,
             move |a, r, cx| match r {
-                Ok(_) => {
+                // The daemon completes a bare name with our group chat service.
+                Ok(room) => {
                     a.reload_rooms(cx);
                     a.selected = None;
-                    a.pending_select = Some(room);
+                    a.pending_select = Some(room.jid);
+                    a.pending_select_room = true;
                 }
                 Err(e) => a.error = Some(format!("Couldn't join: {e}")),
             },
@@ -1024,8 +1052,159 @@ impl ChatApp {
     /// File › New Group Chat (Shift+Cmd+N).
     pub fn new_group_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !window.has_active_dialog(cx) {
-            self.open_join_room(window, cx);
+            self.open_new_room(window, cx);
         }
+    }
+
+    /// "New group chat": a readable generated name (editable), private by
+    /// default, and the people to invite.
+    fn open_new_room(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let suggestion = agent_chat_proto::rooms::random_room_name();
+        self.new_room_name
+            .update(cx, |s, cx| s.set_value(suggestion, window, cx));
+        self.new_room_private = true;
+        self.new_room_invites.clear();
+        self.new_room_busy = false;
+        if self.muc_service.is_none() {
+            self.call::<serde_json::Value>(Request::RoomService, cx, |a, r, cx| {
+                if let Ok(v) = r {
+                    a.muc_service = v["service"].as_str().map(str::to_owned);
+                    cx.notify();
+                }
+            });
+        }
+        let this = cx.entity();
+        let name = self.new_room_name.clone();
+        let first = name.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let app = this.read(cx);
+            let theme = cx.theme().clone();
+            let typed = name.read(cx).value().to_string();
+            let address = agent_chat_proto::rooms::room_slug(&typed)
+                .map(|slug| format!("{slug}@{}", app.muc_service.as_deref().unwrap_or("…")));
+            let people: Vec<(String, String, bool)> = app
+                .contacts
+                .iter()
+                .map(|c| {
+                    (
+                        c.jid.clone(),
+                        c.name.clone().unwrap_or_else(|| c.jid.clone()),
+                        app.new_room_invites.contains(&c.jid),
+                    )
+                })
+                .collect();
+            let (private, busy) = (app.new_room_private, app.new_room_busy);
+            let (toggle, create, join) = (this.clone(), this.clone(), this.clone());
+            dialog
+                .title("New group chat")
+                .width(px(520.))
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(Input::new(&name))
+                        .child(div().text_xs().text_color(theme.muted_foreground).child(match address {
+                            Some(a) => format!("Address: {a}"),
+                            None => "Type a name with letters or digits.".to_owned(),
+                        }))
+                        .child({
+                            let toggle = toggle.clone();
+                            Checkbox::new("new-room-private")
+                                .label("Private: only invited members, end-to-end encrypted")
+                                .checked(private)
+                                .on_click(move |checked, _, cx| {
+                                    toggle.update(cx, |a, cx| {
+                                        a.new_room_private = *checked;
+                                        cx.notify();
+                                    });
+                                })
+                        })
+                        .when(!people.is_empty(), |el| {
+                            el.child(div().pt_1().text_sm().font_weight(FontWeight::SEMIBOLD).child("Invite"))
+                                .child(
+                                    v_flex()
+                                        .id("new-room-people")
+                                        .gap_1()
+                                        .max_h(px(180.))
+                                        .overflow_y_scroll()
+                                        .children(people.into_iter().enumerate().map(|(i, (jid, label, on))| {
+                                            let toggle = toggle.clone();
+                                            Checkbox::new(("invite", i)).label(label).checked(on).on_click(
+                                                move |checked, _, cx| {
+                                                    let jid = jid.clone();
+                                                    toggle.update(cx, |a, cx| {
+                                                        if *checked {
+                                                            a.new_room_invites.insert(jid);
+                                                        } else {
+                                                            a.new_room_invites.remove(&jid);
+                                                        }
+                                                        cx.notify();
+                                                    });
+                                                },
+                                            )
+                                        })),
+                                )
+                        }),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("join-existing-room")
+                                .ghost()
+                                .label("Join an existing one…")
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    join.update(cx, |a, cx| a.open_join_room(window, cx));
+                                }),
+                        )
+                        .child(DialogClose::new().trigger(|b| b.label("Cancel")))
+                        .child(
+                            Button::new("create-room")
+                                .primary()
+                                .label(if busy { "Creating…" } else { "Create" })
+                                .loading(busy)
+                                .on_click(move |_, window, cx| {
+                                    create.update(cx, |a, cx| a.submit_new_room(window, cx));
+                                }),
+                        ),
+                )
+        });
+        first.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    fn submit_new_room(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.new_room_busy {
+            return;
+        }
+        let name = self.new_room_name.read(cx).value().trim().to_string();
+        if agent_chat_proto::rooms::room_slug(&name).is_none() {
+            return;
+        }
+        self.new_room_busy = true;
+        cx.notify();
+        self.call::<Room>(
+            Request::RoomCreate {
+                name: Some(name),
+                private: self.new_room_private,
+                invite: self.new_room_invites.iter().cloned().collect(),
+                nick: None,
+            },
+            cx,
+            |a, r, cx| {
+                a.new_room_busy = false;
+                match r {
+                    Ok(room) => {
+                        a.close_dialog = true;
+                        a.reload_rooms(cx);
+                        a.selected = None;
+                        a.pending_select = Some(room.jid);
+                        a.pending_select_room = true;
+                    }
+                    Err(e) => a.error = Some(format!("Couldn't create the group chat: {e}")),
+                }
+                cx.notify();
+            },
+        );
+        let _ = window;
     }
 
     /// Copy selected message text even while the composer has focus: the
@@ -1564,7 +1743,7 @@ impl ChatApp {
             let unread = self.room_unread(&r.jid);
             let entry = ChatEntry {
                 jid: r.jid.clone(),
-                title: local_part(&r.jid),
+                title: r.name.clone().unwrap_or_else(|| local_part(&r.jid)),
                 preview: subtitle,
                 presence: None,
                 is_agent: false,
@@ -1799,12 +1978,12 @@ impl ChatApp {
                             .pt_3()
                             .child(div().text_xs().text_color(theme.muted_foreground).child("GROUP CHATS"))
                             .child(
-                                Button::new("join-room")
+                                Button::new("new-room")
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::Plus)
-                                    .tooltip("Join a group chat")
-                                    .on_click(cx.listener(|this, _, window, cx| this.open_join_room(window, cx))),
+                                    .tooltip("New group chat")
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_new_room(window, cx))),
                             ),
                     )
                     .children(room_rows),
@@ -1816,15 +1995,16 @@ impl ChatApp {
         let room = self.rooms.iter().find(|r| r.jid.eq_ignore_ascii_case(jid)).cloned();
         let contact = self.contacts.iter().find(|c| c.jid.eq_ignore_ascii_case(jid)).cloned();
         let title = match (&room, &contact) {
-            (Some(r), _) => local_part(&r.jid),
+            (Some(r), _) => r.name.clone().unwrap_or_else(|| local_part(&r.jid)),
             (_, Some(c)) => c.name.clone().unwrap_or_else(|| c.jid.clone()),
             _ => jid.to_owned(),
         };
         let address = room.as_ref().map(|r| r.jid.clone()).unwrap_or_else(|| jid.to_owned());
         let details = match (&room, &contact) {
             (Some(r), _) => format!(
-                "{} participants{}",
+                "{} participant{}{}",
                 r.occupants.len(),
+                if r.occupants.len() == 1 { "" } else { "s" },
                 r.subject
                     .clone()
                     .filter(|s| !s.is_empty())
@@ -2169,8 +2349,9 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
 
 impl Render for ChatApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.close_account_dialog {
+        if self.close_account_dialog || self.close_dialog {
             self.close_account_dialog = false;
+            self.close_dialog = false;
             window.close_dialog(cx);
         }
         // First run: ask for an account.
@@ -2186,10 +2367,11 @@ impl Render for ChatApp {
         // once we're connected and, for rooms, once the room shows up.
         if let Some(jid) = self.pending_select.clone() {
             let online = self.status.as_ref().is_some_and(|s| s.state == ConnectionState::Online);
-            let room_pending =
-                jid.contains("@conference") && !self.rooms.iter().any(|r| r.jid.eq_ignore_ascii_case(&jid));
+            let room_pending = (self.pending_select_room || jid.contains("@conference"))
+                && !self.rooms.iter().any(|r| r.jid.eq_ignore_ascii_case(&jid));
             if online && !room_pending {
                 self.pending_select = None;
+                self.pending_select_room = false;
                 self.select(jid, window, cx);
             }
         }

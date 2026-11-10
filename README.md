@@ -50,7 +50,8 @@ API.
   - Blind Trust Before Verification, with fingerprint verification.
 - **Full messaging:**
   - 1:1 chats, contacts and presence;
-  - group chats (XEP-0045), including private encrypted rooms and invitations;
+  - group chats (XEP-0045), including private encrypted rooms and invitations, created with
+    a readable generated address (no room JIDs to type);
   - server archive catch-up (XEP-0313);
   - multi-device sync (XEP-0280);
   - stream resumption (XEP-0198);

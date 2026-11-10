@@ -439,6 +439,7 @@ impl Store {
                         subject: None,
                         occupants: vec![],
                         private: false,
+                        name: None,
                     })
                 },
             )

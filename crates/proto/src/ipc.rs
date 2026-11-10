@@ -105,7 +105,27 @@ pub enum Request {
     ContactDeny { jid: String },
     /// Result: `Vec<Room>`.
     Rooms,
-    /// Join a room (and remember it for autojoin). Result: `model::Room`.
+    /// Create a group chat with a readable generated address (e.g.
+    /// `quiet-otter-42@conference.example.org`) on the account's group chat
+    /// service, join it and invite people. Result: `model::Room`.
+    RoomCreate {
+        /// Display name; the address is made from it. Default: generated.
+        #[serde(default)]
+        name: Option<String>,
+        /// Members-only and end-to-end encrypted (the default).
+        #[serde(default = "yes")]
+        private: bool,
+        /// Bare JIDs to invite (they become members).
+        #[serde(default)]
+        invite: Vec<String>,
+        #[serde(default)]
+        nick: Option<String>,
+    },
+    /// The account's group chat (MUC) service, e.g. `conference.example.org`.
+    /// Result: `{"service": "..."}`.
+    RoomService,
+    /// Join a room (and remember it for autojoin). A bare name (no `@`)
+    /// means a room on the account's group chat service. Result: `model::Room`.
     RoomJoin {
         jid: String,
         #[serde(default)]
@@ -179,6 +199,10 @@ fn default_history_limit() -> u32 {
 
 fn is_false(b: &bool) -> bool {
     !b
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -407,6 +431,28 @@ mod tests {
         .unwrap();
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, Request::Wait { no_typing: true, .. }));
+    }
+
+    #[test]
+    fn room_create_defaults_to_private() {
+        let f: ClientFrame = serde_json::from_str(r#"{"id":11,"method":"room_create","params":{}}"#).unwrap();
+        assert_eq!(
+            f.request,
+            Request::RoomCreate {
+                name: None,
+                private: true,
+                invite: vec![],
+                nick: None
+            }
+        );
+        let f: ClientFrame = serde_json::from_str(
+            r#"{"id":12,"method":"room_create","params":{"name":"Release planning","private":false,"invite":["bob@example.org"]}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            f.request,
+            Request::RoomCreate { private: false, ref invite, .. } if invite == &["bob@example.org".to_owned()]
+        ));
     }
 
     #[test]
