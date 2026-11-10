@@ -57,7 +57,12 @@ pub struct Director {
 impl Director {
     /// Starts the engine in the resting state for this presence.
     pub fn new(online: bool, engine: &mut Engine) -> Director {
-        let director = Director { online, typing_since: None, awaiting_since: None, transient_until: None };
+        let director = Director {
+            online,
+            typing_since: None,
+            awaiting_since: None,
+            transient_until: None,
+        };
         engine.set_action(director.resting());
         director
     }
@@ -281,9 +286,15 @@ mod tests {
         let script = || {
             let (mut e, mut d) = setup(true);
             let mut trace = vec![];
-            for (i, s) in [Signal::Sending, Signal::Sent, Signal::Typing, Signal::Reply, Signal::Online(false)]
-                .into_iter()
-                .enumerate()
+            for (i, s) in [
+                Signal::Sending,
+                Signal::Sent,
+                Signal::Typing,
+                Signal::Reply,
+                Signal::Online(false),
+            ]
+            .into_iter()
+            .enumerate()
             {
                 d.signal(s, &mut e);
                 advance(&mut e, &mut d, 300 * (i as u64 + 1));

@@ -8,8 +8,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    ChatState, Contact, Delivery, EncryptionProtocol, Filter, Message, PresenceInfo, RoomInvite,
-    Show, StatusInfo, SubscriptionRequest,
+    ChatState, Contact, Delivery, EncryptionProtocol, Filter, Message, PresenceInfo, RoomInvite, Show, StatusInfo,
+    SubscriptionRequest,
 };
 
 /// How `send` should treat end-to-end encryption.
@@ -195,18 +195,27 @@ pub enum Event {
     /// A message was stored (inbound or outbound).
     Message(Message),
     Status(StatusInfo),
-    Presence { jid: String, presence: PresenceInfo },
+    Presence {
+        jid: String,
+        presence: PresenceInfo,
+    },
     ContactsChanged,
     SubscriptionRequest(SubscriptionRequest),
     RoomsChanged,
-    RoomSubject { room: String, subject: String },
+    RoomSubject {
+        room: String,
+        subject: String,
+    },
     RoomInvite(RoomInvite),
     DevicesChanged {
         jid: String,
         protocol: EncryptionProtocol,
     },
     /// XEP-0085: a contact's chat state in a 1:1 chat (bare JID), e.g. typing.
-    ChatState { jid: String, state: ChatState },
+    ChatState {
+        jid: String,
+        state: ChatState,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,14 +308,20 @@ mod tests {
             state: ChatState::Paused,
         })
         .unwrap();
-        assert_eq!(json, r#"{"type":"chat_state","data":{"jid":"bob@example.org","state":"paused"}}"#);
+        assert_eq!(
+            json,
+            r#"{"type":"chat_state","data":{"jid":"bob@example.org","state":"paused"}}"#
+        );
         let f: ClientFrame = serde_json::from_str(
             r#"{"id":4,"method":"send_chat_state","params":{"to":"bob@example.org","state":"composing"}}"#,
         )
         .unwrap();
         assert_eq!(
             f.request,
-            Request::SendChatState { to: "bob@example.org".into(), state: ChatState::Composing }
+            Request::SendChatState {
+                to: "bob@example.org".into(),
+                state: ChatState::Composing
+            }
         );
     }
 
@@ -326,8 +341,7 @@ mod tests {
 
     #[test]
     fn wait_defaults() {
-        let f: ClientFrame =
-            serde_json::from_str(r#"{"id":3,"method":"wait","params":{}}"#).unwrap();
+        let f: ClientFrame = serde_json::from_str(r#"{"id":3,"method":"wait","params":{}}"#).unwrap();
         match f.request {
             Request::Wait {
                 delivery,

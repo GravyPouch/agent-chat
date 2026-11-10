@@ -158,7 +158,14 @@ pub fn check_nonce(prefix: &[u8], index: u8, nonce: u64, bits: u32) -> bool {
 }
 
 /// Find one nonce for sub-puzzle `index` using `threads` threads.
-fn solve_one(prefix: &[u8], index: u8, bits: u32, threads: usize, stop: &AtomicBool, hashes: &AtomicU64) -> Option<u64> {
+fn solve_one(
+    prefix: &[u8],
+    index: u8,
+    bits: u32,
+    threads: usize,
+    stop: &AtomicBool,
+    hashes: &AtomicU64,
+) -> Option<u64> {
     let mut base = Sha256::new();
     base.update(prefix);
     base.update([index]);
@@ -320,7 +327,14 @@ async fn fetch_form(stream: &mut Stream, domain: &Jid) -> Result<Form, RegisterE
     let payload = match resp {
         Iq::Result { payload: Some(p), .. } => p,
         Iq::Error { error, .. } => {
-            return Err(RegisterError::Policy(error.texts.values().next().cloned().unwrap_or_else(|| format!("{:?}", error.defined_condition))));
+            return Err(RegisterError::Policy(
+                error
+                    .texts
+                    .values()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| format!("{:?}", error.defined_condition)),
+            ));
         }
         _ => return Err(anyhow!("empty registration form").into()),
     };
@@ -338,9 +352,8 @@ async fn fetch_form(stream: &mut Stream, domain: &Jid) -> Result<Form, RegisterE
     };
     let fields = field_values(form);
     let get = |var: &str| fields.iter().find(|f| f.0 == var).and_then(|f| f.1.clone());
-    let known = |var: &str| {
-        matches!(var, "FORM_TYPE" | "username" | "password") || var.starts_with(&format!("{{{NS_POW}}}"))
-    };
+    let known =
+        |var: &str| matches!(var, "FORM_TYPE" | "username" | "password") || var.starts_with(&format!("{{{NS_POW}}}"));
     let unknown: Vec<String> = fields
         .iter()
         .filter(|(var, _, required, _)| *required && !known(var))
@@ -354,12 +367,20 @@ async fn fetch_form(stream: &mut Stream, domain: &Jid) -> Result<Form, RegisterE
         Some(token) => {
             let algorithm = get(&pow_field("algorithm")).unwrap_or_default();
             if algorithm != "sha256" {
-                return Err(RegisterError::Policy(format!("unsupported proof-of-work algorithm {algorithm:?}")));
+                return Err(RegisterError::Policy(format!(
+                    "unsupported proof-of-work algorithm {algorithm:?}"
+                )));
             }
-            let bits = get(&pow_field("bits")).and_then(|b| b.parse().ok()).context("bad bits")?;
-            let count = get(&pow_field("count")).and_then(|b| b.parse().ok()).context("bad count")?;
+            let bits = get(&pow_field("bits"))
+                .and_then(|b| b.parse().ok())
+                .context("bad bits")?;
+            let count = get(&pow_field("count"))
+                .and_then(|b| b.parse().ok())
+                .context("bad count")?;
             if bits > 48 || count == 0 || count > 64 {
-                return Err(RegisterError::Policy(format!("unreasonable challenge: {count} × {bits} bits")));
+                return Err(RegisterError::Policy(format!(
+                    "unreasonable challenge: {count} × {bits} bits"
+                )));
             }
             Some(PowChallenge { token, bits, count })
         }
@@ -399,9 +420,10 @@ async fn submit(
             solution.join(",")
         ));
     }
-    let query: Element = format!("<query xmlns='{NS_REGISTER}'><x xmlns='{NS_DATA}' type='submit'>{fields}</x></query>")
-        .parse()
-        .map_err(|e| anyhow!("building form: {e}"))?;
+    let query: Element =
+        format!("<query xmlns='{NS_REGISTER}'><x xmlns='{NS_DATA}' type='submit'>{fields}</x></query>")
+            .parse()
+            .map_err(|e| anyhow!("building form: {e}"))?;
     let set = Iq::Set {
         from: None,
         to: Some(domain.clone()),
@@ -415,7 +437,11 @@ async fn submit(
         _ => return Err(anyhow!("unexpected response").into()),
     };
     let text = error.texts.values().next().cloned().unwrap_or_default();
-    let app = error.other.as_ref().filter(|el| el.ns() == NS_POW).map(|el| el.name().to_owned());
+    let app = error
+        .other
+        .as_ref()
+        .filter(|el| el.ns() == NS_POW)
+        .map(|el| el.name().to_owned());
     use xmpp_parsers::stanza_error::DefinedCondition as C;
     Ok(match (app.as_deref(), &error.defined_condition) {
         (Some("challenge-expired" | "challenge-invalid" | "challenge-outdated" | "challenge-used"), _) => {
@@ -424,7 +450,11 @@ async fn submit(
         (Some("solution-invalid"), _) => Submit::Failed(anyhow!("server rejected the proof of work: {text}").into()),
         (Some(other), _) => Submit::Failed(RegisterError::Policy(format!("{other}: {text}"))),
         (None, C::Conflict) => Submit::Failed(RegisterError::Taken(username.to_owned())),
-        (None, c) => Submit::Failed(RegisterError::Policy(if text.is_empty() { format!("{c:?}") } else { text })),
+        (None, c) => Submit::Failed(RegisterError::Policy(if text.is_empty() {
+            format!("{c:?}")
+        } else {
+            text
+        })),
     })
 }
 
@@ -451,7 +481,8 @@ pub fn valid_username(u: &str) -> bool {
     !b.is_empty()
         && b.len() <= 64
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
-        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(c))
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(c))
 }
 
 async fn solve(
@@ -518,7 +549,10 @@ async fn solve(
 }
 
 /// Register an account. `progress` receives events for stderr.
-pub async fn register(opts: &RegisterOptions, progress: &(dyn Fn(Progress) + Sync)) -> Result<Registered, RegisterError> {
+pub async fn register(
+    opts: &RegisterOptions,
+    progress: &(dyn Fn(Progress) + Sync),
+) -> Result<Registered, RegisterError> {
     let deadline = Instant::now() + opts.timeout;
     let domain_jid: Jid = BareJid::new(&opts.domain)
         .map_err(|e| anyhow!("invalid server domain: {e}"))?
@@ -610,10 +644,17 @@ mod tests {
     /// docs/design/pow-registration.md §5.7, also checked by the Lua module.
     #[test]
     fn design_test_vector_verifies() {
-        let token = "1:sha256:25:8:1794326400:1794330000:9f2c4e7a1b3d5f60718293a4b5c6d7e8:6b8ae478ff3592e715741262396837c1";
+        let token =
+            "1:sha256:25:8:1794326400:1794330000:9f2c4e7a1b3d5f60718293a4b5c6d7e8:6b8ae478ff3592e715741262396837c1";
         let nonces = [
-            0x0000000001dee49fu64, 0x000000000212fd53, 0x00000000006093ad, 0x000000000016321f,
-            0x00000000002aa9f1, 0x0000000003f1a352, 0x00000000022ca4ce, 0x000000000014a0b1,
+            0x0000000001dee49fu64,
+            0x000000000212fd53,
+            0x00000000006093ad,
+            0x000000000016321f,
+            0x00000000002aa9f1,
+            0x0000000003f1a352,
+            0x00000000022ca4ce,
+            0x000000000014a0b1,
         ];
         let prefix = puzzle_prefix(token, "example.org", "agent-7k2m9qx4td");
         for (i, n) in nonces.iter().enumerate() {

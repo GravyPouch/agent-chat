@@ -48,9 +48,7 @@ pub async fn after_login(core: &Arc<Core>, handle: &SessionHandle) -> Result<()>
     core.store().ensure_consumer("default")?;
     let rooms = core.store().rooms()?;
     for (jid, nick, password, autojoin) in rooms {
-        if autojoin
-            && let Err(e) = start_join(core, handle, &jid, &nick, password.as_deref(), false).await
-        {
+        if autojoin && let Err(e) = start_join(core, handle, &jid, &nick, password.as_deref(), false).await {
             tracing::warn!("rejoining {jid} failed: {e:#}");
         }
     }
@@ -61,7 +59,13 @@ pub async fn after_login(core: &Arc<Core>, handle: &SessionHandle) -> Result<()>
 
 pub async fn fetch_roster(core: &Arc<Core>, handle: &SessionHandle) -> Result<()> {
     let el = handle
-        .iq_get(None, Roster { ver: None, items: vec![] })
+        .iq_get(
+            None,
+            Roster {
+                ver: None,
+                items: vec![],
+            },
+        )
         .await?
         .context("empty roster result")?;
     apply_roster(core, Roster::try_from(el)?, false);
@@ -123,12 +127,16 @@ pub async fn add_contact(handle: &SessionHandle, jid: &str, name: Option<String>
         approved: None,
     };
     handle
-        .iq_set(None, Roster { ver: None, items: vec![item] })
+        .iq_set(
+            None,
+            Roster {
+                ver: None,
+                items: vec![item],
+            },
+        )
         .await
         .map_err(internal)?;
-    handle
-        .send(Presence::subscribe().with_to(bare))
-        .map_err(internal)?;
+    handle.send(Presence::subscribe().with_to(bare)).map_err(internal)?;
     Ok(())
 }
 
@@ -143,7 +151,13 @@ pub async fn remove_contact(handle: &SessionHandle, jid: &str) -> Result<(), Ipc
         approved: None,
     };
     handle
-        .iq_set(None, Roster { ver: None, items: vec![item] })
+        .iq_set(
+            None,
+            Roster {
+                ver: None,
+                items: vec![item],
+            },
+        )
         .await
         .map_err(internal)?;
     Ok(())
@@ -161,7 +175,9 @@ pub fn approve_subscription(core: &Core, handle: &SessionHandle, jid: &str) -> R
         .get(&bare.to_string())
         .is_some_and(|e| e.subscription == "to" || e.subscription == "both" || e.pending_out);
     if !subscribed_to_them {
-        handle.send(Presence::subscribe().with_to(bare.clone())).map_err(internal)?;
+        handle
+            .send(Presence::subscribe().with_to(bare.clone()))
+            .map_err(internal)?;
     }
     core.state().pending_requests.remove(&bare.to_string());
     core.emit(Event::ContactsChanged);
@@ -316,7 +332,7 @@ async fn start_join(
         .is_some_and(|i| i.features.contains(xmpp_parsers::ns::MAM));
     {
         let mut st = core.state();
-        let rt = st.rooms.entry(room_jid.to_string().to_lowercase()).or_insert_with(RoomRuntime::default);
+        let rt = st.rooms.entry(room_jid.to_string().to_lowercase()).or_default();
         rt.nick = nick.to_owned();
         rt.password = password.map(str::to_owned);
         rt.joined = false;
@@ -351,16 +367,28 @@ pub async fn join_room(
 ) -> Result<Room, IpcError> {
     let room_jid = parse_bare(room)?;
     if room_jid.node().is_none() {
-        return Err(IpcError::new(ErrorCode::BadRequest, "room JIDs look like name@conference.server"));
+        return Err(IpcError::new(
+            ErrorCode::BadRequest,
+            "room JIDs look like name@conference.server",
+        ));
     }
     let nick = nick
         .or_else(|| core.config.lock().unwrap().settings.default_nick.clone())
-        .unwrap_or_else(|| handle.own.node().map(|n| n.to_string()).unwrap_or_else(|| "agent".into()));
+        .unwrap_or_else(|| {
+            handle
+                .own
+                .node()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "agent".into())
+        });
     let room_s = room_jid.to_string();
     // Accepting an invitation: use its password and forget it.
     let invite = {
         let mut st = core.state();
-        let pos = st.pending_invites.iter().position(|i| i.room.eq_ignore_ascii_case(&room_s));
+        let pos = st
+            .pending_invites
+            .iter()
+            .position(|i| i.room.eq_ignore_ascii_case(&room_s));
         pos.map(|p| st.pending_invites.remove(p))
     };
     let password = password.or_else(|| invite.and_then(|i| i.password));
@@ -379,12 +407,18 @@ pub async fn join_room(
                     break None;
                 }
                 if let Some(err) = &rt.error {
-                    break Some(IpcError::new(ErrorCode::BadRequest, format!("could not join {room_s}: {err}")));
+                    break Some(IpcError::new(
+                        ErrorCode::BadRequest,
+                        format!("could not join {room_s}: {err}"),
+                    ));
                 }
             }
         }
         if tokio::time::timeout_at(deadline, events.recv()).await.is_err() {
-            break Some(IpcError::new(ErrorCode::NotConnected, format!("timed out joining {room_s}")));
+            break Some(IpcError::new(
+                ErrorCode::NotConnected,
+                format!("timed out joining {room_s}"),
+            ));
         }
     };
     if let Some(err) = failure {
@@ -476,7 +510,13 @@ pub async fn invite_to_room(
         "<query xmlns='http://jabber.org/protocol/muc#admin'><item affiliation='member' jid='{}'/></query>",
         crate::omemo::xml::escape(&invitee.to_string())
     );
-    if let Err(e) = handle.iq_set(Some(room_jid.clone().into()), item.parse::<Element>().map_err(internal)?).await {
+    if let Err(e) = handle
+        .iq_set(
+            Some(room_jid.clone().into()),
+            item.parse::<Element>().map_err(internal)?,
+        )
+        .await
+    {
         tracing::info!("could not make {invitee} a member of {room_jid} ({e:#}); sending the invitation anyway");
     } else if let Some(rt) = core.state().rooms.get_mut(&key) {
         rt.members.insert(invitee.to_string());
@@ -564,7 +604,8 @@ pub async fn send_message(
                 for p in payloads {
                     msg.payloads.push(p);
                 }
-                msg.bodies.insert(Lang::default(), crate::omemo::FALLBACK_BODY.to_owned());
+                msg.bodies
+                    .insert(Lang::default(), crate::omemo::FALLBACK_BODY.to_owned());
                 encryption = Some(info);
             }
             Ok(None) if mode == EncryptionMode::Require => {
@@ -620,7 +661,9 @@ pub async fn send_message(
         })
         .map_err(internal)?
         .ok_or_else(|| internal("message id collision"))?;
-    handle.send(msg).map_err(|e| IpcError::new(ErrorCode::NotConnected, e.to_string()))?;
+    handle
+        .send(msg)
+        .map_err(|e| IpcError::new(ErrorCode::NotConnected, e.to_string()))?;
     Ok(stored)
 }
 
@@ -635,9 +678,13 @@ pub fn send_chat_state(
     use agent_chat_proto::model::ChatState;
     use xmpp_parsers::chatstates::ChatState as XChatState;
 
-    let to_jid = BareJid::new(to).map_err(|e| IpcError::new(ErrorCode::BadRequest, format!("invalid bare JID {to:?}: {e}")))?;
+    let to_jid =
+        BareJid::new(to).map_err(|e| IpcError::new(ErrorCode::BadRequest, format!("invalid bare JID {to:?}: {e}")))?;
     if core.room_nick(&to_jid.to_string()).is_some() {
-        return Err(IpcError::new(ErrorCode::BadRequest, "chat states are only sent in 1:1 chats"));
+        return Err(IpcError::new(
+            ErrorCode::BadRequest,
+            "chat states are only sent in 1:1 chats",
+        ));
     }
     let payload = match state {
         ChatState::Active => XChatState::Active,
@@ -647,6 +694,9 @@ pub fn send_chat_state(
         ChatState::Gone => XChatState::Gone,
     };
     let mut msg = XMessage::chat(Some(to_jid.into())).with_payload(payload);
-    msg.payloads.push(Element::builder("no-store", "urn:xmpp:hints").build());
-    handle.send(msg).map_err(|e| IpcError::new(ErrorCode::NotConnected, e.to_string()))
+    msg.payloads
+        .push(Element::builder("no-store", "urn:xmpp:hints").build());
+    handle
+        .send(msg)
+        .map_err(|e| IpcError::new(ErrorCode::NotConnected, e.to_string()))
 }

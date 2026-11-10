@@ -90,9 +90,7 @@ impl Config {
                 use std::os::unix::fs::OpenOptionsExt;
                 opts.mode(0o600);
             }
-            let mut f = opts
-                .open(&tmp)
-                .with_context(|| format!("writing {}", tmp.display()))?;
+            let mut f = opts.open(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
             f.write_all(text.as_bytes())?;
             f.sync_all()?;
         }
@@ -122,8 +120,7 @@ impl AccountConfig {
 
 pub fn is_loopback_host(host: &str) -> bool {
     let h = host.trim_start_matches('[').trim_end_matches(']');
-    h.eq_ignore_ascii_case("localhost")
-        || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Find the password: `$AGENT_CHAT_PASSWORD`, then the config file, then the keychain.
@@ -136,8 +133,7 @@ pub fn resolve_password(acct: &AccountConfig) -> Result<String> {
     if let Some(p) = &acct.password {
         return Ok(p.clone());
     }
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &acct.jid)
-        .map_err(|e| anyhow!("keychain unavailable: {e}"))?;
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &acct.jid).map_err(|e| anyhow!("keychain unavailable: {e}"))?;
     entry.get_password().map_err(|e| {
         anyhow!(
             "no password for {} in the keychain ({e}); run `agent-chat account add` \
@@ -153,8 +149,7 @@ pub fn store_password(jid: &str, password: &str, storage: PasswordStorage) -> Re
     match storage {
         PasswordStorage::ConfigFile => Ok(Some(password.to_owned())),
         PasswordStorage::Keychain => {
-            let entry = keyring::Entry::new(KEYRING_SERVICE, jid)
-                .map_err(|e| anyhow!("keychain unavailable: {e}"))?;
+            let entry = keyring::Entry::new(KEYRING_SERVICE, jid).map_err(|e| anyhow!("keychain unavailable: {e}"))?;
             entry
                 .set_password(password)
                 .map_err(|e| anyhow!("could not save the password to the keychain: {e}"))?;

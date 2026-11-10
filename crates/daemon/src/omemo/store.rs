@@ -293,13 +293,11 @@ impl Db {
         if let Some(t) = row_trust {
             return Ok(t);
         }
-        let any_verified: bool = self
-            .conn()
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM omemo_devices WHERE jid = ?1 AND trust = 'verified')",
-                params![jid],
-                |r| r.get(0),
-            )?;
+        let any_verified: bool = self.conn().query_row(
+            "SELECT EXISTS(SELECT 1 FROM omemo_devices WHERE jid = ?1 AND trust = 'verified')",
+            params![jid],
+            |r| r.get(0),
+        )?;
         Ok(if any_verified { Trust::Untrusted } else { Trust::Trusted })
     }
 }

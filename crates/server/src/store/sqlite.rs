@@ -52,10 +52,7 @@ impl SqliteStore {
         })
     }
 
-    fn write<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
-    ) -> BoxFut<'_, T> {
+    fn write<T: Send + 'static>(&self, f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static) -> BoxFut<'_, T> {
         let (tx, rx) = oneshot::channel();
         let job: WriteJob = Box::new(move |conn| {
             let _ = tx.send(f(conn));
@@ -100,7 +97,8 @@ fn create_private_file(path: &Path) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    opts.open(path).with_context(|| format!("creating {}", path.display()))?;
+    opts.open(path)
+        .with_context(|| format!("creating {}", path.display()))?;
     Ok(())
 }
 
@@ -132,7 +130,8 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     }
     for (i, (name, sql)) in MIGRATIONS.iter().enumerate().skip(current) {
         let tx = conn.transaction()?;
-        tx.execute_batch(sql).with_context(|| format!("applying migration {name}"))?;
+        tx.execute_batch(sql)
+            .with_context(|| format!("applying migration {name}"))?;
         tx.pragma_update(None, "user_version", (i + 1) as i64)?;
         tx.commit()?;
         tracing::info!(migration = name, "applied database migration");
@@ -301,7 +300,9 @@ impl Store for SqliteStore {
     fn count_accounts<'a>(&'a self, domain: &'a str) -> BoxFut<'a, u64> {
         let domain = domain.to_owned();
         self.read(move |conn| {
-            let n: i64 = conn.query_row("SELECT COUNT(*) FROM accounts WHERE domain = ?1", [&domain], |r| r.get(0))?;
+            let n: i64 = conn.query_row("SELECT COUNT(*) FROM accounts WHERE domain = ?1", [&domain], |r| {
+                r.get(0)
+            })?;
             Ok(n as u64)
         })
     }

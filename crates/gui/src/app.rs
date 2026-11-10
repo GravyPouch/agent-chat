@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use agent_chat_proto::ipc::{AccountParams, ContactList, EncryptionMode, Event, PasswordStorage, Request};
 use agent_chat_proto::model::{
-    ChatState, ConnectionState, Contact, ConversationSummary, DeviceInfo, Message, MessageKind,
-    MessageSource, Room, RoomInvite, Show, StatusInfo, SubscriptionRequest, Trust,
+    ChatState, ConnectionState, Contact, ConversationSummary, DeviceInfo, Message, MessageKind, MessageSource, Room,
+    RoomInvite, Show, StatusInfo, SubscriptionRequest, Trust,
 };
 use agent_chat_proto::{CallError, IpcClient};
 use boopface::Signal;
@@ -22,8 +22,8 @@ use gpui_kit::component::message::{
 };
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, WindowExt, h_flex, v_flex};
-use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use serde::de::DeserializeOwned;
 
 use crate::face::{self, AnimatedFace};
@@ -44,8 +44,18 @@ impl Render for ErrorView {
             .gap_2()
             .p_8()
             .bg(cx.theme().background)
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Can't reach the agent-chat daemon"))
-            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(self.message.clone()))
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Can't reach the agent-chat daemon"),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.message.clone()),
+            )
     }
 }
 
@@ -158,13 +168,16 @@ impl ChatApp {
         let room_nick = input("Nickname (optional)", window, cx);
         let invite_jid = input("friend@example.org", window, cx);
 
-        let subscriptions = vec![cx.subscribe_in(&composer, window, |this, _, event: &InputEvent, window, cx| {
-            match event {
-                InputEvent::PressEnter { .. } => this.send(window, cx),
-                InputEvent::Change => this.on_composer_change(cx),
-                _ => {}
-            }
-        })];
+        let subscriptions =
+            vec![cx.subscribe_in(
+                &composer,
+                window,
+                |this, _, event: &InputEvent, window, cx| match event {
+                    InputEvent::PressEnter { .. } => this.send(window, cx),
+                    InputEvent::Change => this.on_composer_change(cx),
+                    _ => {}
+                },
+            )];
 
         let mut app = Self {
             client,
@@ -396,7 +409,12 @@ impl ChatApp {
     fn accept_invite(&mut self, room: String, cx: &mut Context<Self>) {
         let target = room.clone();
         self.call::<Room>(
-            Request::RoomJoin { jid: room, nick: None, password: None, private: false },
+            Request::RoomJoin {
+                jid: room,
+                nick: None,
+                password: None,
+                private: false,
+            },
             cx,
             move |a, r, cx| match r {
                 Ok(_) => {
@@ -430,7 +448,11 @@ impl ChatApp {
                     let signal = if failed { Signal::Failed } else { Signal::Reply };
                     self.face_signal(&m.conversation.clone(), signal, cx);
                 }
-                if self.selected.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(&m.conversation)) {
+                if self
+                    .selected
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(&m.conversation))
+                {
                     let id = m.id;
                     let conversation = m.conversation.clone();
                     Rc::make_mut(&mut self.messages).push(m);
@@ -445,7 +467,10 @@ impl ChatApp {
             }
             Event::Status(s) => {
                 let became_online = s.state == ConnectionState::Online
-                    && self.status.as_ref().is_none_or(|old| old.state != ConnectionState::Online);
+                    && self
+                        .status
+                        .as_ref()
+                        .is_none_or(|old| old.state != ConnectionState::Online);
                 self.status = Some(s);
                 if became_online {
                     self.reload_all(cx);
@@ -459,7 +484,11 @@ impl ChatApp {
                 self.face_signal(&jid, Signal::Online(online), cx);
             }
             Event::ChatState { jid, state } => {
-                let signal = if state == ChatState::Composing { Signal::Typing } else { Signal::StoppedTyping };
+                let signal = if state == ChatState::Composing {
+                    Signal::Typing
+                } else {
+                    Signal::StoppedTyping
+                };
                 self.face_signal(&jid, signal, cx);
             }
             Event::ContactsChanged | Event::SubscriptionRequest(_) => self.reload_contacts(cx),
@@ -485,12 +514,16 @@ impl ChatApp {
     }
 
     fn load_devices(&mut self, jid: String, cx: &mut Context<Self>) {
-        self.call::<Vec<DeviceInfo>>(Request::OmemoDevices { jid: Some(jid.clone()) }, cx, move |this, r, cx| {
-            if this.selected.as_deref() == Some(jid.as_str()) {
-                this.devices = r.unwrap_or_default();
-                cx.notify();
-            }
-        });
+        self.call::<Vec<DeviceInfo>>(
+            Request::OmemoDevices { jid: Some(jid.clone()) },
+            cx,
+            move |this, r, cx| {
+                if this.selected.as_deref() == Some(jid.as_str()) {
+                    this.devices = r.unwrap_or_default();
+                    cx.notify();
+                }
+            },
+        );
     }
 
     // --------------------------------------------------------------- actions
@@ -516,7 +549,11 @@ impl ChatApp {
         }
         let conversation = jid.clone();
         self.call::<Vec<Message>>(
-            Request::History { conversation: jid, limit: 300, before_id: None },
+            Request::History {
+                conversation: jid,
+                limit: 300,
+                before_id: None,
+            },
             cx,
             move |this, r, cx| {
                 if this.selected.as_deref() != Some(conversation.as_str()) {
@@ -553,7 +590,12 @@ impl ChatApp {
         self.face_signal(&to, Signal::Sending, cx);
         let face_jid = to.clone();
         self.call::<Message>(
-            Request::Send { to, body: body.clone(), room: None, encryption: EncryptionMode::Auto },
+            Request::Send {
+                to,
+                body: body.clone(),
+                room: None,
+                encryption: EncryptionMode::Auto,
+            },
             cx,
             move |this, r, cx| match r {
                 Ok(_) => this.face_signal(&face_jid, Signal::Sent, cx),
@@ -630,7 +672,11 @@ impl ChatApp {
     fn open_account_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.account_dialog_open = true;
         let this = cx.entity();
-        let (jid, password, host) = (self.account_jid.clone(), self.account_password.clone(), self.account_host.clone());
+        let (jid, password, host) = (
+            self.account_jid.clone(),
+            self.account_password.clone(),
+            self.account_host.clone(),
+        );
         jid.update(cx, |s, cx| s.focus(window, cx));
         window.open_dialog(cx, move |dialog, _, cx| {
             let app = this.read(cx);
@@ -661,7 +707,9 @@ impl ChatApp {
                                     });
                                 }),
                         )
-                        .when_some(error, |d, e| d.child(div().text_sm().text_color(cx.theme().danger).child(e))),
+                        .when_some(error, |d, e| {
+                            d.child(div().text_sm().text_color(cx.theme().danger).child(e))
+                        }),
                 )
                 .footer(
                     DialogFooter::new().child(
@@ -689,28 +737,36 @@ impl ChatApp {
                 .footer(
                     DialogFooter::new()
                         .child(DialogClose::new().trigger(|b| b.label("Cancel")))
-                        .child(Button::new("add-contact").primary().label("Add").on_click(move |_, window, cx| {
-                            let jid = jid2.read(cx).value().trim().to_string();
-                            let name = name2.read(cx).value().trim().to_string();
-                            if jid.is_empty() {
-                                return;
-                            }
-                            this.update(cx, |a, cx| {
-                                a.call::<serde_json::Value>(
-                                    Request::ContactAdd { jid, name: (!name.is_empty()).then_some(name) },
-                                    cx,
-                                    |a, r, cx| {
-                                        if let Err(e) = r {
-                                            a.error = Some(format!("Couldn't add contact: {e}"));
-                                        }
-                                        a.reload_contacts(cx);
-                                    },
-                                );
-                            });
-                            jid2.update(cx, |s, cx| s.set_value("", window, cx));
-                            name2.update(cx, |s, cx| s.set_value("", window, cx));
-                            window.close_dialog(cx);
-                        })),
+                        .child(
+                            Button::new("add-contact")
+                                .primary()
+                                .label("Add")
+                                .on_click(move |_, window, cx| {
+                                    let jid = jid2.read(cx).value().trim().to_string();
+                                    let name = name2.read(cx).value().trim().to_string();
+                                    if jid.is_empty() {
+                                        return;
+                                    }
+                                    this.update(cx, |a, cx| {
+                                        a.call::<serde_json::Value>(
+                                            Request::ContactAdd {
+                                                jid,
+                                                name: (!name.is_empty()).then_some(name),
+                                            },
+                                            cx,
+                                            |a, r, cx| {
+                                                if let Err(e) = r {
+                                                    a.error = Some(format!("Couldn't add contact: {e}"));
+                                                }
+                                                a.reload_contacts(cx);
+                                            },
+                                        );
+                                    });
+                                    jid2.update(cx, |s, cx| s.set_value("", window, cx));
+                                    name2.update(cx, |s, cx| s.set_value("", window, cx));
+                                    window.close_dialog(cx);
+                                }),
+                        ),
                 )
         });
     }
@@ -744,32 +800,42 @@ impl ChatApp {
                 .footer(
                     DialogFooter::new()
                         .child(DialogClose::new().trigger(|b| b.label("Cancel")))
-                        .child(Button::new("join-room").primary().label("Join").on_click(move |_, window, cx| {
-                            let jid = jid2.read(cx).value().trim().to_string();
-                            let nick = nick2.read(cx).value().trim().to_string();
-                            if jid.is_empty() {
-                                return;
-                            }
-                            this.update(cx, |a, cx| {
-                                let room = jid.clone();
-                                let private = a.room_private;
-                                a.call::<Room>(
-                                    Request::RoomJoin { jid, nick: (!nick.is_empty()).then_some(nick), password: None, private },
-                                    cx,
-                                    move |a, r, cx| match r {
-                                        Ok(_) => {
-                                            a.reload_rooms(cx);
-                                            a.selected = None;
-                                            a.pending_select = Some(room);
-                                        }
-                                        Err(e) => a.error = Some(format!("Couldn't join: {e}")),
-                                    },
-                                );
-                            });
-                            jid2.update(cx, |s, cx| s.set_value("", window, cx));
-                            nick2.update(cx, |s, cx| s.set_value("", window, cx));
-                            window.close_dialog(cx);
-                        })),
+                        .child(
+                            Button::new("join-room")
+                                .primary()
+                                .label("Join")
+                                .on_click(move |_, window, cx| {
+                                    let jid = jid2.read(cx).value().trim().to_string();
+                                    let nick = nick2.read(cx).value().trim().to_string();
+                                    if jid.is_empty() {
+                                        return;
+                                    }
+                                    this.update(cx, |a, cx| {
+                                        let room = jid.clone();
+                                        let private = a.room_private;
+                                        a.call::<Room>(
+                                            Request::RoomJoin {
+                                                jid,
+                                                nick: (!nick.is_empty()).then_some(nick),
+                                                password: None,
+                                                private,
+                                            },
+                                            cx,
+                                            move |a, r, cx| match r {
+                                                Ok(_) => {
+                                                    a.reload_rooms(cx);
+                                                    a.selected = None;
+                                                    a.pending_select = Some(room);
+                                                }
+                                                Err(e) => a.error = Some(format!("Couldn't join: {e}")),
+                                            },
+                                        );
+                                    });
+                                    jid2.update(cx, |s, cx| s.set_value("", window, cx));
+                                    nick2.update(cx, |s, cx| s.set_value("", window, cx));
+                                    window.close_dialog(cx);
+                                }),
+                        ),
                 )
         });
     }
@@ -912,13 +978,22 @@ impl ChatApp {
                                 .child(
                                     Button::new("copy-agent-prompt")
                                         .primary()
-                                        .label(if copied == Some("prompt") { "Copied ✓" } else { "Copy instructions for your agent" })
-                                        .on_click(move |_, _, cx| t1.update(cx, |a, cx| a.copy_for_agent("prompt", cx))),
+                                        .label(if copied == Some("prompt") {
+                                            "Copied ✓"
+                                        } else {
+                                            "Copy instructions for your agent"
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            t1.update(cx, |a, cx| a.copy_for_agent("prompt", cx))
+                                        }),
                                 )
                                 .when_some(web_url, |el, url| {
-                                    el.child(Button::new("open-setup-page").ghost().label("Open setup page").on_click(
-                                        move |_, _, cx| cx.open_url(&url),
-                                    ))
+                                    el.child(
+                                        Button::new("open-setup-page")
+                                            .ghost()
+                                            .label("Open setup page")
+                                            .on_click(move |_, _, cx| cx.open_url(&url)),
+                                    )
                                 }),
                         )
                         .child(
@@ -933,31 +1008,55 @@ impl ChatApp {
                                 .font_family("Menlo")
                                 .child(setup.agent_prompt()),
                         )
-                        .child(div().pt_1().text_sm().font_weight(FontWeight::SEMIBOLD).child("Command-line tool & agent skill"))
+                        .child(
+                            div()
+                                .pt_1()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Command-line tool & agent skill"),
+                        )
                         .child(div().text_sm().text_color(theme.muted_foreground).child(
                             "Puts agent-chat on your PATH and installs a skill so Claude Code knows how to use it.",
                         ))
                         .child(
                             h_flex()
                                 .gap_2()
-                                .child(Button::new("run-install").label("Install now").on_click(move |_, _, cx| {
-                                    t2.update(cx, |a, cx| a.run_install(cx))
-                                }))
+                                .child(
+                                    Button::new("run-install")
+                                        .label("Install now")
+                                        .on_click(move |_, _, cx| t2.update(cx, |a, cx| a.run_install(cx))),
+                                )
                                 .child(
                                     Button::new("copy-mcp")
                                         .ghost()
-                                        .label(if copied == Some("mcp") { "Copied ✓" } else { "Copy MCP setup for Claude Code" })
+                                        .label(if copied == Some("mcp") {
+                                            "Copied ✓"
+                                        } else {
+                                            "Copy MCP setup for Claude Code"
+                                        })
                                         .on_click(move |_, _, cx| t3.update(cx, |a, cx| a.copy_for_agent("mcp", cx))),
                                 )
                                 .child(
                                     Button::new("copy-install")
                                         .ghost()
-                                        .label(if copied == Some("install") { "Copied ✓" } else { "Copy install command" })
-                                        .on_click(move |_, _, cx| t4.update(cx, |a, cx| a.copy_for_agent("install", cx))),
+                                        .label(if copied == Some("install") {
+                                            "Copied ✓"
+                                        } else {
+                                            "Copy install command"
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            t4.update(cx, |a, cx| a.copy_for_agent("install", cx))
+                                        }),
                                 ),
                         )
                         .when_some(install_result, |el, r| {
-                            el.child(div().text_xs().font_family("Menlo").text_color(theme.muted_foreground).child(r))
+                            el.child(
+                                div()
+                                    .text_xs()
+                                    .font_family("Menlo")
+                                    .text_color(theme.muted_foreground)
+                                    .child(r),
+                            )
                         }),
                 )
                 .footer(DialogFooter::new().child(DialogClose::new().trigger(|b| b.label("Done"))))
@@ -1051,12 +1150,20 @@ impl ChatApp {
 
     fn set_trust(&mut self, jid: String, fingerprint: String, trusted: bool, cx: &mut Context<Self>) {
         let reload = jid.clone();
-        self.call::<DeviceInfo>(Request::OmemoSetTrust { jid, fingerprint, trusted }, cx, move |this, r, cx| {
-            if let Err(e) = r {
-                this.error = Some(format!("Couldn't change trust: {e}"));
-            }
-            this.load_devices(reload, cx);
-        });
+        self.call::<DeviceInfo>(
+            Request::OmemoSetTrust {
+                jid,
+                fingerprint,
+                trusted,
+            },
+            cx,
+            move |this, r, cx| {
+                if let Err(e) = r {
+                    this.error = Some(format!("Couldn't change trust: {e}"));
+                }
+                this.load_devices(reload, cx);
+            },
+        );
     }
 
     // ---------------------------------------------------------------- views
@@ -1068,14 +1175,21 @@ impl ChatApp {
             if c.kind == MessageKind::Groupchat || room_jids.contains(&c.conversation.to_lowercase()) {
                 continue;
             }
-            let contact = self.contacts.iter().find(|x| x.jid.eq_ignore_ascii_case(&c.conversation));
+            let contact = self
+                .contacts
+                .iter()
+                .find(|x| x.jid.eq_ignore_ascii_case(&c.conversation));
             out.push(ChatEntry {
                 jid: c.conversation.clone(),
                 title: contact
                     .and_then(|x| x.name.clone())
                     .unwrap_or_else(|| c.conversation.clone()),
                 preview: c.last_message.as_ref().map(|m| {
-                    let p = if m.own { format!("You: {}", m.body) } else { m.body.clone() };
+                    let p = if m.own {
+                        format!("You: {}", m.body)
+                    } else {
+                        m.body.clone()
+                    };
                     p.replace('\n', " ")
                 }),
                 presence: contact.map(|x| x.presence.show),
@@ -1107,6 +1221,7 @@ impl ChatApp {
             .unwrap_or(0)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn sidebar_row(
         &self,
         id: SharedString,
@@ -1128,7 +1243,9 @@ impl ChatApp {
             .gap_2()
             .rounded_md()
             .cursor_pointer()
-            .when(active, |el| el.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
+            .when(active, |el| {
+                el.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground)
+            })
             .when(!active, |el| el.hover(|s| s.bg(theme.sidebar_accent.opacity(0.5))))
             .child(
                 div()
@@ -1175,7 +1292,11 @@ impl ChatApp {
                         .bg(theme.primary)
                         .text_color(theme.primary_foreground)
                         .text_xs()
-                        .child(if unread > 99 { "99+".to_string() } else { unread.to_string() }),
+                        .child(if unread > 99 {
+                            "99+".to_string()
+                        } else {
+                            unread.to_string()
+                        }),
                 )
             })
             .on_click(cx.listener(move |this, _, window, cx| this.select(jid.clone(), window, cx)))
@@ -1227,8 +1348,16 @@ impl ChatApp {
         let mut room_rows = Vec::new();
         for (i, r) in self.rooms.clone().into_iter().enumerate() {
             let subtitle = Some(if r.joined {
-                let base = r.subject.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| format!("{} here", r.occupants.len()));
-                if r.private { format!("Encrypted · {base}") } else { base }
+                let base = r
+                    .subject
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| format!("{} here", r.occupants.len()));
+                if r.private {
+                    format!("Encrypted · {base}")
+                } else {
+                    base
+                }
             } else {
                 "not joined".to_string()
             });
@@ -1270,13 +1399,21 @@ impl ChatApp {
                                 v_flex()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).truncate().child(account))
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .truncate()
+                                            .child(account),
+                                    )
                                     .child(
                                         h_flex()
                                             .gap_1()
                                             .items_center()
                                             .child(div().size(px(7.)).rounded_full().bg(state_color))
-                                            .child(div().text_xs().text_color(theme.muted_foreground).child(state_label)),
+                                            .child(
+                                                div().text_xs().text_color(theme.muted_foreground).child(state_label),
+                                            ),
                                     ),
                             ),
                     )
@@ -1305,52 +1442,102 @@ impl ChatApp {
                     .gap_1()
                     // Incoming subscription requests
                     .when(!pending.is_empty(), |el| {
-                        el.child(div().px_2().pt_1().text_xs().text_color(theme.muted_foreground).child("REQUESTS"))
-                            .children(pending.into_iter().map(|p| {
-                                let (a, d) = (p.jid.clone(), p.jid.clone());
-                                h_flex()
-                                    .px_2()
-                                    .py_1()
-                                    .gap_2()
-                                    .child(div().flex_1().min_w_0().text_sm().truncate().child(p.jid.clone()))
-                                    .child(Button::new(SharedString::from(format!("approve-{}", p.jid))).xsmall().primary().label("Accept").on_click(
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.call::<serde_json::Value>(Request::ContactApprove { jid: a.clone() }, cx, |t, _, cx| t.reload_contacts(cx));
-                                        }),
-                                    ))
-                                    .child(Button::new(SharedString::from(format!("deny-{}", p.jid))).xsmall().ghost().label("Decline").on_click(
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.call::<serde_json::Value>(Request::ContactDeny { jid: d.clone() }, cx, |t, _, cx| t.reload_contacts(cx));
-                                        }),
-                                    ))
-                            }))
+                        el.child(
+                            div()
+                                .px_2()
+                                .pt_1()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("REQUESTS"),
+                        )
+                        .children(pending.into_iter().map(|p| {
+                            let (a, d) = (p.jid.clone(), p.jid.clone());
+                            h_flex()
+                                .px_2()
+                                .py_1()
+                                .gap_2()
+                                .child(div().flex_1().min_w_0().text_sm().truncate().child(p.jid.clone()))
+                                .child(
+                                    Button::new(SharedString::from(format!("approve-{}", p.jid)))
+                                        .xsmall()
+                                        .primary()
+                                        .label("Accept")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.call::<serde_json::Value>(
+                                                Request::ContactApprove { jid: a.clone() },
+                                                cx,
+                                                |t, _, cx| t.reload_contacts(cx),
+                                            );
+                                        })),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!("deny-{}", p.jid)))
+                                        .xsmall()
+                                        .ghost()
+                                        .label("Decline")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.call::<serde_json::Value>(
+                                                Request::ContactDeny { jid: d.clone() },
+                                                cx,
+                                                |t, _, cx| t.reload_contacts(cx),
+                                            );
+                                        })),
+                                )
+                        }))
                     })
                     // Group chat invitations
                     .when(!invites.is_empty(), |el| {
-                        el.child(div().px_2().pt_1().text_xs().text_color(theme.muted_foreground).child("INVITATIONS"))
-                            .children(invites.into_iter().map(|i| {
-                                let (a, d) = (i.room.clone(), i.room.clone());
-                                v_flex()
-                                    .px_2()
-                                    .py_1()
-                                    .gap_1()
-                                    .child(div().text_sm().truncate().child(local_part(&i.room)))
-                                    .child(div().text_xs().text_color(theme.muted_foreground).truncate().child(format!(
-                                        "{}{}",
-                                        i.from.clone().map(|f| format!("from {f}")).unwrap_or_default(),
-                                        i.reason.clone().map(|r| format!(" — {r}")).unwrap_or_default()
-                                    )))
-                                    .child(
-                                        h_flex()
-                                            .gap_1()
-                                            .child(Button::new(SharedString::from(format!("accept-{}", i.room))).xsmall().primary().label("Join").on_click(
-                                                cx.listener(move |this, _, _, cx| this.accept_invite(a.clone(), cx)),
-                                            ))
-                                            .child(Button::new(SharedString::from(format!("decline-{}", i.room))).xsmall().ghost().label("Ignore").on_click(
-                                                cx.listener(move |this, _, _, cx| this.decline_invite(d.clone(), cx)),
-                                            )),
-                                    )
-                            }))
+                        el.child(
+                            div()
+                                .px_2()
+                                .pt_1()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("INVITATIONS"),
+                        )
+                        .children(invites.into_iter().map(|i| {
+                            let (a, d) = (i.room.clone(), i.room.clone());
+                            v_flex()
+                                .px_2()
+                                .py_1()
+                                .gap_1()
+                                .child(div().text_sm().truncate().child(local_part(&i.room)))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .truncate()
+                                        .child(format!(
+                                            "{}{}",
+                                            i.from.clone().map(|f| format!("from {f}")).unwrap_or_default(),
+                                            i.reason.clone().map(|r| format!(" — {r}")).unwrap_or_default()
+                                        )),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_1()
+                                        .child(
+                                            Button::new(SharedString::from(format!("accept-{}", i.room)))
+                                                .xsmall()
+                                                .primary()
+                                                .label("Join")
+                                                .on_click(
+                                                    cx.listener(move |this, _, _, cx| {
+                                                        this.accept_invite(a.clone(), cx)
+                                                    }),
+                                                ),
+                                        )
+                                        .child(
+                                            Button::new(SharedString::from(format!("decline-{}", i.room)))
+                                                .xsmall()
+                                                .ghost()
+                                                .label("Ignore")
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.decline_invite(d.clone(), cx)
+                                                })),
+                                        ),
+                                )
+                        }))
                     })
                     // Chats
                     .child(
@@ -1403,7 +1590,11 @@ impl ChatApp {
                 "{} · {} participants{}",
                 r.jid,
                 r.occupants.len(),
-                r.subject.clone().filter(|s| !s.is_empty()).map(|s| format!(" · {s}")).unwrap_or_default()
+                r.subject
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!(" · {s}"))
+                    .unwrap_or_default()
             ),
             (_, Some(c)) => format!(
                 "{} · {}{}",
@@ -1440,7 +1631,13 @@ impl ChatApp {
                     .flex_1()
                     .min_w_0()
                     .child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(title))
-                    .child(div().text_xs().text_color(theme.muted_foreground).truncate().child(subtitle)),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .truncate()
+                            .child(subtitle),
+                    ),
             )
             .when(room.is_some(), |el| {
                 el.child(
@@ -1454,8 +1651,19 @@ impl ChatApp {
                                 .px_2()
                                 .text_sm()
                                 .text_color(theme.muted_foreground)
-                                .child(Icon::new(if room_private { LucideIcon::Lock } else { LucideIcon::LockOpen }).small())
-                                .child(if room_private { "Encrypted" } else { "Not encrypted (public room)" }),
+                                .child(
+                                    Icon::new(if room_private {
+                                        LucideIcon::Lock
+                                    } else {
+                                        LucideIcon::LockOpen
+                                    })
+                                    .small(),
+                                )
+                                .child(if room_private {
+                                    "Encrypted"
+                                } else {
+                                    "Not encrypted (public room)"
+                                }),
                         )
                         .child(
                             Button::new("invite")
@@ -1471,8 +1679,14 @@ impl ChatApp {
                 el.child(
                     Button::new("devices")
                         .small()
-                        .when(encrypted, |b| b.ghost().icon(Icon::new(LucideIcon::Lock)).label(format!("Encrypted · {protocol}")))
-                        .when(!encrypted, |b| b.ghost().icon(Icon::new(LucideIcon::LockOpen)).label("Not encrypted"))
+                        .when(encrypted, |b| {
+                            b.ghost()
+                                .icon(Icon::new(LucideIcon::Lock))
+                                .label(format!("Encrypted · {protocol}"))
+                        })
+                        .when(!encrypted, |b| {
+                            b.ghost().icon(Icon::new(LucideIcon::LockOpen)).label("Not encrypted")
+                        })
                         .tooltip("Encryption devices and fingerprints")
                         .on_click(cx.listener(|this, _, window, cx| this.open_devices(window, cx))),
                 )
@@ -1518,10 +1732,13 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
     };
     let theme = cx.theme().clone();
     let local = m.timestamp.with_timezone(&Local);
-    let new_day = ix == 0
-        || messages[ix - 1].timestamp.with_timezone(&Local).date_naive() != local.date_naive();
+    let new_day = ix == 0 || messages[ix - 1].timestamp.with_timezone(&Local).date_naive() != local.date_naive();
     let same_sender_as_prev = ix > 0 && !new_day && messages[ix - 1].from == m.from && messages[ix - 1].own == m.own;
-    let align = if m.own { MessageAlignment::End } else { MessageAlignment::Start };
+    let align = if m.own {
+        MessageAlignment::End
+    } else {
+        MessageAlignment::Start
+    };
     let sender = m.nick.clone().unwrap_or_else(|| local_part(&m.from));
 
     let (lock, lock_color, lock_text): (Option<LucideIcon>, Hsla, Option<&str>) = match &m.encryption {
@@ -1534,8 +1751,14 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
 
     let bubble = Bubble::new()
         .alignment(align)
-        .with_variant(if m.own { BubbleVariant::Filled } else { BubbleVariant::Secondary })
-        .when(m.encryption.as_ref().is_some_and(|e| e.error.is_some()), |b| b.with_variant(BubbleVariant::Outline))
+        .with_variant(if m.own {
+            BubbleVariant::Filled
+        } else {
+            BubbleVariant::Secondary
+        })
+        .when(m.encryption.as_ref().is_some_and(|e| e.error.is_some()), |b| {
+            b.with_variant(BubbleVariant::Outline)
+        })
         .child(m.body.clone());
 
     let mut view = MessageView::new()
@@ -1550,7 +1773,9 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .child(local.format("%H:%M").to_string())
-                    .when_some(lock, |el, icon| el.child(Icon::new(icon).xsmall().text_color(lock_color)))
+                    .when_some(lock, |el, icon| {
+                        el.child(Icon::new(icon).xsmall().text_color(lock_color))
+                    })
                     .when_some(lock_text, |el, t| el.child(div().text_color(lock_color).child(t)))
                     .when(m.delayed && !m.own, |el| el.child("· delayed")),
             ),
@@ -1576,20 +1801,16 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
         .pt(if same_sender_as_prev { px(2.) } else { px(10.) })
         .when(new_day, |el| {
             el.child(
-                h_flex()
-                    .w_full()
-                    .justify_center()
-                    .py_2()
-                    .child(
-                        div()
-                            .px_3()
-                            .py_0p5()
-                            .rounded_full()
-                            .bg(theme.muted)
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(day_label(local.date_naive())),
-                    ),
+                h_flex().w_full().justify_center().py_2().child(
+                    div()
+                        .px_3()
+                        .py_0p5()
+                        .rounded_full()
+                        .bg(theme.muted)
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(day_label(local.date_naive())),
+                ),
             )
         })
         .child(view)
@@ -1615,7 +1836,8 @@ impl Render for ChatApp {
         // once we're connected and, for rooms, once the room shows up.
         if let Some(jid) = self.pending_select.clone() {
             let online = self.status.as_ref().is_some_and(|s| s.state == ConnectionState::Online);
-            let room_pending = jid.contains("@conference") && !self.rooms.iter().any(|r| r.jid.eq_ignore_ascii_case(&jid));
+            let room_pending =
+                jid.contains("@conference") && !self.rooms.iter().any(|r| r.jid.eq_ignore_ascii_case(&jid));
             if online && !room_pending {
                 self.pending_select = None;
                 self.select(jid, window, cx);
@@ -1645,16 +1867,12 @@ impl Render for ChatApp {
                                 .text_sm()
                                 .text_color(theme.danger)
                                 .child(div().flex_1().child(e))
-                                .child(
-                                    Button::new("dismiss-error")
-                                        .xsmall()
-                                        .ghost()
-                                        .label("Dismiss")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.error = None;
-                                            cx.notify();
-                                        })),
-                                ),
+                                .child(Button::new("dismiss-error").xsmall().ghost().label("Dismiss").on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.error = None;
+                                        cx.notify();
+                                    }),
+                                )),
                         )
                     })
                     .child(match selected {

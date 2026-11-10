@@ -194,12 +194,21 @@ impl Raw {
                 }
                 let mut chunk = [0u8; 8192];
                 let n = self.stream.read(&mut chunk).await.unwrap();
-                assert!(n > 0, "EOF while waiting for {needle:?}; got {:?}", String::from_utf8_lossy(&self.buf));
+                assert!(
+                    n > 0,
+                    "EOF while waiting for {needle:?}; got {:?}",
+                    String::from_utf8_lossy(&self.buf)
+                );
                 self.buf.extend_from_slice(&chunk[..n]);
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("timed out waiting for {needle:?}; got {:?}", String::from_utf8_lossy(&self.buf)))
+        .unwrap_or_else(|_| {
+            panic!(
+                "timed out waiting for {needle:?}; got {:?}",
+                String::from_utf8_lossy(&self.buf)
+            )
+        })
     }
 
     /// Everything until the peer closes (or resets) the connection.
@@ -257,7 +266,10 @@ impl Raw {
             return String::from_utf8(std::mem::take(&mut self.buf)).unwrap();
         }
         let mut chunk = [0u8; 8192];
-        let n = tokio::time::timeout(TIMEOUT, self.stream.read(&mut chunk)).await.unwrap().unwrap();
+        let n = tokio::time::timeout(TIMEOUT, self.stream.read(&mut chunk))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(n > 0, "EOF");
         String::from_utf8(chunk[..n].to_vec()).unwrap()
     }

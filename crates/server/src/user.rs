@@ -239,7 +239,11 @@ impl UserActor {
                 let last = resources.len() - 1;
                 let mut el = Some(el);
                 for (i, r) in resources.iter().enumerate() {
-                    let copy = if i == last { el.take().unwrap() } else { el.clone().unwrap() };
+                    let copy = if i == last {
+                        el.take().unwrap()
+                    } else {
+                        el.clone().unwrap()
+                    };
                     self.send(r, copy);
                 }
             }

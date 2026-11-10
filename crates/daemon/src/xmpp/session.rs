@@ -93,9 +93,7 @@ impl SessionHandle {
 pub fn start(core: Arc<Core>, acct: &AccountConfig, password: String) -> Result<SessionHandle> {
     acct.validate()?;
     let bare = BareJid::new(&acct.jid).with_context(|| format!("invalid JID {:?}", acct.jid))?;
-    let full: FullJid = bare
-        .with_resource_str(&acct.resource)
-        .context("invalid resource")?;
+    let full: FullJid = bare.with_resource_str(&acct.resource).context("invalid resource")?;
     let dns = match &acct.host {
         Some(host) => DnsConfig::no_srv(host, acct.port.unwrap_or(5222)),
         None => DnsConfig::srv_default_client(bare.domain().as_str()),
@@ -235,12 +233,7 @@ impl Actor {
             }
             Iq::Error { from, id, error, .. } => {
                 if let Some(w) = self.pending.remove(&(from_key(&from), id)) {
-                    let text = error
-                        .texts
-                        .values()
-                        .next()
-                        .cloned()
-                        .unwrap_or_default();
+                    let text = error.texts.values().next().cloned().unwrap_or_default();
                     let _ = w.send(Err(anyhow!(
                         "{:?}{}{}",
                         error.defined_condition,

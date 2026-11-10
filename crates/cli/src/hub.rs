@@ -5,7 +5,9 @@ use std::io::IsTerminal;
 use std::process::Stdio;
 use std::time::Duration;
 
-use agent_chat_server::admin::{AdminCallError, AdminClient, AdminErrorCode, AdminRequest, HubStatus, UserCreated, UserInfo};
+use agent_chat_server::admin::{
+    AdminCallError, AdminClient, AdminErrorCode, AdminRequest, HubStatus, UserCreated, UserInfo,
+};
 use agent_chat_server::config::TlsMode;
 use agent_chat_server::{Config, HubPaths, InitOptions, RuntimeInfo};
 use anyhow::{Context, Result, anyhow};
@@ -81,7 +83,12 @@ pub enum UserCmd {
 pub async fn run(cmd: HubCmd, fmt: Format) -> Result<()> {
     let paths = HubPaths::resolve()?;
     match cmd {
-        HubCmd::Init { domain, lan, listen, tls } => {
+        HubCmd::Init {
+            domain,
+            lan,
+            listen,
+            tls,
+        } => {
             let report = agent_chat_server::init(
                 &paths,
                 InitOptions {
@@ -126,7 +133,11 @@ pub async fn run(cmd: HubCmd, fmt: Format) -> Result<()> {
             print_json(&json!({"ok": true, "stopped": true}));
         }
         HubCmd::Status => {
-            let status: HubStatus = connect(&paths).await?.call(AdminRequest::Status).await.map_err(admin_err)?;
+            let status: HubStatus = connect(&paths)
+                .await?
+                .call(AdminRequest::Status)
+                .await
+                .map_err(admin_err)?;
             match fmt {
                 Format::Json => print_json(&status),
                 Format::Text => print_status_text(&status),
@@ -165,13 +176,19 @@ async fn user(paths: &HubPaths, cmd: UserCmd, fmt: Format) -> Result<()> {
             }
         }
         UserCmd::Del { name } => {
-            client.call_value(AdminRequest::UserDel { username: name }).await.map_err(admin_err)?;
+            client
+                .call_value(AdminRequest::UserDel { username: name })
+                .await
+                .map_err(admin_err)?;
             print_json(&json!({"ok": true}));
         }
         UserCmd::Passwd { name, password_stdin } => {
             let password = password_stdin.then(read_password_line).transpose()?;
             let v = client
-                .call_value(AdminRequest::UserPasswd { username: name, password })
+                .call_value(AdminRequest::UserPasswd {
+                    username: name,
+                    password,
+                })
                 .await
                 .map_err(admin_err)?;
             print_json(&json!({"ok": true, "password": v.get("password").cloned().unwrap_or(Value::Null)}));

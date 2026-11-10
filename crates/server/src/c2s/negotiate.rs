@@ -117,7 +117,9 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
     let budget = Budget::new(limits.unauth_stanza_bytes.0 as usize);
     let rate = (!loopback).then(|| RateLimit::new(limits.session_rate.0, limits.session_burst.0));
     let io: Io = ConnIo::new(Transport::Plain(tcp), budget.clone(), rate);
-    let mut accepted = accept_stream(io, NS_CLIENT, timeouts()).await.context("reading the stream header")?;
+    let mut accepted = accept_stream(io, NS_CLIENT, timeouts())
+        .await
+        .context("reading the stream header")?;
     let mut ch = ChannelState {
         loopback,
         prefix: ip_prefix(peer),
@@ -149,7 +151,12 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
                 };
                 if el.is("starttls", ns::TLS) {
                     let Some(material) = ctx.tls.as_ref().filter(|_| !ch.tls) else {
-                        close_with_error(&mut stream, StreamCondition::PolicyViolation, "STARTTLS is not available").await;
+                        close_with_error(
+                            &mut stream,
+                            StreamCondition::PolicyViolation,
+                            "STARTTLS is not available",
+                        )
+                        .await;
                         return Ok(None);
                     };
                     stream.send(&Proceed).await?;
@@ -239,7 +246,10 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
                 stream.send(&stanza::iq_result(&el, Some(&ctx.domain), None)).await?;
                 continue;
             }
-            let Some(bind) = el.get_child("bind", ns::BIND).filter(|_| stanza::stanza_type(&el) == "set") else {
+            let Some(bind) = el
+                .get_child("bind", ns::BIND)
+                .filter(|_| stanza::stanza_type(&el) == "set")
+            else {
                 if let Some(e) = stanza::error_reply(&el, Condition::NotAllowed, Some(&ctx.domain)) {
                     stream.send(&e).await?;
                 }
@@ -476,11 +486,13 @@ async fn scram_exchange(
         (CbFlag::Used(_), false) => false,
     };
     if !cb_ok {
-        return Ok(SaslOutcome::Failure(if mech.is_plus() || matches!(first.cb, CbFlag::Used(_)) {
-            Failure::MalformedRequest
-        } else {
-            Failure::NotAuthorized
-        }));
+        return Ok(SaslOutcome::Failure(
+            if mech.is_plus() || matches!(first.cb, CbFlag::Used(_)) {
+                Failure::MalformedRequest
+            } else {
+                Failure::NotAuthorized
+            },
+        ));
     }
     let username = normalize_username(&first.username).unwrap_or_else(|_| first.username.clone());
     if let Some(a) = &first.authzid
@@ -513,10 +525,13 @@ async fn scram_exchange(
             },
         ),
     };
-    let cb_data = if mech.is_plus() { ch.cb_data.clone().unwrap_or_default() } else { Vec::new() };
+    let cb_data = if mech.is_plus() {
+        ch.cb_data.clone().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let server_nonce = B64.encode(random_bytes::<18>());
-    let (exchange, server_first) =
-        Exchange::start(hash, first, &salt, iterations, scram_keys, &server_nonce, cb_data);
+    let (exchange, server_first) = Exchange::start(hash, first, &salt, iterations, scram_keys, &server_nonce, cb_data);
     stream
         .send(&Challenge {
             data: server_first.into_bytes(),

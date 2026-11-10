@@ -114,18 +114,33 @@ unsafe extern "C" fn sha512_cleanup(ctx: *mut c_void, _: *mut c_void) {
 
 fn cbc_encrypt(key: &[u8], iv: &[u8], pt: &[u8]) -> Option<Vec<u8>> {
     Some(match key.len() {
-        16 => cbc::Encryptor::<aes::Aes128>::new_from_slices(key, iv).ok()?.encrypt_padded_vec_mut::<Pkcs7>(pt),
-        24 => cbc::Encryptor::<aes::Aes192>::new_from_slices(key, iv).ok()?.encrypt_padded_vec_mut::<Pkcs7>(pt),
-        32 => cbc::Encryptor::<aes::Aes256>::new_from_slices(key, iv).ok()?.encrypt_padded_vec_mut::<Pkcs7>(pt),
+        16 => cbc::Encryptor::<aes::Aes128>::new_from_slices(key, iv)
+            .ok()?
+            .encrypt_padded_vec_mut::<Pkcs7>(pt),
+        24 => cbc::Encryptor::<aes::Aes192>::new_from_slices(key, iv)
+            .ok()?
+            .encrypt_padded_vec_mut::<Pkcs7>(pt),
+        32 => cbc::Encryptor::<aes::Aes256>::new_from_slices(key, iv)
+            .ok()?
+            .encrypt_padded_vec_mut::<Pkcs7>(pt),
         _ => return None,
     })
 }
 
 fn cbc_decrypt(key: &[u8], iv: &[u8], ct: &[u8]) -> Option<Vec<u8>> {
     match key.len() {
-        16 => cbc::Decryptor::<aes::Aes128>::new_from_slices(key, iv).ok()?.decrypt_padded_vec_mut::<Pkcs7>(ct).ok(),
-        24 => cbc::Decryptor::<aes::Aes192>::new_from_slices(key, iv).ok()?.decrypt_padded_vec_mut::<Pkcs7>(ct).ok(),
-        32 => cbc::Decryptor::<aes::Aes256>::new_from_slices(key, iv).ok()?.decrypt_padded_vec_mut::<Pkcs7>(ct).ok(),
+        16 => cbc::Decryptor::<aes::Aes128>::new_from_slices(key, iv)
+            .ok()?
+            .decrypt_padded_vec_mut::<Pkcs7>(ct)
+            .ok(),
+        24 => cbc::Decryptor::<aes::Aes192>::new_from_slices(key, iv)
+            .ok()?
+            .decrypt_padded_vec_mut::<Pkcs7>(ct)
+            .ok(),
+        32 => cbc::Decryptor::<aes::Aes256>::new_from_slices(key, iv)
+            .ok()?
+            .decrypt_padded_vec_mut::<Pkcs7>(ct)
+            .ok(),
         _ => None,
     }
 }
@@ -133,9 +148,15 @@ fn cbc_decrypt(key: &[u8], iv: &[u8], ct: &[u8]) -> Option<Vec<u8>> {
 fn ctr_apply(key: &[u8], iv: &[u8], data: &[u8]) -> Option<Vec<u8>> {
     let mut buf = data.to_vec();
     match key.len() {
-        16 => ctr::Ctr128BE::<aes::Aes128>::new_from_slices(key, iv).ok()?.apply_keystream(&mut buf),
-        24 => ctr::Ctr128BE::<aes::Aes192>::new_from_slices(key, iv).ok()?.apply_keystream(&mut buf),
-        32 => ctr::Ctr128BE::<aes::Aes256>::new_from_slices(key, iv).ok()?.apply_keystream(&mut buf),
+        16 => ctr::Ctr128BE::<aes::Aes128>::new_from_slices(key, iv)
+            .ok()?
+            .apply_keystream(&mut buf),
+        24 => ctr::Ctr128BE::<aes::Aes192>::new_from_slices(key, iv)
+            .ok()?
+            .apply_keystream(&mut buf),
+        32 => ctr::Ctr128BE::<aes::Aes256>::new_from_slices(key, iv)
+            .ok()?
+            .apply_keystream(&mut buf),
         _ => return None,
     }
     Some(buf)

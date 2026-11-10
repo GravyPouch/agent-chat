@@ -156,7 +156,9 @@ impl Context {
         let mut key = ptr::null_mut();
         let rc = match self.version {
             Version::Legacy => unsafe { sys::curve_decode_point(&mut key, data.as_ptr(), data.len(), self.global) },
-            Version::Omemo2 => unsafe { sys::curve_decode_point_mont(&mut key, data.as_ptr(), data.len(), self.global) },
+            Version::Omemo2 => unsafe {
+                sys::curve_decode_point_mont(&mut key, data.as_ptr(), data.len(), self.global)
+            },
         };
         check(rc)?;
         Ok(Ref(key))
@@ -181,9 +183,15 @@ impl Context {
         let kp = Ref(kp);
         let (mut pub_buf, mut priv_buf) = (ptr::null_mut(), ptr::null_mut());
         unsafe {
-            check(sys::ec_public_key_serialize(&mut pub_buf, sys::ratchet_identity_key_pair_get_public(kp.0)))?;
+            check(sys::ec_public_key_serialize(
+                &mut pub_buf,
+                sys::ratchet_identity_key_pair_get_public(kp.0),
+            ))?;
             let pub_buf = Buf(pub_buf);
-            check(sys::ec_private_key_serialize(&mut priv_buf, sys::ratchet_identity_key_pair_get_private(kp.0)))?;
+            check(sys::ec_private_key_serialize(
+                &mut priv_buf,
+                sys::ratchet_identity_key_pair_get_private(kp.0),
+            ))?;
             let priv_buf = Buf(priv_buf);
             Ok((pub_buf.to_vec(), priv_buf.to_vec()))
         }
@@ -240,7 +248,11 @@ impl Context {
     }
 
     /// Build our publishable bundle from stored records.
-    pub fn own_bundle(&self, signed_pre_key_record: &[u8], pre_key_records: &[(u32, Vec<u8>)]) -> Result<OwnBundle, Error> {
+    pub fn own_bundle(
+        &self,
+        signed_pre_key_record: &[u8],
+        pre_key_records: &[(u32, Vec<u8>)],
+    ) -> Result<OwnBundle, Error> {
         let mut spk = ptr::null_mut();
         check(unsafe {
             sys::session_signed_pre_key_deserialize(
@@ -376,7 +388,9 @@ impl Context {
             if kex {
                 let mut m = ptr::null_mut();
                 let rc = match self.version {
-                    Version::Legacy => sys::pre_key_signal_message_deserialize(&mut m, data.as_ptr(), data.len(), self.global),
+                    Version::Legacy => {
+                        sys::pre_key_signal_message_deserialize(&mut m, data.as_ptr(), data.len(), self.global)
+                    }
                     Version::Omemo2 => sys::pre_key_signal_message_deserialize_omemo(
                         &mut m,
                         data.as_ptr(),
@@ -390,16 +404,28 @@ impl Context {
                 if sys::pre_key_signal_message_has_pre_key_id(m.0) != 0 {
                     used_pre_key = Some(sys::pre_key_signal_message_get_pre_key_id(m.0));
                 }
-                check(sys::session_cipher_decrypt_pre_key_signal_message(cipher, m.0, ptr::null_mut(), &mut out))?;
+                check(sys::session_cipher_decrypt_pre_key_signal_message(
+                    cipher,
+                    m.0,
+                    ptr::null_mut(),
+                    &mut out,
+                ))?;
             } else {
                 let mut m = ptr::null_mut();
                 let rc = match self.version {
                     Version::Legacy => sys::signal_message_deserialize(&mut m, data.as_ptr(), data.len(), self.global),
-                    Version::Omemo2 => sys::signal_message_deserialize_omemo(&mut m, data.as_ptr(), data.len(), self.global),
+                    Version::Omemo2 => {
+                        sys::signal_message_deserialize_omemo(&mut m, data.as_ptr(), data.len(), self.global)
+                    }
                 };
                 check(rc)?;
                 let m = Ref(m);
-                check(sys::session_cipher_decrypt_signal_message(cipher, m.0, ptr::null_mut(), &mut out))?;
+                check(sys::session_cipher_decrypt_signal_message(
+                    cipher,
+                    m.0,
+                    ptr::null_mut(),
+                    &mut out,
+                ))?;
             }
             let out = Buf(out);
             Ok(Decrypted {

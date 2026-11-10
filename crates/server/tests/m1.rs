@@ -73,7 +73,12 @@ async fn at1_scram_sha256_plus_over_tls13() {
     let mut c = hub.tls_client("alice@hubtest.local/laptop", ALICE_PW);
     assert_eq!(online(&mut c).await, jid("alice@hubtest.local/laptop"));
     let st = hub.status().await;
-    assert_eq!(TestHub::auth_count(&st, "SCRAM-SHA-256-PLUS", "success"), 1, "{:?}", st.auth);
+    assert_eq!(
+        TestHub::auth_count(&st, "SCRAM-SHA-256-PLUS", "success"),
+        1,
+        "{:?}",
+        st.auth
+    );
     assert_eq!(st.sessions, 1);
     c.close().await;
     hub.stop().await;
@@ -99,8 +104,10 @@ async fn at1_plain_is_refused_before_tls() {
     assert!(!features.contains("PLAIN"), "PLAIN offered before TLS: {features}");
     assert!(!features.contains("-PLUS"), "-PLUS without channel binding: {features}");
     // "\0alice\0alice-password-123"
-    raw.send("<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>AGFsaWNlAGFsaWNlLXBhc3N3b3JkLTEyMw==</auth>")
-        .await;
+    raw.send(
+        "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>AGFsaWNlAGFsaWNlLXBhc3N3b3JkLTEyMw==</auth>",
+    )
+    .await;
     let reply = raw.read_until("</failure>").await;
     assert!(reply.contains("encryption-required"), "{reply}");
     hub.stop().await;
@@ -115,12 +122,28 @@ async fn plain_and_plus_offers_under_tls() {
     };
     let me = jid("alice@hubtest.local");
     for (password, ok) in [("wrong-password-1", false), (ALICE_PW, true)] {
-        let (pending, cb) = connector.connect(&me, "jabber:client", Timeouts::tight()).await.unwrap();
+        let (pending, cb) = connector
+            .connect(&me, "jabber:client", Timeouts::tight())
+            .await
+            .unwrap();
         let (features, stream) = pending.recv_features().await.unwrap();
-        for m in ["SCRAM-SHA-256-PLUS", "SCRAM-SHA-1-PLUS", "SCRAM-SHA-256", "SCRAM-SHA-1", "PLAIN"] {
-            assert!(features.sasl_mechanisms.contains(m), "{m} missing: {:?}", features.sasl_mechanisms);
+        for m in [
+            "SCRAM-SHA-256-PLUS",
+            "SCRAM-SHA-1-PLUS",
+            "SCRAM-SHA-256",
+            "SCRAM-SHA-1",
+            "PLAIN",
+        ] {
+            assert!(
+                features.sasl_mechanisms.contains(m),
+                "{m} missing: {:?}",
+                features.sasl_mechanisms
+            );
         }
-        assert!(features.sasl_cb.is_some(), "XEP-0440 channel-binding types not advertised");
+        assert!(
+            features.sasl_cb.is_some(),
+            "XEP-0440 channel-binding types not advertised"
+        );
         let creds = Credentials::default()
             .with_username("alice")
             .with_password(password)
@@ -142,15 +165,27 @@ async fn wrong_password_over_plus_fails() {
         pin: hub.pin.clone(),
     };
     let me = jid("alice@hubtest.local");
-    let (pending, cb) = connector.connect(&me, "jabber:client", Timeouts::tight()).await.unwrap();
+    let (pending, cb) = connector
+        .connect(&me, "jabber:client", Timeouts::tight())
+        .await
+        .unwrap();
     let (features, stream) = pending.recv_features().await.unwrap();
     let creds = Credentials::default()
         .with_username("alice")
         .with_password("not-the-password")
         .with_channel_binding(cb);
-    assert!(tokio_xmpp::client_login(stream, features.sasl_mechanisms, creds).await.is_err());
+    assert!(
+        tokio_xmpp::client_login(stream, features.sasl_mechanisms, creds)
+            .await
+            .is_err()
+    );
     let st = hub.status().await;
-    assert_eq!(TestHub::auth_count(&st, "SCRAM-SHA-256-PLUS", "not-authorized"), 1, "{:?}", st.auth);
+    assert_eq!(
+        TestHub::auth_count(&st, "SCRAM-SHA-256-PLUS", "not-authorized"),
+        1,
+        "{:?}",
+        st.auth
+    );
     hub.stop().await;
 }
 
@@ -161,7 +196,12 @@ async fn a_wrong_pin_fails_before_any_sasl() {
         addr: hub.addr,
         pin: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
     };
-    assert!(connector.connect(&jid("alice@hubtest.local"), "jabber:client", Timeouts::tight()).await.is_err());
+    assert!(
+        connector
+            .connect(&jid("alice@hubtest.local"), "jabber:client", Timeouts::tight())
+            .await
+            .is_err()
+    );
     assert!(hub.status().await.auth.is_empty());
     hub.stop().await;
 }
@@ -212,7 +252,10 @@ async fn at3_unauthenticated_stanza_over_10000_bytes_is_a_policy_violation() {
     let (mut raw, _) = Raw::start(hub.addr).await;
     raw.send(&message_of_len(10_000)).await;
     let out = raw.read_to_end().await;
-    assert!(out.contains("not-authorized") && !out.contains("policy-violation"), "{out}");
+    assert!(
+        out.contains("not-authorized") && !out.contains("policy-violation"),
+        "{out}"
+    );
     // One byte more: policy-violation.
     let (mut raw, _) = Raw::start(hub.addr).await;
     raw.send(&message_of_len(10_001)).await;
@@ -258,7 +301,10 @@ async fn at4_second_bind_with_same_resource_replaces_the_first() {
     let hub = hub_with_users().await;
     let (mut first, features) = Raw::login(hub.addr, "alice", ALICE_PW).await;
     assert!(features.contains("urn:ietf:params:xml:ns:xmpp-bind"), "{features}");
-    assert!(!features.contains("mechanisms"), "empty SASL mechanisms after auth: {features}");
+    assert!(
+        !features.contains("mechanisms"),
+        "empty SASL mechanisms after auth: {features}"
+    );
     let r = first.bind("desk").await;
     assert!(r.contains("alice@hubtest.local/desk"), "{r}");
     let (mut second, _) = Raw::login(hub.addr, "alice", ALICE_PW).await;
@@ -294,7 +340,10 @@ async fn messages_and_iqs_route_between_accounts() {
 
     // To a full JID.
     b.send(chat("alice@hubtest.local/a1", "hi alice")).await;
-    assert_eq!(next_message(&mut a).await.bodies.values().next().map(String::as_str), Some("hi alice"));
+    assert_eq!(
+        next_message(&mut a).await.bodies.values().next().map(String::as_str),
+        Some("hi alice")
+    );
 
     // To an offline resource: treated as the bare JID.
     b.send(chat("alice@hubtest.local/gone", "anyone?")).await;
@@ -302,9 +351,19 @@ async fn messages_and_iqs_route_between_accounts() {
     assert_eq!(m.bodies.values().next().map(String::as_str), Some("anyone?"));
 
     // IQs to an online full JID are delivered; the answer comes back.
-    a.send(iq_get("bob@hubtest.local/b1", "v1", "<query xmlns='jabber:iq:version'/>")).await;
+    a.send(iq_get(
+        "bob@hubtest.local/b1",
+        "v1",
+        "<query xmlns='jabber:iq:version'/>",
+    ))
+    .await;
     let req = next_iq(&mut b).await;
-    let Iq::Get { from: Some(from), id, .. } = req else { panic!("{req:?}") };
+    let Iq::Get {
+        from: Some(from), id, ..
+    } = req
+    else {
+        panic!("{req:?}")
+    };
     assert_eq!(from, jid("alice@hubtest.local/a1"));
     b.send(Box::new(
         Iq::Result {
@@ -319,7 +378,12 @@ async fn messages_and_iqs_route_between_accounts() {
     assert!(matches!(next_iq(&mut a).await, Iq::Result { id, .. } if id == "v1"));
 
     // IQ to an offline full JID: service-unavailable.
-    a.send(iq_get("bob@hubtest.local/nope", "v2", "<query xmlns='jabber:iq:version'/>")).await;
+    a.send(iq_get(
+        "bob@hubtest.local/nope",
+        "v2",
+        "<query xmlns='jabber:iq:version'/>",
+    ))
+    .await;
     match next_iq(&mut a).await {
         Iq::Error { id, error, .. } => {
             assert_eq!(id, "v2");
@@ -339,7 +403,10 @@ async fn messages_and_iqs_route_between_accounts() {
         assert_eq!(m.type_, MessageType::Error, "{to}");
         assert_eq!(m.from, Some(jid(to)));
         let err = m.payloads.iter().find(|p| p.name() == "error").expect("error payload");
-        assert!(err.has_child(cond_name(&cond), "urn:ietf:params:xml:ns:xmpp-stanzas"), "{to}: {err:?}");
+        assert!(
+            err.has_child(cond_name(&cond), "urn:ietf:params:xml:ns:xmpp-stanzas"),
+            "{to}: {err:?}"
+        );
     }
 
     a.close().await;
@@ -362,9 +429,19 @@ async fn the_domain_answers_ping_and_disco() {
     online(&mut a).await;
     a.send(iq_get(DOMAIN, "ping", "<ping xmlns='urn:xmpp:ping'/>")).await;
     assert!(matches!(next_iq(&mut a).await, Iq::Result { id, .. } if id == "ping"));
-    a.send(iq_get(DOMAIN, "info", "<query xmlns='http://jabber.org/protocol/disco#info'/>")).await;
+    a.send(iq_get(
+        DOMAIN,
+        "info",
+        "<query xmlns='http://jabber.org/protocol/disco#info'/>",
+    ))
+    .await;
     match next_iq(&mut a).await {
-        Iq::Result { id, payload: Some(p), from, .. } => {
+        Iq::Result {
+            id,
+            payload: Some(p),
+            from,
+            ..
+        } => {
             assert_eq!(id, "info");
             assert_eq!(from, Some(jid(DOMAIN)));
             let info = xmpp_parsers::disco::DiscoInfoResult::try_from(p).unwrap();
@@ -406,7 +483,8 @@ async fn unknown_host_gets_host_unknown() {
 async fn stanzas_before_auth_are_refused() {
     let hub = hub_with_users().await;
     let (mut raw, _) = Raw::start(hub.addr).await;
-    raw.send("<message to='bob@hubtest.local'><body>hi</body></message>").await;
+    raw.send("<message to='bob@hubtest.local'><body>hi</body></message>")
+        .await;
     let out = raw.read_to_end().await;
     assert!(out.contains("not-authorized"), "{out}");
     hub.stop().await;
@@ -416,7 +494,8 @@ async fn stanzas_before_auth_are_refused() {
 async fn data_pipelined_after_starttls_closes_the_connection() {
     let hub = hub_with_users().await;
     let (mut raw, _) = Raw::start(hub.addr).await;
-    raw.send("<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/><iq type='get' id='evil'/>").await;
+    raw.send("<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/><iq type='get' id='evil'/>")
+        .await;
     let out = raw.read_to_end().await;
     assert!(out.contains("proceed"), "{out}");
     hub.stop().await;
@@ -466,7 +545,10 @@ async fn deleting_an_account_closes_its_sessions() {
     assert!(out.contains("not-authorized"), "{out}");
     let users: Vec<agent_chat_server::admin::UserInfo> =
         serde_json::from_value(hub.admin(agent_chat_server::admin::AdminRequest::UserList).await).unwrap();
-    assert_eq!(users.iter().map(|u| u.jid.as_str()).collect::<Vec<_>>(), ["alice@hubtest.local"]);
+    assert_eq!(
+        users.iter().map(|u| u.jid.as_str()).collect::<Vec<_>>(),
+        ["alice@hubtest.local"]
+    );
     hub.stop().await;
 }
 
@@ -492,7 +574,10 @@ async fn sessions_are_counted() {
     let mut c = hub.plaintext_client("bob@hubtest.local/c", BOB_PW);
     online(&mut c).await;
     c.send(chat("alice@hubtest.local", "still there?")).await;
-    assert_eq!(next_message(&mut b).await.bodies.values().next().map(String::as_str), Some("still there?"));
+    assert_eq!(
+        next_message(&mut b).await.bodies.values().next().map(String::as_str),
+        Some("still there?")
+    );
     b.close().await;
     c.close().await;
     hub.stop().await;

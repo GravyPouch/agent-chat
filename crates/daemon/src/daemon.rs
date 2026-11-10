@@ -35,8 +35,7 @@ pub async fn run(profile: Profile) -> Result<()> {
     let store = Store::open(&profile.db_path())?;
     let core: Arc<Core> = Core::new(profile.clone(), store, config);
 
-    let listener = UnixListener::bind(&socket)
-        .with_context(|| format!("binding {}", socket.display()))?;
+    let listener = UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

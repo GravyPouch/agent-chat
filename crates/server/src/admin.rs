@@ -223,7 +223,9 @@ async fn handle_connection(ctx: Arc<HubCtx>, stream: UnixStream) {
                 }),
             },
         };
-        let Ok(mut out) = serde_json::to_string(&response) else { return };
+        let Ok(mut out) = serde_json::to_string(&response) else {
+            return;
+        };
         out.push('\n');
         if write.write_all(out.as_bytes()).await.is_err() {
             return;
@@ -239,7 +241,11 @@ async fn dispatch(ctx: &Arc<HubCtx>, req: AdminRequest) -> Result<Value, AdminEr
     let iterations = ctx.config.auth.scram_iterations;
     match req {
         AdminRequest::Status => json(status(ctx).await?),
-        AdminRequest::UserAdd { username, password, admin } => {
+        AdminRequest::UserAdd {
+            username,
+            password,
+            admin,
+        } => {
             let created = accounts::create(
                 &ctx.store,
                 &ctx.domain,
@@ -261,7 +267,12 @@ async fn dispatch(ctx: &Arc<HubCtx>, req: AdminRequest) -> Result<Value, AdminEr
         }
         AdminRequest::UserDel { username } => {
             let localpart = accounts::normalize_username(&username)?;
-            if !ctx.store.delete_account(&ctx.domain, &localpart).await.map_err(internal)? {
+            if !ctx
+                .store
+                .delete_account(&ctx.domain, &localpart)
+                .await
+                .map_err(internal)?
+            {
                 return Err(AccountError::NotFound(format!("{localpart}@{}", ctx.domain)).into());
             }
             if let Ok(bare) = BareJid::new(&format!("{localpart}@{}", ctx.domain)) {
@@ -388,7 +399,10 @@ mod tests {
             },
         };
         let s = serde_json::to_string(&frame).unwrap();
-        assert_eq!(s, r#"{"id":3,"request":{"op":"user_add","username":"alice","admin":false}}"#);
+        assert_eq!(
+            s,
+            r#"{"id":3,"request":{"op":"user_add","username":"alice","admin":false}}"#
+        );
         let back: AdminFrame = serde_json::from_str(r#"{"id":1,"request":{"op":"status"}}"#).unwrap();
         assert_eq!(back.request, AdminRequest::Status);
     }

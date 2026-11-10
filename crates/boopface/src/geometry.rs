@@ -114,7 +114,10 @@ fn target_shape(points: &[(f64, f64)], exponent: f64) -> Vec<(f64, f64)> {
 
 fn mix_points(from: &[(f64, f64)], to: &[(f64, f64)], amount: f64) -> Vec<(f64, f64)> {
     let t = amount.clamp(0.0, 1.0);
-    from.iter().zip(to).map(|(&(ax, ay), &(bx, by))| (ax + (bx - ax) * t, ay + (by - ay) * t)).collect()
+    from.iter()
+        .zip(to)
+        .map(|(&(ax, ay), &(bx, by))| (ax + (bx - ax) * t, ay + (by - ay) * t))
+        .collect()
 }
 
 /// The head outline for a roundness in `0..=100` (50 is BoopFace's default;
@@ -124,9 +127,17 @@ pub fn head_outline(roundness: u8) -> Vec<(f64, f64)> {
     let roundness = f64::from(roundness.min(100));
     let default = f64::from(DEFAULT_ROUNDNESS);
     let points = if roundness < default {
-        mix_points(&baseline, &target_shape(&baseline, 10.0), (default - roundness) / default)
+        mix_points(
+            &baseline,
+            &target_shape(&baseline, 10.0),
+            (default - roundness) / default,
+        )
     } else if roundness > default {
-        mix_points(&baseline, &target_shape(&baseline, 2.2), (roundness - default) / default)
+        mix_points(
+            &baseline,
+            &target_shape(&baseline, 2.2),
+            (roundness - default) / default,
+        )
     } else {
         baseline
     };

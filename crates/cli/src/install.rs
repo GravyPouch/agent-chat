@@ -48,11 +48,7 @@ fn install_binary(src: &Path, dst: &Path) -> Result<bool> {
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|p| {
-        std::env::split_paths(&p)
-            .map(|d| d.join(name))
-            .find(|c| c.is_file())
-    })
+    std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join(name)).find(|c| c.is_file()))
 }
 
 /// The account JID of a profile, read from its config (no daemon needed).
@@ -119,8 +115,17 @@ pub fn install(profile: &Profile, opts: InstallOptions) -> Result<Value> {
                 } else {
                     format!("agent-chat-{}", setup.profile)
                 };
-                let _ = Command::new(&claude).args(["mcp", "remove", "--scope", "user", &name]).output();
-                let mut args = vec!["mcp".to_owned(), "add".into(), "--scope".into(), "user".into(), name, "--".into()];
+                let _ = Command::new(&claude)
+                    .args(["mcp", "remove", "--scope", "user", &name])
+                    .output();
+                let mut args = vec![
+                    "mcp".to_owned(),
+                    "add".into(),
+                    "--scope".into(),
+                    "user".into(),
+                    name,
+                    "--".into(),
+                ];
                 args.push(setup.cli.clone());
                 if setup.profile != agent_chat_proto::paths::DEFAULT_PROFILE {
                     args.push("--profile".into());
@@ -134,7 +139,9 @@ pub fn install(profile: &Profile, opts: InstallOptions) -> Result<Value> {
                     json!({"registered": false, "error": String::from_utf8_lossy(&out.stderr).trim(), "command": setup.claude_mcp_add()})
                 }
             }
-            None => json!({"registered": false, "error": "`claude` not found on PATH", "command": setup.claude_mcp_add()}),
+            None => {
+                json!({"registered": false, "error": "`claude` not found on PATH", "command": setup.claude_mcp_add()})
+            }
         }
     } else {
         Value::Null
@@ -195,7 +202,10 @@ pub fn copy_to_clipboard(text: &str) -> Result<()> {
     ];
     for (cmd, args) in candidates {
         if find_on_path(cmd).is_some() {
-            let mut child = Command::new(cmd).args(*args).stdin(std::process::Stdio::piped()).spawn()?;
+            let mut child = Command::new(cmd)
+                .args(*args)
+                .stdin(std::process::Stdio::piped())
+                .spawn()?;
             child.stdin.take().expect("piped").write_all(text.as_bytes())?;
             child.wait()?;
             return Ok(());
@@ -208,40 +218,6 @@ pub fn open_url(url: &str) -> Result<()> {
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     Command::new(opener).arg(url).spawn()?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn install_into_temp_dirs_and_uninstall() {
-        let dir = tempfile::tempdir().unwrap();
-        let profile = Profile {
-            name: "bot1".into(),
-            dir: dir.path().join("profile"),
-        };
-        let bin = dir.path().join("bin");
-        let skills = dir.path().join("skills");
-        let out = install(
-            &profile,
-            InstallOptions {
-                bin_dir: Some(bin.clone()),
-                skills_dir: Some(skills.clone()),
-                skill: true,
-                mcp: false,
-            },
-        )
-        .unwrap();
-        assert!(bin.join("agent-chat").is_file());
-        let skill = std::fs::read_to_string(skills.join("agent-chat/SKILL.md")).unwrap();
-        assert!(skill.starts_with("---\nname: agent-chat"));
-        assert!(skill.contains(&format!("{} --profile bot1 wait", bin.join("agent-chat").display())));
-        assert!(out["path_hint"].is_string());
-        let removed = uninstall(Some(bin.clone()), Some(skills.clone())).unwrap();
-        assert_eq!(removed["removed"].as_array().unwrap().len(), 2);
-        assert!(!bin.join("agent-chat").exists());
-    }
 }
 
 // ------------------------------------------------------------------ GUI
@@ -271,7 +247,10 @@ pub fn build_and_install_gui() -> Result<PathBuf> {
              `cargo install --git https://github.com/GravyPouch/agent-chat agent-chat-gui`"
         )
     })?;
-    eprintln!("Building the desktop app in {} (this can take a few minutes the first time)…", root.display());
+    eprintln!(
+        "Building the desktop app in {} (this can take a few minutes the first time)…",
+        root.display()
+    );
     let status = Command::new("cargo")
         .args(["build", "--release", "-p", "agent-chat-gui"])
         .current_dir(&root)
@@ -313,4 +292,38 @@ pub fn launch_gui(gui: &Path, profile: &Profile, open: Option<&str>) -> Result<u
     }
     let child = cmd.spawn().with_context(|| format!("starting {}", gui.display()))?;
     Ok(child.id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_into_temp_dirs_and_uninstall() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = Profile {
+            name: "bot1".into(),
+            dir: dir.path().join("profile"),
+        };
+        let bin = dir.path().join("bin");
+        let skills = dir.path().join("skills");
+        let out = install(
+            &profile,
+            InstallOptions {
+                bin_dir: Some(bin.clone()),
+                skills_dir: Some(skills.clone()),
+                skill: true,
+                mcp: false,
+            },
+        )
+        .unwrap();
+        assert!(bin.join("agent-chat").is_file());
+        let skill = std::fs::read_to_string(skills.join("agent-chat/SKILL.md")).unwrap();
+        assert!(skill.starts_with("---\nname: agent-chat"));
+        assert!(skill.contains(&format!("{} --profile bot1 wait", bin.join("agent-chat").display())));
+        assert!(out["path_hint"].is_string());
+        let removed = uninstall(Some(bin.clone()), Some(skills.clone())).unwrap();
+        assert_eq!(removed["removed"].as_array().unwrap().len(), 2);
+        assert!(!bin.join("agent-chat").exists());
+    }
 }

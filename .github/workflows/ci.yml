@@ -16,6 +16,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lint:
+    name: Formatting and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: System dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev pkg-config libdbus-1-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
   linux:
     name: Linux (CLI, daemon, libraries)
     runs-on: ubuntu-latest
@@ -34,8 +48,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked --workspace
+      - run: cargo clippy --locked -p agent-chat-gui --all-targets -- -D warnings
       - run: cargo test --locked
 
   prosody-module:

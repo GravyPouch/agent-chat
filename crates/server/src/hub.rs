@@ -157,7 +157,9 @@ pub async fn init(paths: &HubPaths, opts: InitOptions) -> Result<InitReport> {
         cfg.listen.c2s = c2s;
     }
     if domain == config::LOCAL_DOMAIN && cfg.is_lan() {
-        bail!("`localhost` only works on this machine; give the LAN hub a name with --domain NAME.local (or omit --domain)");
+        bail!(
+            "`localhost` only works on this machine; give the LAN hub a name with --domain NAME.local (or omit --domain)"
+        );
     }
     if let Some(m) = opts.tls_mode {
         cfg.tls.mode = m;
@@ -212,7 +214,10 @@ impl RunningHub {
         let config = Config::load(paths.config())?;
         let domain = config.domain.clone();
 
-        let (cert, key) = (paths.resolve_file(&config.tls.cert), paths.resolve_file(&config.tls.key));
+        let (cert, key) = (
+            paths.resolve_file(&config.tls.cert),
+            paths.resolve_file(&config.tls.key),
+        );
         if config.tls.mode == TlsMode::SelfSigned {
             tls::ensure_self_signed(&cert, &key, &config.certificate_names())?;
         }
@@ -307,7 +312,10 @@ impl RunningHub {
         self.ctx.shutdown.cancelled().await;
         tracing::info!("shutting down");
         self.ctx.tracker.close();
-        if tokio::time::timeout(Duration::from_secs(5), self.ctx.tracker.wait()).await.is_err() {
+        if tokio::time::timeout(Duration::from_secs(5), self.ctx.tracker.wait())
+            .await
+            .is_err()
+        {
             tracing::warn!("some connections did not close in time");
         }
         std::fs::remove_file(self.ctx.paths.runtime()).ok();

@@ -189,7 +189,8 @@ mod tests {
 
     #[test]
     fn error_replies() {
-        let iq = parse("<iq xmlns='jabber:client' type='get' id='1' from='a@h/r' to='h'><ping xmlns='urn:xmpp:ping'/></iq>");
+        let iq =
+            parse("<iq xmlns='jabber:client' type='get' id='1' from='a@h/r' to='h'><ping xmlns='urn:xmpp:ping'/></iq>");
         let e = error_reply(&iq, Condition::ServiceUnavailable, None).unwrap();
         assert_eq!(e.attr("type"), Some("error"));
         assert_eq!(e.attr("to"), Some("a@h/r"));
@@ -214,7 +215,11 @@ mod tests {
              <stanza-id xmlns='urn:xmpp:sid:0' by='other.example' id='ok'/></message>",
         );
         assert_eq!(strip_our_stanza_ids(&mut m, |by| by.ends_with("hub.local")), 1);
-        let ids: Vec<_> = m.children().filter(|c| c.is("stanza-id", ns::SID)).filter_map(|c| c.attr("id")).collect();
+        let ids: Vec<_> = m
+            .children()
+            .filter(|c| c.is("stanza-id", ns::SID))
+            .filter_map(|c| c.attr("id"))
+            .collect();
         assert_eq!(ids, ["ok"]);
         assert!(m.has_child("body", NS_CLIENT));
     }

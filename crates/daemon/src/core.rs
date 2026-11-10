@@ -5,9 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use agent_chat_proto::Profile;
 use agent_chat_proto::ipc::{ErrorCode, Event, IpcError};
-use agent_chat_proto::model::{
-    ConnectionState, Contact, Message, PresenceInfo, Room, Show, StatusInfo,
-};
+use agent_chat_proto::model::{ConnectionState, Contact, Message, PresenceInfo, Room, Show, StatusInfo};
 use anyhow::Result;
 use tokio::sync::{Notify, broadcast};
 use xmpp_parsers::jid::Jid;
@@ -281,9 +279,7 @@ impl Core {
                     autojoin,
                     joined: rt.is_some_and(|r| r.joined),
                     subject: rt.and_then(|r| r.subject.clone()),
-                    occupants: rt
-                        .map(|r| r.occupants.iter().cloned().collect())
-                        .unwrap_or_default(),
+                    occupants: rt.map(|r| r.occupants.iter().cloned().collect()).unwrap_or_default(),
                     private: rt.is_some_and(|r| r.is_private()),
                     jid,
                 }
@@ -309,7 +305,9 @@ impl Core {
     /// present occupants' real JIDs plus the affiliation list.
     pub fn room_members(&self, bare: &str) -> Vec<String> {
         let st = self.state();
-        let Some(rt) = st.rooms.get(&bare.to_lowercase()) else { return vec![] };
+        let Some(rt) = st.rooms.get(&bare.to_lowercase()) else {
+            return vec![];
+        };
         let mut all: BTreeSet<String> = rt.members.clone();
         all.extend(rt.occupant_jids.values().cloned());
         all.into_iter().collect()
@@ -331,10 +329,7 @@ impl Core {
     }
 
     pub fn room_nick(&self, bare: &str) -> Option<String> {
-        self.state()
-            .rooms
-            .get(&bare.to_lowercase())
-            .map(|r| r.nick.clone())
+        self.state().rooms.get(&bare.to_lowercase()).map(|r| r.nick.clone())
     }
 }
 

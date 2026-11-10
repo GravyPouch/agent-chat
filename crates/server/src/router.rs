@@ -250,12 +250,21 @@ mod tests {
         let j = |s: &str| Jid::new(s).unwrap();
         assert_eq!(classify("hub.local", &j("hub.local")), Target::Domain);
         assert_eq!(classify("hub.local", &j("hub.local/x")), Target::Domain);
-        assert_eq!(classify("hub.local", &j("a@hub.local/r")), Target::Local(j("a@hub.local/r")));
+        assert_eq!(
+            classify("hub.local", &j("a@hub.local/r")),
+            Target::Local(j("a@hub.local/r"))
+        );
         assert_eq!(
             classify("hub.local", &j("room@conference.hub.local")),
             Target::Component(j("room@conference.hub.local"))
         );
-        assert_eq!(classify("hub.local", &j("a@xhub.local")), Target::Remote(j("a@xhub.local")));
-        assert_eq!(classify("hub.local", &j("a@example.org")), Target::Remote(j("a@example.org")));
+        assert_eq!(
+            classify("hub.local", &j("a@xhub.local")),
+            Target::Remote(j("a@xhub.local"))
+        );
+        assert_eq!(
+            classify("hub.local", &j("a@example.org")),
+            Target::Remote(j("a@example.org"))
+        );
     }
 }

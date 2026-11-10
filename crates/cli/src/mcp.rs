@@ -106,7 +106,9 @@ fn arg_str(args: &Value, key: &str) -> Option<String> {
 }
 
 fn require(args: &Value, key: &str) -> Result<String, String> {
-    arg_str(args, key).filter(|s| !s.is_empty()).ok_or_else(|| format!("missing argument `{key}`"))
+    arg_str(args, key)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("missing argument `{key}`"))
 }
 
 async fn call_tool(client: &IpcClient, consumer: &str, name: &str, args: &Value) -> Result<Value, String> {
@@ -118,7 +120,11 @@ async fn call_tool(client: &IpcClient, consumer: &str, name: &str, args: &Value)
     let remote = |e: CallError| e.to_string();
     let request = match name {
         "wait_for_message" => {
-            let timeout = args.get("timeout_seconds").and_then(Value::as_u64).unwrap_or(30).clamp(1, 600);
+            let timeout = args
+                .get("timeout_seconds")
+                .and_then(Value::as_u64)
+                .unwrap_or(30)
+                .clamp(1, 600);
             let r = client
                 .call_value(Request::Wait {
                     delivery,
@@ -250,9 +256,14 @@ pub async fn serve(client: IpcClient, consumer: String) -> anyhow::Result<()> {
                 let _ = tx.send(result(&id, json!({"tools": tools()})));
             }
             "tools/call" => {
-                let name = params.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
                 let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-                let (client, consumer, tx2, flights) = (client.clone(), consumer.clone(), tx.clone(), in_flight.clone());
+                let (client, consumer, tx2, flights) =
+                    (client.clone(), consumer.clone(), tx.clone(), in_flight.clone());
                 let key = id.to_string();
                 let id2 = id.clone();
                 let task = tokio::spawn(async move {

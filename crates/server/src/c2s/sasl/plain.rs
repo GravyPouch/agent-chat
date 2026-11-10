@@ -34,7 +34,10 @@ mod tests {
     #[test]
     fn parses() {
         let m = parse(b"\0user\0pencil").unwrap();
-        assert_eq!((m.authzid, m.username.as_str(), m.password.as_str()), (None, "user", "pencil"));
+        assert_eq!(
+            (m.authzid, m.username.as_str(), m.password.as_str()),
+            (None, "user", "pencil")
+        );
         let m = parse(b"admin@x\0user\0pw").unwrap();
         assert_eq!(m.authzid.as_deref(), Some("admin@x"));
         assert!(parse(b"user\0pencil").is_none());

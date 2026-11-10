@@ -309,11 +309,10 @@ pub fn build_encrypted(v: Version, e: &Encrypted) -> Element {
                     )
                 })
                 .collect();
-            let iv = e
-                .iv
-                .as_ref()
-                .map(|iv| format!("<iv>{}</iv>", b64(iv)))
-                .unwrap_or_default();
+            let iv =
+                e.iv.as_ref()
+                    .map(|iv| format!("<iv>{}</iv>", b64(iv)))
+                    .unwrap_or_default();
             parse(&format!(
                 "<encrypted xmlns='{}'><header sid='{}'>{keys}{iv}</header>{payload}</encrypted>",
                 super::NS_LEGACY,
@@ -397,9 +396,7 @@ fn rpad() -> String {
 /// XEP-0420 envelope per XEP-0384 §5.5.1 (`rpad` required, `from`
 /// recommended, `to` required in group chats).
 pub fn envelope(body: &str, from: &str, to: Option<&str>) -> Vec<u8> {
-    let to = to
-        .map(|t| format!("<to jid='{}'/>", escape(t)))
-        .unwrap_or_default();
+    let to = to.map(|t| format!("<to jid='{}'/>", escape(t))).unwrap_or_default();
     format!(
         "<envelope xmlns='{NS_SCE}'><content><body xmlns='{NS_CLIENT}'>{}</body></content>\
          <rpad>{}</rpad><from jid='{}'/>{to}</envelope>",
@@ -425,8 +422,14 @@ pub fn parse_envelope(data: &[u8]) -> Option<Envelope> {
     let content = el.get_child("content", NS_SCE)?;
     Some(Envelope {
         body: content.get_child("body", NS_CLIENT).map(|b| b.text()),
-        from: el.get_child("from", NS_SCE).and_then(|f| f.attr("jid")).map(str::to_owned),
-        to: el.get_child("to", NS_SCE).and_then(|f| f.attr("jid")).map(str::to_owned),
+        from: el
+            .get_child("from", NS_SCE)
+            .and_then(|f| f.attr("jid"))
+            .map(str::to_owned),
+        to: el
+            .get_child("to", NS_SCE)
+            .and_then(|f| f.attr("jid"))
+            .map(str::to_owned),
     })
 }
 
@@ -441,8 +444,18 @@ mod tests {
             let e = Encrypted {
                 sid: 27183,
                 keys: vec![
-                    KeyEntry { jid: jid.into(), rid: 31415, kex: true, data: vec![1, 2, 3] },
-                    KeyEntry { jid: jid.into(), rid: 1337, kex: false, data: vec![4] },
+                    KeyEntry {
+                        jid: jid.into(),
+                        rid: 31415,
+                        kex: true,
+                        data: vec![1, 2, 3],
+                    },
+                    KeyEntry {
+                        jid: jid.into(),
+                        rid: 1337,
+                        kex: false,
+                        data: vec![4],
+                    },
                 ],
                 iv: (v == Version::Legacy).then(|| vec![9; 12]),
                 payload: Some(vec![7; 20]),
@@ -450,7 +463,11 @@ mod tests {
             let el = build_encrypted(v, &e);
             assert_eq!(parse_encrypted(v, &el).unwrap(), e, "{v:?}");
             // The other version's parser must not accept it.
-            let other = if v == Version::Omemo2 { Version::Legacy } else { Version::Omemo2 };
+            let other = if v == Version::Omemo2 {
+                Version::Legacy
+            } else {
+                Version::Omemo2
+            };
             assert!(parse_encrypted(other, &el).is_none());
         }
     }
@@ -498,7 +515,12 @@ mod tests {
 
     #[test]
     fn publish_puts_payload_in_item() {
-        let el = publish("node", "current", device_list(Version::Omemo2, &[1]), &[("pubsub#access_model", "open")]);
+        let el = publish(
+            "node",
+            "current",
+            device_list(Version::Omemo2, &[1]),
+            &[("pubsub#access_model", "open")],
+        );
         let item = el
             .get_child("publish", NS_PUBSUB)
             .unwrap()

@@ -13,7 +13,11 @@ use crate::util::{ip_prefix, is_loopback};
 /// Bind a listener. IPv6 sockets are v6-only so `0.0.0.0` and `[::]` can
 /// both be bound on the same port.
 pub fn bind(addr: SocketAddr) -> Result<TcpListener> {
-    let socket = if addr.is_ipv4() { TcpSocket::new_v4()? } else { TcpSocket::new_v6()? };
+    let socket = if addr.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
     #[cfg(unix)]
     socket.set_reuseaddr(true)?;
     if addr.is_ipv6() {
@@ -158,7 +162,9 @@ mod tests {
         assert_eq!(adm.admit(ip).unwrap_err(), Refusal::TooManyNewConnections);
         // Another address is unaffected; loopback is exempt.
         assert!(adm.admit("192.0.2.8".parse().unwrap()).is_ok());
-        let lo: Vec<_> = (0..10).map(|_| adm.admit("127.0.0.1".parse().unwrap()).unwrap()).collect();
+        let lo: Vec<_> = (0..10)
+            .map(|_| adm.admit("127.0.0.1".parse().unwrap()).unwrap())
+            .collect();
         assert_eq!(lo.len(), 10);
     }
 }

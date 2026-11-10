@@ -10,6 +10,7 @@ use std::sync::Arc;
 use agent_chat_proto::ipc::Event;
 use agent_chat_proto::model::{ChatState, MessageKind, MessageSource, PresenceInfo, Show, SubscriptionRequest};
 use chrono::{DateTime, Utc};
+use tokio_xmpp::FromElementError;
 use tokio_xmpp::minidom::Element;
 use xmpp_parsers::carbons;
 use xmpp_parsers::chatstates::ChatState as XChatState;
@@ -25,7 +26,6 @@ use xmpp_parsers::presence::{Presence, Show as XShow, Type as PresenceType};
 use xmpp_parsers::roster::Roster;
 use xmpp_parsers::stanza_error::{DefinedCondition, ErrorType, StanzaError};
 use xmpp_parsers::stanza_id::{OriginId, StanzaId};
-use tokio_xmpp::FromElementError;
 
 use crate::core::Core;
 use crate::store::{DedupeKeys, NewMessage};
@@ -92,16 +92,13 @@ where
 }
 
 pub fn body_of(m: &Message) -> Option<&String> {
-    m.bodies
-        .get(&Lang(String::new()))
-        .or_else(|| m.bodies.values().next())
+    m.bodies.get(&Lang(String::new())).or_else(|| m.bodies.values().next())
 }
 
 /// Does the message carry an OMEMO `<encrypted/>` element (either version)?
 pub fn has_omemo(m: &Message) -> bool {
     m.payloads.iter().any(|el| {
-        el.name() == "encrypted"
-            && (el.ns() == crate::omemo::NS_OMEMO2 || el.ns() == crate::omemo::NS_LEGACY)
+        el.name() == "encrypted" && (el.ns() == crate::omemo::NS_OMEMO2 || el.ns() == crate::omemo::NS_LEGACY)
     })
 }
 
@@ -238,11 +235,10 @@ fn classify_inner(
 
     let from: Jid = m.from.clone().unwrap_or_else(|| ctx.own.clone().into());
     let from_bare = from.to_bare().to_string();
-    let to_bare = m
-        .to
-        .as_ref()
-        .map(|t| t.to_bare().to_string())
-        .unwrap_or_else(|| own.clone());
+    let to_bare =
+        m.to.as_ref()
+            .map(|t| t.to_bare().to_string())
+            .unwrap_or_else(|| own.clone());
     let (archive, stanza_id) = match mam {
         Some((a, id)) => (Some(a), Some(id)),
         None => (Some(own.clone()), stanza_id_by(&own)),
@@ -374,7 +370,8 @@ pub async fn on_message(core: &Arc<Core>, handle: &SessionHandle, m: Message) {
         }
         {
             let mut st = core.state();
-            st.pending_invites.retain(|i| !i.room.eq_ignore_ascii_case(&invite.room));
+            st.pending_invites
+                .retain(|i| !i.room.eq_ignore_ascii_case(&invite.room));
             st.pending_invites.push(invite.clone());
         }
         tracing::info!("invited to {} by {:?}", invite.room, invite.from);
@@ -446,11 +443,7 @@ async fn store_parsed(core: &Arc<Core>, handle: &SessionHandle, p: Parsed) -> an
     Ok(())
 }
 
-fn new_message(
-    p: &Parsed,
-    body: String,
-    encryption: Option<agent_chat_proto::model::EncryptionInfo>,
-) -> NewMessage {
+fn new_message(p: &Parsed, body: String, encryption: Option<agent_chat_proto::model::EncryptionInfo>) -> NewMessage {
     NewMessage {
         conversation: p.conversation.clone(),
         kind: p.kind,
@@ -533,11 +526,10 @@ pub fn on_presence(core: &Arc<Core>, handle: &SessionHandle, p: Presence) {
 }
 
 fn on_room_presence(core: &Arc<Core>, handle: &SessionHandle, room: &str, from: &Jid, p: Presence) {
-    let Some(nick) = from.resource().map(|r| r.to_string()) else { return };
-    let muc_user = p
-        .payloads
-        .iter()
-        .find_map(|el| MucUser::try_from(el.clone()).ok());
+    let Some(nick) = from.resource().map(|r| r.to_string()) else {
+        return;
+    };
+    let muc_user = p.payloads.iter().find_map(|el| MucUser::try_from(el.clone()).ok());
     let is_self = muc_user
         .as_ref()
         .is_some_and(|u| u.status.contains(&MucStatus::SelfPresence));
@@ -558,7 +550,9 @@ fn on_room_presence(core: &Arc<Core>, handle: &SessionHandle, room: &str, from: 
     let mut failed = false;
     {
         let mut st = core.state();
-        let Some(rt) = st.rooms.get_mut(&room.to_lowercase()) else { return };
+        let Some(rt) = st.rooms.get_mut(&room.to_lowercase()) else {
+            return;
+        };
         match p.type_ {
             PresenceType::Error => {
                 if rt.nick == nick || !rt.joined {
@@ -643,12 +637,7 @@ fn service_unavailable(to: Option<Jid>, id: String) -> Iq {
         from: None,
         to,
         id,
-        error: StanzaError::new(
-            ErrorType::Cancel,
-            DefinedCondition::ServiceUnavailable,
-            "en",
-            "",
-        ),
+        error: StanzaError::new(ErrorType::Cancel, DefinedCondition::ServiceUnavailable, "en", ""),
         payload: None,
     }
 }
@@ -758,7 +747,10 @@ mod tests {
             None,
             None,
         ));
-        assert_eq!((p.conversation.as_str(), p.own, p.source), ("bob@example.org", false, MessageSource::Carbon));
+        assert_eq!(
+            (p.conversation.as_str(), p.own, p.source),
+            ("bob@example.org", false, MessageSource::Carbon)
+        );
 
         let p = stored(run(
             r#"<message xmlns='jabber:client' from='alice@example.org' to='alice@example.org/ac'>
@@ -809,9 +801,15 @@ mod tests {
         assert!(p.delayed);
         assert_eq!(p.timestamp.to_rfc3339(), "2026-01-02T03:04:05+00:00");
 
-        assert!(matches!(run(xml, None, None), Classified::Ignore("MAM result for unknown query")));
+        assert!(matches!(
+            run(xml, None, None),
+            Classified::Ignore("MAM result for unknown query")
+        ));
         // Result for our account archive claiming to come from someone else.
-        let spoofed = xml.replace("<message xmlns='jabber:client' to=", "<message xmlns='jabber:client' from='mallory@evil.example' to=");
+        let spoofed = xml.replace(
+            "<message xmlns='jabber:client' to=",
+            "<message xmlns='jabber:client' from='mallory@evil.example' to=",
+        );
         assert!(matches!(run(&spoofed, Some(("q1", OWN)), None), Classified::Ignore(_)));
     }
 
@@ -873,8 +871,16 @@ mod tests {
                  <x xmlns='jabber:x:conference' jid='team@conf.example.org' reason='hi'/></message>"#,
         );
         let i = parse_invite(&direct).unwrap();
-        assert_eq!((i.room.as_str(), i.from.as_deref()), ("team@conf.example.org", Some("bob@example.org")));
-        assert!(parse_invite(&parse("<message xmlns='jabber:client' from='bob@x'><body>hi</body></message>")).is_none());
+        assert_eq!(
+            (i.room.as_str(), i.from.as_deref()),
+            ("team@conf.example.org", Some("bob@example.org"))
+        );
+        assert!(
+            parse_invite(&parse(
+                "<message xmlns='jabber:client' from='bob@x'><body>hi</body></message>"
+            ))
+            .is_none()
+        );
     }
 
     #[test]
@@ -901,14 +907,26 @@ mod tests {
                  <received xmlns='urn:xmpp:carbons:2'><forwarded xmlns='urn:xmpp:forward:0'>
                    <message xmlns='jabber:client' type='chat' from='bob@example.org/phone' to='alice@example.org/phone'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>
                  </forwarded></received></message>"#;
-        assert_eq!(state(carbon, None), Some(("bob@example.org".to_owned(), ChatState::Composing)));
+        assert_eq!(
+            state(carbon, None),
+            Some(("bob@example.org".to_owned(), ChatState::Composing))
+        );
         // Our own other device typing (sent carbon): not news.
-        let sent = carbon.replace("received", "sent").replace("from='bob@example.org/phone' to='alice@example.org/phone'", "from='alice@example.org/phone' to='bob@example.org'");
+        let sent = carbon.replace("received", "sent").replace(
+            "from='bob@example.org/phone' to='alice@example.org/phone'",
+            "from='alice@example.org/phone' to='bob@example.org'",
+        );
         assert_eq!(state(&sent, None), None);
         // Room private messages and plain body-less messages carry no state.
         let pm = "<message xmlns='jabber:client' type='chat' from='room@conf.example.org/bob'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>";
         assert_eq!(state(pm, Some(("room@conf.example.org", "alice"))), None);
-        assert_eq!(state("<message xmlns='jabber:client' type='chat' from='bob@example.org/phone'/>", None), None);
+        assert_eq!(
+            state(
+                "<message xmlns='jabber:client' type='chat' from='bob@example.org/phone'/>",
+                None
+            ),
+            None
+        );
         // In a room, chat states are never reported.
         let c = run(
             "<message xmlns='jabber:client' type='groupchat' from='room@conf.example.org/bob'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>",

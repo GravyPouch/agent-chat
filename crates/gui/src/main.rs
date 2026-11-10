@@ -10,7 +10,19 @@ use gpui_kit::component::Theme;
 use gpui_kit::*;
 
 // Lucide icons beyond GPUI Kit's default component set.
-gpui_kit::assets::icon_assets!(ExtraIcons, [Lock, LockOpen, Users, SendHorizontal, ShieldCheck, ShieldAlert, UserPlus, MessageSquare]);
+gpui_kit::assets::icon_assets!(
+    ExtraIcons,
+    [
+        Lock,
+        LockOpen,
+        Users,
+        SendHorizontal,
+        ShieldCheck,
+        ShieldAlert,
+        UserPlus,
+        MessageSquare
+    ]
+);
 
 struct AppAssets;
 
@@ -124,8 +136,7 @@ fn main() {
             .map(|_| ()),
             Err(e) => {
                 let message: SharedString = format!("{e:#}").into();
-                open_window(options, cx, move |_, cx| cx.new(|_| app::ErrorView { message }))
-                    .map(|_| ())
+                open_window(options, cx, move |_, cx| cx.new(|_| app::ErrorView { message })).map(|_| ())
             }
         };
         if let Err(e) = opened {

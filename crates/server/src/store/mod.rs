@@ -167,7 +167,8 @@ pub trait Store: Send + Sync + 'static {
     fn count_accounts<'a>(&'a self, domain: &'a str) -> BoxFut<'a, u64>;
 
     /// `false` if there is no such account.
-    fn set_credentials<'a>(&'a self, domain: &'a str, localpart: &'a str, credentials: Credentials) -> BoxFut<'a, bool>;
+    fn set_credentials<'a>(&'a self, domain: &'a str, localpart: &'a str, credentials: Credentials)
+    -> BoxFut<'a, bool>;
 
     /// `false` if there is no such account.
     fn delete_account<'a>(&'a self, domain: &'a str, localpart: &'a str) -> BoxFut<'a, bool>;
@@ -193,7 +194,10 @@ pub(crate) async fn contract_tests(store: &dyn Store) {
     };
     store.ensure_host("hub.local").await.unwrap();
     store.ensure_host("hub.local").await.unwrap();
-    assert!(store.ensure_host("other.local").await.is_err(), "the domain is permanent");
+    assert!(
+        store.ensure_host("other.local").await.is_err(),
+        "the domain is permanent"
+    );
 
     let s1 = store.secret("scram_mock_key", 32).await.unwrap();
     assert_eq!(s1.len(), 32);

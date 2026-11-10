@@ -215,16 +215,38 @@ mod tests {
     #[test]
     fn offers_depend_on_the_channel() {
         let all: Vec<String> = crate::config::KNOWN_MECHANISMS.iter().map(|s| s.to_string()).collect();
-        let tls13 = Channel { tls: true, channel_binding: true, plaintext_scram: false };
+        let tls13 = Channel {
+            tls: true,
+            channel_binding: true,
+            plaintext_scram: false,
+        };
         assert_eq!(
             names(offered(&all, tls13)),
-            ["SCRAM-SHA-256-PLUS", "SCRAM-SHA-1-PLUS", "SCRAM-SHA-256", "SCRAM-SHA-1", "PLAIN"]
+            [
+                "SCRAM-SHA-256-PLUS",
+                "SCRAM-SHA-1-PLUS",
+                "SCRAM-SHA-256",
+                "SCRAM-SHA-1",
+                "PLAIN"
+            ]
         );
-        let tls12 = Channel { tls: true, channel_binding: false, plaintext_scram: false };
+        let tls12 = Channel {
+            tls: true,
+            channel_binding: false,
+            plaintext_scram: false,
+        };
         assert_eq!(names(offered(&all, tls12)), ["SCRAM-SHA-256", "SCRAM-SHA-1", "PLAIN"]);
-        let loopback = Channel { tls: false, channel_binding: false, plaintext_scram: true };
+        let loopback = Channel {
+            tls: false,
+            channel_binding: false,
+            plaintext_scram: true,
+        };
         assert_eq!(names(offered(&all, loopback)), ["SCRAM-SHA-256", "SCRAM-SHA-1"]);
-        let lan_plain = Channel { tls: false, channel_binding: false, plaintext_scram: false };
+        let lan_plain = Channel {
+            tls: false,
+            channel_binding: false,
+            plaintext_scram: false,
+        };
         assert!(offered(&all, lan_plain).is_empty());
     }
 

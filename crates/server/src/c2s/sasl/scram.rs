@@ -115,17 +115,24 @@ pub fn parse_client_first(msg: &[u8]) -> Result<ClientFirst, ScramError> {
         "y" => CbFlag::ClientOnly,
         f => match f.strip_prefix("p=") {
             Some(name)
-                if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-') =>
+                if !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-') =>
             {
                 CbFlag::Used(name.to_owned())
             }
             _ => return Err(ScramError::Malformed("bad channel-binding flag")),
         },
     };
-    let (authz, bare) = rest.split_once(',').ok_or(ScramError::Malformed("missing gs2 header"))?;
+    let (authz, bare) = rest
+        .split_once(',')
+        .ok_or(ScramError::Malformed("missing gs2 header"))?;
     let authzid = match authz {
         "" => None,
-        a => Some(decode_saslname(a.strip_prefix("a=").ok_or(ScramError::Malformed("bad authzid"))?)?),
+        a => Some(decode_saslname(
+            a.strip_prefix("a=").ok_or(ScramError::Malformed("bad authzid"))?,
+        )?),
     };
     let gs2_header = s[..flag.len() + 1 + authz.len() + 1].to_owned();
 
@@ -134,7 +141,11 @@ pub fn parse_client_first(msg: &[u8]) -> Result<ClientFirst, ScramError> {
     if first.starts_with("m=") {
         return Err(ScramError::Malformed("unsupported mandatory extension"));
     }
-    let username = decode_saslname(first.strip_prefix("n=").ok_or(ScramError::Malformed("missing username"))?)?;
+    let username = decode_saslname(
+        first
+            .strip_prefix("n=")
+            .ok_or(ScramError::Malformed("missing username"))?,
+    )?;
     if username.is_empty() {
         return Err(ScramError::Malformed("empty username"));
     }
@@ -230,8 +241,12 @@ impl Exchange {
             .next()
             .and_then(|a| a.strip_prefix("r="))
             .ok_or(ScramError::Malformed("missing nonce"))?;
-        let c = B64.decode(c).map_err(|_| ScramError::Malformed("bad channel-binding encoding"))?;
-        let proof = B64.decode(proof).map_err(|_| ScramError::Malformed("bad proof encoding"))?;
+        let c = B64
+            .decode(c)
+            .map_err(|_| ScramError::Malformed("bad channel-binding encoding"))?;
+        let proof = B64
+            .decode(proof)
+            .map_err(|_| ScramError::Malformed("bad proof encoding"))?;
 
         let mut expected_c = self.first.gs2_header.as_bytes().to_vec();
         expected_c.extend_from_slice(&self.cb_data);
@@ -242,7 +257,11 @@ impl Exchange {
         let client_signature = self.hash.hmac(&self.keys.stored_key, auth_message.as_bytes());
         let proof_ok = if proof.len() == client_signature.len() {
             let client_key = Zeroizing::new(
-                proof.iter().zip(&client_signature).map(|(a, b)| a ^ b).collect::<Vec<u8>>(),
+                proof
+                    .iter()
+                    .zip(&client_signature)
+                    .map(|(a, b)| a ^ b)
+                    .collect::<Vec<u8>>(),
             );
             self.hash.digest(&client_key).ct_eq(&self.keys.stored_key)
         } else {
@@ -265,7 +284,15 @@ impl Exchange {
 mod tests {
     use super::*;
 
-    fn kat(hash: Hash, client_first: &str, salt_b64: &str, server_nonce: &str, client_final: &str, server_final: &str, server_first: &str) {
+    fn kat(
+        hash: Hash,
+        client_first: &str,
+        salt_b64: &str,
+        server_nonce: &str,
+        client_final: &str,
+        server_final: &str,
+        server_first: &str,
+    ) {
         let salt = B64.decode(salt_b64).unwrap();
         let keys = hash.keys("pencil", &salt, 4096);
         let first = parse_client_first(client_first.as_bytes()).unwrap();
@@ -305,7 +332,15 @@ mod tests {
     fn wrong_proof_and_tampering_fail() {
         let salt = B64.decode("QSXCR+Q6sek8bf92").unwrap();
         let first = parse_client_first(b"n,,n=user,r=fyko+d2lbbFgONRv9qkxdawL").unwrap();
-        let (ex, _) = Exchange::start(Hash::Sha1, first, &salt, 4096, Hash::Sha1.keys("pencil", &salt, 4096), "3rfcNHYJY1ZVvWVs7j", vec![]);
+        let (ex, _) = Exchange::start(
+            Hash::Sha1,
+            first,
+            &salt,
+            4096,
+            Hash::Sha1.keys("pencil", &salt, 4096),
+            "3rfcNHYJY1ZVvWVs7j",
+            vec![],
+        );
         // Wrong proof.
         assert_eq!(
             ex.finish(b"c=biws,r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,p=w0X8v3Bz2T0CJGbJQyF0X+HI4Ts="),
@@ -317,7 +352,10 @@ mod tests {
             Err(ScramError::NotAuthorized)
         );
         // Short proof.
-        assert_eq!(ex.finish(b"c=biws,r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,p=AAAA"), Err(ScramError::NotAuthorized));
+        assert_eq!(
+            ex.finish(b"c=biws,r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,p=AAAA"),
+            Err(ScramError::NotAuthorized)
+        );
         assert!(matches!(ex.finish(b"c=biws,p=AAAA"), Err(ScramError::Malformed(_))));
     }
 
@@ -332,12 +370,23 @@ mod tests {
 
         let exporter = vec![7u8; 32];
         for plus in [false, true] {
-            let cb = if plus { ChannelBinding::TlsExporter(exporter.clone()) } else { ChannelBinding::None };
+            let cb = if plus {
+                ChannelBinding::TlsExporter(exporter.clone())
+            } else {
+                ChannelBinding::None
+            };
             let mut client = Scram::<CSha256>::new("alice", "correct horse battery", cb).unwrap();
             assert_eq!(client.name(), if plus { "SCRAM-SHA-256-PLUS" } else { "SCRAM-SHA-256" });
             let salt = [3u8; 16];
             let first = parse_client_first(&client.initial()).unwrap();
-            assert_eq!(first.cb, if plus { CbFlag::Used("tls-exporter".into()) } else { CbFlag::None });
+            assert_eq!(
+                first.cb,
+                if plus {
+                    CbFlag::Used("tls-exporter".into())
+                } else {
+                    CbFlag::None
+                }
+            );
             let keys = Hash::Sha256.keys("correct horse battery", &salt, 4096);
             let cb_data = if plus { exporter.clone() } else { vec![] };
             let (ex, sf) = Exchange::start(Hash::Sha256, first, &salt, 4096, keys, "servernonce", cb_data);
@@ -350,7 +399,15 @@ mod tests {
         let mut client = Scram::<CSha1>::new("alice", "pw", ChannelBinding::TlsExporter(exporter)).unwrap();
         let first = parse_client_first(&client.initial()).unwrap();
         let salt = [1u8; 16];
-        let (ex, sf) = Exchange::start(Hash::Sha1, first, &salt, 4096, Hash::Sha1.keys("pw", &salt, 4096), "n", vec![9u8; 32]);
+        let (ex, sf) = Exchange::start(
+            Hash::Sha1,
+            first,
+            &salt,
+            4096,
+            Hash::Sha1.keys("pw", &salt, 4096),
+            "n",
+            vec![9u8; 32],
+        );
         let fin = client.response(sf.as_bytes()).unwrap();
         assert_eq!(ex.finish(&fin), Err(ScramError::NotAuthorized));
     }

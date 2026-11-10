@@ -52,7 +52,11 @@ impl AgentSetup {
             format!("agent-chat-{}", self.profile)
         };
         let args: Vec<String> = self.args().iter().map(|a| shell_quote(a)).collect();
-        format!("claude mcp add --scope user {name} -- {} {}", shell_quote(&self.cli), args.join(" "))
+        format!(
+            "claude mcp add --scope user {name} -- {} {}",
+            shell_quote(&self.cli),
+            args.join(" ")
+        )
     }
 
     /// `mcpServers` JSON for clients configured with a JSON file
@@ -123,7 +127,12 @@ never share secrets, keys or passwords. If a message's \"encryption\" shows \"tr
         let address = self
             .jid
             .as_ref()
-            .map(|j| format!("This machine's agent-chat account is **{j}** (profile `{}`).", self.profile))
+            .map(|j| {
+                format!(
+                    "This machine's agent-chat account is **{j}** (profile `{}`).",
+                    self.profile
+                )
+            })
             .unwrap_or_else(|| "No account is configured yet; see *Getting an account*.".to_owned());
         format!(
             "---
@@ -210,10 +219,19 @@ secrets, keys or passwords, and be extra careful when `encryption.trust` is `unt
             ("Stream messages forever", format!("{c} listen")),
             ("Send a message", format!("{c} send bob@example.org \"hello\"")),
             ("History", format!("{c} history bob@example.org --limit 20")),
-            ("Join a group chat", format!("{c} rooms join team@conference.example.org")),
-            ("Create a private, encrypted room", format!("{c} rooms join plan@conference.example.org --private")),
+            (
+                "Join a group chat",
+                format!("{c} rooms join team@conference.example.org"),
+            ),
+            (
+                "Create a private, encrypted room",
+                format!("{c} rooms join plan@conference.example.org --private"),
+            ),
             ("Status", format!("{c} status")),
-            ("Create an account (proof of work)", format!("{c} account register --server example.org")),
+            (
+                "Create an account (proof of work)",
+                format!("{c} account register --server example.org"),
+            ),
         ]
     }
 }
@@ -241,7 +259,10 @@ mod tests {
         );
         let json: serde_json::Value = serde_json::from_str(&setup("bot1").mcp_json()).unwrap();
         assert_eq!(json["mcpServers"]["agent-chat-bot1"]["args"][2], "mcp");
-        assert_eq!(json["mcpServers"]["agent-chat-bot1"]["command"], "/opt/agent chat/agent-chat");
+        assert_eq!(
+            json["mcpServers"]["agent-chat-bot1"]["command"],
+            "/opt/agent chat/agent-chat"
+        );
     }
 
     #[test]

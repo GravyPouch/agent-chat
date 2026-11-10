@@ -61,7 +61,9 @@ pub fn on_pep_event(core: &Arc<Core>, handle: &SessionHandle, m: &Message) {
         .unwrap_or_else(|| handle.own.to_string());
     let Ok(mgr) = manager(core) else { return };
     for event in m.payloads.iter().filter(|el| el.is("event", xml::NS_PUBSUB_EVENT)) {
-        let Some((node, payloads)) = xml::event_payloads(event) else { continue };
+        let Some((node, payloads)) = xml::event_payloads(event) else {
+            continue;
+        };
         for v in VERSIONS {
             if node != xml::devices_node(v) {
                 continue;
@@ -92,7 +94,11 @@ pub fn on_pep_event(core: &Arc<Core>, handle: &SessionHandle, m: &Message) {
     }
 }
 
-async fn fetch_device_list(handle: &SessionHandle, jid: Option<&BareJid>, v: Version) -> Result<Vec<(u32, Option<String>)>> {
+async fn fetch_device_list(
+    handle: &SessionHandle,
+    jid: Option<&BareJid>,
+    v: Version,
+) -> Result<Vec<(u32, Option<String>)>> {
     let to: Option<Jid> = jid.map(|j| j.clone().into());
     match handle.iq_get(to, xml::items_query(xml::devices_node(v), None)).await {
         Ok(Some(el)) => Ok(xml::result_payloads(&el)
@@ -113,7 +119,10 @@ async fn fetch_bundle(handle: &SessionHandle, jid: &str, device_id: u32, v: Vers
         Version::Legacy => None,
     };
     let el = handle
-        .iq_get(Some(to), xml::items_query(&xml::bundles_node(v, device_id), item.as_deref()))
+        .iq_get(
+            Some(to),
+            xml::items_query(&xml::bundles_node(v, device_id), item.as_deref()),
+        )
         .await?
         .context("empty bundle result")?;
     xml::result_payloads(&el)
@@ -122,13 +131,25 @@ async fn fetch_bundle(handle: &SessionHandle, jid: &str, device_id: u32, v: Vers
         .ok_or_else(|| anyhow!("no usable bundle for {jid}/{device_id}"))
 }
 
-async fn publish(handle: &SessionHandle, node: &str, item: &str, payload: Element, options: &[(&str, &str)]) -> Result<()> {
-    match handle.iq_set(None, xml::publish(node, item, payload.clone(), options)).await {
+async fn publish(
+    handle: &SessionHandle,
+    node: &str,
+    item: &str,
+    payload: Element,
+    options: &[(&str, &str)],
+) -> Result<()> {
+    match handle
+        .iq_set(None, xml::publish(node, item, payload.clone(), options))
+        .await
+    {
         Ok(_) => Ok(()),
         Err(e) if format!("{e}").contains("PreconditionNotMet") || format!("{e}").contains("Conflict") => {
             // Node exists with other settings; publish without options.
             tracing::warn!("publish-options rejected for {node} ({e}); publishing without them");
-            handle.iq_set(None, xml::publish(node, item, payload, &[])).await.map(|_| ())
+            handle
+                .iq_set(None, xml::publish(node, item, payload, &[]))
+                .await
+                .map(|_| ())
         }
         Err(e) => Err(e),
     }
@@ -310,7 +331,9 @@ pub async fn encrypt_outgoing(
                 }
                 bail!("these members of {room} have no OMEMO devices: {missing:?}");
             };
-            encrypt_for(&mgr, handle, v, &members, Some(&room), body).await.map(Some)
+            encrypt_for(&mgr, handle, v, &members, Some(&room), body)
+                .await
+                .map(Some)
         }
         _ => Ok(None),
     }
@@ -340,7 +363,10 @@ async fn encrypt_for(
     // Establish sessions, then re-check trust (a fetched bundle may have
     // revealed a changed identity key, which resets trust).
     let mut targets: Vec<(String, u32)> = Vec::new();
-    let recipients = peers.iter().map(|p| (p.clone(), None)).chain([(own_s.clone(), Some(our_id))]);
+    let recipients = peers
+        .iter()
+        .map(|p| (p.clone(), None))
+        .chain([(own_s.clone(), Some(our_id))]);
     for (jid, exclude) in recipients {
         for dev in trusted_devices(mgr, v, &jid, exclude)? {
             match ensure_session(mgr, handle, v, &jid, dev).await {
@@ -373,7 +399,11 @@ async fn encrypt_for(
             .with(v, |e| e.ctx.encrypt(jid, *dev, &sealed.key_material))
             .map_err(|e| anyhow!("encrypting for {jid}/{dev}: {e}"))?;
         keys.push(KeyEntry {
-            jid: if v == Version::Omemo2 { jid.clone() } else { String::new() },
+            jid: if v == Version::Omemo2 {
+                jid.clone()
+            } else {
+                String::new()
+            },
             rid: *dev,
             kex,
             data,
@@ -415,7 +445,11 @@ fn send_empty(mgr: &Manager, handle: &SessionHandle, v: Version, jid: &str, devi
         &Encrypted {
             sid: mgr.device_id(v),
             keys: vec![KeyEntry {
-                jid: if v == Version::Omemo2 { jid.to_owned() } else { String::new() },
+                jid: if v == Version::Omemo2 {
+                    jid.to_owned()
+                } else {
+                    String::new()
+                },
                 rid: device_id,
                 kex,
                 data,
@@ -447,7 +481,11 @@ fn decrypt_error(v: Version, sid: u32, why: impl Into<String>) -> Option<(String
 
 /// Decrypt an OMEMO message that has already passed deduplication.
 /// Returns `None` for empty (session-management) messages.
-pub async fn decrypt_message(core: &Arc<Core>, handle: &SessionHandle, p: &Parsed) -> Option<(String, Option<EncryptionInfo>)> {
+pub async fn decrypt_message(
+    core: &Arc<Core>,
+    handle: &SessionHandle,
+    p: &Parsed,
+) -> Option<(String, Option<EncryptionInfo>)> {
     // A message may carry both versions' <encrypted/>; collect them, OMEMO:2 first.
     let mut candidates: Vec<(Version, Encrypted)> = Vec::new();
     for v in VERSIONS {
@@ -513,7 +551,10 @@ pub async fn decrypt_message(core: &Arc<Core>, handle: &SessionHandle, p: &Parse
         Err(omemo::Error::DuplicateMessage) => return None,
         // Nothing to show for a failed empty (session-management) message.
         Err(e) if enc.payload.is_none() => {
-            tracing::debug!("ignoring undecryptable empty OMEMO message from {sender}/{}: {e}", enc.sid);
+            tracing::debug!(
+                "ignoring undecryptable empty OMEMO message from {sender}/{}: {e}",
+                enc.sid
+            );
             return None;
         }
         // XEP-0384 §8: never rebuild sessions automatically on errors.
@@ -556,7 +597,11 @@ pub async fn decrypt_message(core: &Arc<Core>, handle: &SessionHandle, p: &Parse
             if let Some(from) = &env.from
                 && !from.eq_ignore_ascii_case(&sender)
             {
-                return decrypt_error(v, enc.sid, format!("envelope from {from} doesn't match sender {sender}"));
+                return decrypt_error(
+                    v,
+                    enc.sid,
+                    format!("envelope from {from} doesn't match sender {sender}"),
+                );
             }
             if let Some(room) = &room
                 && !env.to.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(room))
@@ -633,12 +678,18 @@ pub fn own_fingerprints(core: &Core) -> Vec<(u32, String)> {
 
 fn device_info(mgr: &Manager, v: Version, row: &super::store::DeviceRow, own: &str) -> DeviceInfo {
     let this = row.jid == own && row.device_id == mgr.device_id(v);
-    let key = if this { own_identity_public(mgr, v) } else { row.identity_key.clone() };
+    let key = if this {
+        own_identity_public(mgr, v)
+    } else {
+        row.identity_key.clone()
+    };
     DeviceInfo {
         jid: row.jid.clone(),
         protocol: protocol_of(v),
         device_id: row.device_id,
-        fingerprint: key.as_deref().and_then(|k| fingerprint::fingerprint(Version::Legacy, k)),
+        fingerprint: key
+            .as_deref()
+            .and_then(|k| fingerprint::fingerprint(Version::Legacy, k)),
         trust: if this {
             Trust::Verified
         } else {
@@ -680,7 +731,8 @@ pub async fn list_devices(core: &Arc<Core>, jid: Option<String>) -> Result<Vec<D
                 .map(|d| d.device_id)
                 .collect();
             for dev in missing {
-                if let Ok(b) = tokio::time::timeout(Duration::from_secs(10), fetch_bundle(&handle, &target, dev, v)).await
+                if let Ok(b) =
+                    tokio::time::timeout(Duration::from_secs(10), fetch_bundle(&handle, &target, dev, v)).await
                     && let Ok(b) = b
                     && let Some(curve) = fingerprint::curve25519_bytes(v, &b.identity_key)
                 {
@@ -705,7 +757,9 @@ pub async fn list_devices(core: &Arc<Core>, jid: Option<String>) -> Result<Vec<D
                 jid: own.clone(),
                 protocol: protocol_of(v),
                 device_id: mgr.device_id(v),
-                fingerprint: public.as_deref().and_then(|k| fingerprint::fingerprint(Version::Legacy, k)),
+                fingerprint: public
+                    .as_deref()
+                    .and_then(|k| fingerprint::fingerprint(Version::Legacy, k)),
                 trust: Trust::Verified,
                 this_device: true,
             });
@@ -715,7 +769,12 @@ pub async fn list_devices(core: &Arc<Core>, jid: Option<String>) -> Result<Vec<D
 }
 
 /// Mark the device(s) of `jid` with this fingerprint as verified or untrusted.
-pub async fn set_trust(core: &Arc<Core>, jid: &str, fingerprint_input: &str, trusted: bool) -> Result<DeviceInfo, IpcError> {
+pub async fn set_trust(
+    core: &Arc<Core>,
+    jid: &str,
+    fingerprint_input: &str,
+    trusted: bool,
+) -> Result<DeviceInfo, IpcError> {
     let wanted = fingerprint::normalize(fingerprint_input);
     if wanted.len() != 64 {
         return Err(IpcError::new(ErrorCode::BadRequest, "fingerprints are 64 hex digits"));
@@ -730,7 +789,12 @@ pub async fn set_trust(core: &Arc<Core>, jid: &str, fingerprint_input: &str, tru
         }
         let v = version_of(d.protocol);
         mgr.db
-            .set_trust(v, &d.jid, d.device_id, if trusted { Trust::Verified } else { Trust::Untrusted })
+            .set_trust(
+                v,
+                &d.jid,
+                d.device_id,
+                if trusted { Trust::Verified } else { Trust::Untrusted },
+            )
             .map_err(internal)?;
         let row = mgr
             .db

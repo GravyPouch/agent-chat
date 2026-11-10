@@ -37,7 +37,9 @@ async fn handle_connection(core: Arc<Core>, stream: UnixStream) {
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerFrame>();
     let writer = tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
-            let Ok(mut line) = serde_json::to_string(&frame) else { continue };
+            let Ok(mut line) = serde_json::to_string(&frame) else {
+                continue;
+            };
             line.push('\n');
             if write_half.write_all(line.as_bytes()).await.is_err() {
                 break;
@@ -162,10 +164,7 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
                 .map_err(internal)?,
         ),
         Request::Conversations => json(core.store().conversations().map_err(internal)?),
-        Request::MarkRead {
-            conversation,
-            up_to_id,
-        } => {
+        Request::MarkRead { conversation, up_to_id } => {
             core.store().mark_read(&conversation, up_to_id).map_err(internal)?;
             Ok(Value::Null)
         }
@@ -299,7 +298,10 @@ async fn set_account(core: &Arc<Core>, p: AccountParams) -> Result<agent_chat_pr
     let bare = BareJid::new(&p.jid)
         .map_err(|e| IpcError::new(ErrorCode::BadRequest, format!("invalid JID {:?}: {e}", p.jid)))?;
     if bare.node().is_none() {
-        return Err(IpcError::new(ErrorCode::BadRequest, "account JIDs look like name@server"));
+        return Err(IpcError::new(
+            ErrorCode::BadRequest,
+            "account JIDs look like name@server",
+        ));
     }
     let jid = bare.to_string();
     let mut cfg = core.config.lock().unwrap().clone();

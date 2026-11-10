@@ -18,8 +18,13 @@ pub const DEFAULT_PORT: u16 = 5222;
 pub const LOCAL_DOMAIN: &str = "localhost";
 
 /// The SASL mechanisms the hub implements, strongest first.
-pub const KNOWN_MECHANISMS: [&str; 5] =
-    ["SCRAM-SHA-256-PLUS", "SCRAM-SHA-1-PLUS", "SCRAM-SHA-256", "SCRAM-SHA-1", "PLAIN"];
+pub const KNOWN_MECHANISMS: [&str; 5] = [
+    "SCRAM-SHA-256-PLUS",
+    "SCRAM-SHA-1-PLUS",
+    "SCRAM-SHA-256",
+    "SCRAM-SHA-1",
+    "PLAIN",
+];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
@@ -241,11 +246,7 @@ impl Config {
     }
 
     pub fn c2s_addrs(&self) -> Result<Vec<SocketAddr>> {
-        self.listen
-            .c2s
-            .iter()
-            .map(|a| parse_listen_addr(a))
-            .collect()
+        self.listen.c2s.iter().map(|a| parse_listen_addr(a)).collect()
     }
 
     /// Whether any listener accepts non-loopback peers.
@@ -328,7 +329,9 @@ fn local_hostname() -> String {
     // macOS: the Bonjour name is the LocalHostName, which can differ from
     // gethostname() (that one may be a DHCP-provided name).
     #[cfg(target_os = "macos")]
-    if let Ok(out) = std::process::Command::new("scutil").args(["--get", "LocalHostName"]).output()
+    if let Ok(out) = std::process::Command::new("scutil")
+        .args(["--get", "LocalHostName"])
+        .output()
         && out.status.success()
     {
         let name = String::from_utf8_lossy(&out.stdout).trim().to_owned();
@@ -364,7 +367,11 @@ pub fn sanitize_host_label(host: &str) -> String {
     while out.ends_with('-') {
         out.pop();
     }
-    if out.is_empty() { "agent-chat-hub".to_owned() } else { out }
+    if out.is_empty() {
+        "agent-chat-hub".to_owned()
+    } else {
+        out
+    }
 }
 
 // ------------------------------------------------------------ value types
@@ -511,7 +518,17 @@ mod tests {
         assert_eq!(normalize_domain("localhost").unwrap(), "localhost");
         assert_eq!(normalize_domain("MyMac.local").unwrap(), "mymac.local");
         assert_eq!(normalize_domain("hub.example.org.").unwrap(), "hub.example.org");
-        for bad in ["", "192.168.1.2", "::1", "a..b", "-x.local", "x-.local", "a b", "1.2.3", "hé.local"] {
+        for bad in [
+            "",
+            "192.168.1.2",
+            "::1",
+            "a..b",
+            "-x.local",
+            "x-.local",
+            "a b",
+            "1.2.3",
+            "hé.local",
+        ] {
             assert!(normalize_domain(bad).is_err(), "{bad:?} should be rejected");
         }
     }

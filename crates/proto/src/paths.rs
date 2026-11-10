@@ -38,8 +38,7 @@ impl Profile {
 
     /// Create the profile directory (mode 0700).
     pub fn ensure_dir(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.dir)
-            .with_context(|| format!("creating {}", self.dir.display()))?;
+        std::fs::create_dir_all(&self.dir).with_context(|| format!("creating {}", self.dir.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -84,12 +83,7 @@ fn base_dir() -> Result<PathBuf> {
 }
 
 fn validate_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name.len() > 64
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+    if name.is_empty() || name.len() > 64 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         bail!("invalid profile name {name:?}: use letters, digits, '-' or '_'");
     }
     Ok(())

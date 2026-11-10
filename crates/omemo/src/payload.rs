@@ -139,10 +139,7 @@ pub mod legacy {
             16 => (key_material, ciphertext.to_vec()),
             _ => return Err(Error::Invalid("legacy key material must be 16 or 32 bytes")),
         };
-        let payload = Payload {
-            msg: &data,
-            aad: &[],
-        };
+        let payload = Payload { msg: &data, aad: &[] };
         let result = match iv.len() {
             12 => Aes128Gcm::new_from_slice(key)
                 .map_err(|_| Error::InvalidKey)?

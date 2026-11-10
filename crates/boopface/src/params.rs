@@ -122,7 +122,12 @@ impl FaceParams {
             }
             // Gems: a pale top, a saturated middle and a deep shadow; light eyes.
             Look::Gem => Palette {
-                base: [c(0.0, 85.0, 78.0), c(0.0, 100.0, 48.0), c(0.0, 100.0, 28.0), c(0.0, 100.0, 12.0)],
+                base: [
+                    c(0.0, 85.0, 78.0),
+                    c(0.0, 100.0, 48.0),
+                    c(0.0, 100.0, 28.0),
+                    c(0.0, 100.0, 12.0),
+                ],
                 eye: c(0.0, 60.0, 97.0),
                 rim: c(0.0, 85.0, 85.0),
                 antenna: [c(0.0, 80.0, 90.0), c(0.0, 100.0, 48.0), c(0.0, 100.0, 12.0)],
@@ -131,7 +136,12 @@ impl FaceParams {
             },
             // Gradients run through neighbouring hues, like Ocean's cyan to indigo.
             Look::Gradient => Palette {
-                base: [c(-25.0, 75.0, 90.0), c(0.0, 85.0, 76.0), c(20.0, 85.0, 58.0), c(40.0, 80.0, 40.0)],
+                base: [
+                    c(-25.0, 75.0, 90.0),
+                    c(0.0, 85.0, 76.0),
+                    c(20.0, 85.0, 58.0),
+                    c(40.0, 80.0, 40.0),
+                ],
                 eye: c(40.0, 70.0, 15.0),
                 rim: c(0.0, 40.0, 97.0),
                 antenna: [c(-25.0, 40.0, 97.0), c(0.0, 85.0, 76.0), c(40.0, 80.0, 40.0)],
@@ -139,7 +149,12 @@ impl FaceParams {
                 shade: 0.3,
             },
             Look::Ball => Palette {
-                base: [c(0.0, 90.0, 72.0), c(0.0, 100.0, 58.0), c(0.0, 100.0, 45.0), c(0.0, 100.0, 25.0)],
+                base: [
+                    c(0.0, 90.0, 72.0),
+                    c(0.0, 100.0, 58.0),
+                    c(0.0, 100.0, 45.0),
+                    c(0.0, 100.0, 25.0),
+                ],
                 eye: c(0.0, 50.0, 97.0),
                 rim: Rgb::WHITE,
                 antenna: [c(0.0, 90.0, 72.0), c(0.0, 100.0, 58.0), c(0.0, 100.0, 25.0)],
@@ -172,7 +187,11 @@ mod tests {
     fn same_jid_same_face() {
         let a = FaceParams::from_jid("alice@localhost");
         assert_eq!(a, FaceParams::from_jid("alice@localhost"));
-        assert_eq!(a, FaceParams::from_jid("Alice@LocalHost/phone"), "bare JID, case-insensitive");
+        assert_eq!(
+            a,
+            FaceParams::from_jid("Alice@LocalHost/phone"),
+            "bare JID, case-insensitive"
+        );
         assert_ne!(a, FaceParams::from_jid("bob@localhost"));
     }
 

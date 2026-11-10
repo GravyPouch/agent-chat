@@ -119,7 +119,13 @@ pub fn render_page(core: &Core) -> String {
     let rows: String = setup
         .cli_reference()
         .into_iter()
-        .map(|(what, cmd)| format!("<tr><td>{}</td><td><code>{}</code></td></tr>", html_escape(what), html_escape(&cmd)))
+        .map(|(what, cmd)| {
+            format!(
+                "<tr><td>{}</td><td><code>{}</code></td></tr>",
+                html_escape(what),
+                html_escape(&cmd)
+            )
+        })
         .collect();
     PAGE.replace("{{ACCOUNT_LINE}}", &html_escape(&account_line))
         .replace("{{STATE_CLASS}}", class)
@@ -153,7 +159,9 @@ pub async fn start(core: Arc<Core>, base: u16) -> Option<String> {
     let url = format!("http://127.0.0.1:{port}/");
     tokio::spawn(async move {
         loop {
-            let Ok((stream, _)) = listener.accept().await else { continue };
+            let Ok((stream, _)) = listener.accept().await else {
+                continue;
+            };
             let core = core.clone();
             tokio::spawn(async move {
                 let _ = tokio::time::timeout(Duration::from_secs(10), handle(core, stream, port)).await;
@@ -173,7 +181,14 @@ async fn handle(core: Arc<Core>, mut stream: TcpStream, port: u16) -> std::io::R
         }
         buf.extend_from_slice(&chunk[..n]);
         if buf.len() > 16 * 1024 {
-            return respond(&mut stream, "431 Request Header Fields Too Large", "text/plain", b"", false).await;
+            return respond(
+                &mut stream,
+                "431 Request Header Fields Too Large",
+                "text/plain",
+                b"",
+                false,
+            )
+            .await;
         }
     }
     let head = String::from_utf8_lossy(&buf);
@@ -192,7 +207,14 @@ async fn handle(core: Arc<Core>, mut stream: TcpStream, port: u16) -> std::io::R
     }
     let head_only = method == "HEAD";
     if method != "GET" && !head_only {
-        return respond(&mut stream, "405 Method Not Allowed", "text/plain", b"GET only\n", false).await;
+        return respond(
+            &mut stream,
+            "405 Method Not Allowed",
+            "text/plain",
+            b"GET only\n",
+            false,
+        )
+        .await;
     }
     let path = target.split('?').next().unwrap_or("/");
     let setup = setup_for(&core);
@@ -207,7 +229,13 @@ async fn handle(core: Arc<Core>, mut stream: TcpStream, port: u16) -> std::io::R
     respond(&mut stream, "200 OK", ctype, body.as_bytes(), head_only).await
 }
 
-async fn respond(stream: &mut TcpStream, status: &str, ctype: &str, body: &[u8], head_only: bool) -> std::io::Result<()> {
+async fn respond(
+    stream: &mut TcpStream,
+    status: &str,
+    ctype: &str,
+    body: &[u8],
+    head_only: bool,
+) -> std::io::Result<()> {
     let header = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\
          X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n\
@@ -228,6 +256,9 @@ mod tests {
 
     #[test]
     fn escaping() {
-        assert_eq!(html_escape("<a href=\"x\">'&'</a>"), "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;");
+        assert_eq!(
+            html_escape("<a href=\"x\">'&'</a>"),
+            "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;"
+        );
     }
 }

@@ -113,12 +113,8 @@ impl IpcClient {
             match Self::connect(&socket).await {
                 Ok(c) => return Ok(c),
                 Err(e) if tokio::time::Instant::now() >= deadline => {
-                    return Err(e).with_context(|| {
-                        format!(
-                            "daemon did not start; see {}",
-                            profile.log_path().display()
-                        )
-                    });
+                    return Err(e)
+                        .with_context(|| format!("daemon did not start; see {}", profile.log_path().display()));
                 }
                 Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
             }
@@ -148,12 +144,7 @@ impl IpcClient {
 
     /// Subscribe to daemon events. Can only be called once per connection.
     pub async fn subscribe(&self) -> Result<mpsc::UnboundedReceiver<Event>, CallError> {
-        let rx = self
-            .events
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or(CallError::Disconnected)?;
+        let rx = self.events.lock().unwrap().take().ok_or(CallError::Disconnected)?;
         self.call_value(Request::Subscribe).await?;
         Ok(rx)
     }

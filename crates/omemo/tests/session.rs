@@ -85,7 +85,10 @@ fn conversation(version: Version) {
 
     let dec = bob.ctx.decrypt("alice@x", alice.id, &wire, true).unwrap();
     assert_eq!(dec.used_pre_key, Some(b.pre_key_id));
-    assert!(!bob.store.pre_key_ids().contains(&b.pre_key_id), "used pre key is removed");
+    assert!(
+        !bob.store.pre_key_ids().contains(&b.pre_key_id),
+        "used pre key is removed"
+    );
     let body = match version {
         Version::Omemo2 => payload::omemo2::open(&dec.plaintext, &sealed.ciphertext).unwrap(),
         Version::Legacy => {
@@ -107,8 +110,14 @@ fn conversation(version: Version) {
     // Several more in both directions, delivered out of order.
     let m1 = alice.ctx.encrypt("bob@x", bob.id, b"one").unwrap().0;
     let m2 = alice.ctx.encrypt("bob@x", bob.id, b"two").unwrap().0;
-    assert_eq!(bob.ctx.decrypt("alice@x", alice.id, &m2, false).unwrap().plaintext, b"two");
-    assert_eq!(bob.ctx.decrypt("alice@x", alice.id, &m1, false).unwrap().plaintext, b"one");
+    assert_eq!(
+        bob.ctx.decrypt("alice@x", alice.id, &m2, false).unwrap().plaintext,
+        b"two"
+    );
+    assert_eq!(
+        bob.ctx.decrypt("alice@x", alice.id, &m1, false).unwrap().plaintext,
+        b"one"
+    );
 
     // Bob recorded Alice's identity.
     assert!(bob.store.remote_identity("alice@x", alice.id as i32).is_some());

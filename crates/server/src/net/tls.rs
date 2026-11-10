@@ -101,8 +101,13 @@ pub fn subject_public_key_info(cert_der: &[u8]) -> Result<&[u8]> {
         rest = r;
     }
     // serialNumber, signature, issuer, validity, subject.
-    for (tag, what) in [(0x02, "serial"), (0x30, "signature"), (0x30, "issuer"), (0x30, "validity"), (0x30, "subject")]
-    {
+    for (tag, what) in [
+        (0x02, "serial"),
+        (0x30, "signature"),
+        (0x30, "issuer"),
+        (0x30, "validity"),
+        (0x30, "subject"),
+    ] {
         let (_, r) = der_tlv(rest, tag).with_context(|| format!("malformed {what}"))?;
         rest = r;
     }
@@ -153,9 +158,16 @@ mod tests {
     fn generates_loads_and_pins() {
         let dir = tempfile::tempdir().unwrap();
         let (cert, key) = (dir.path().join("tls/cert.pem"), dir.path().join("tls/key.pem"));
-        let names = vec!["hub.local".to_owned(), "conference.hub.local".to_owned(), "192.168.1.20".to_owned()];
+        let names = vec![
+            "hub.local".to_owned(),
+            "conference.hub.local".to_owned(),
+            "192.168.1.20".to_owned(),
+        ];
         assert!(ensure_self_signed(&cert, &key, &names).unwrap());
-        assert!(!ensure_self_signed(&cert, &key, &names).unwrap(), "existing files are kept");
+        assert!(
+            !ensure_self_signed(&cert, &key, &names).unwrap(),
+            "existing files are kept"
+        );
         let material = load(&cert, &key).unwrap();
 
         // The pin from the certificate equals the pin from the key's SPKI.

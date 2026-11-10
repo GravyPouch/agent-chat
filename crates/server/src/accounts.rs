@@ -206,9 +206,17 @@ mod tests {
             create(&store, "hub.local", 4096, req("bob", Some("short"))).await,
             Err(AccountError::WeakPassword)
         ));
-        assert_eq!(set_password(&store, "hub.local", 4096, "alice", Some("a new long password".into())).await.unwrap(), None);
+        assert_eq!(
+            set_password(&store, "hub.local", 4096, "alice", Some("a new long password".into()))
+                .await
+                .unwrap(),
+            None
+        );
         let a = store.account("hub.local", "alice").await.unwrap().unwrap();
-        assert_eq!(a.credentials.sha1, Hash::Sha1.keys("a new long password", &a.credentials.salt, 4096));
+        assert_eq!(
+            a.credentials.sha1,
+            Hash::Sha1.keys("a new long password", &a.credentials.salt, 4096)
+        );
         assert!(matches!(
             set_password(&store, "hub.local", 4096, "nobody", None).await,
             Err(AccountError::NotFound(_))

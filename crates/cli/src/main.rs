@@ -10,12 +10,9 @@ mod mcp;
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
 
-use agent_chat_proto::ipc::{
-    AccountParams, ContactList, EncryptionMode, ErrorCode, PasswordStorage, Request,
-};
+use agent_chat_proto::ipc::{AccountParams, ContactList, EncryptionMode, ErrorCode, PasswordStorage, Request};
 use agent_chat_proto::model::{
-    ConversationSummary, Delivery, DeviceInfo, Filter, Message, MessageKind, Room, RoomInvite,
-    Show, StatusInfo,
+    ConversationSummary, Delivery, DeviceInfo, Filter, Message, MessageKind, Room, RoomInvite, Show, StatusInfo,
 };
 use agent_chat_proto::{CallError, DaemonLauncher, IpcClient, Profile};
 use anyhow::{Context, Result, anyhow};
@@ -480,7 +477,12 @@ async fn run(cli: Cli) -> Result<()> {
 
     // Local installation needs no daemon.
     match &cli.cmd {
-        Cmd::Install { bin_dir, skills_dir, no_skill, mcp } => {
+        Cmd::Install {
+            bin_dir,
+            skills_dir,
+            no_skill,
+            mcp,
+        } => {
             let out = install::install(
                 &profile,
                 install::InstallOptions {
@@ -505,7 +507,11 @@ async fn run(cli: Cli) -> Result<()> {
             }
             return Ok(());
         }
-        Cmd::Gui { open, install: build, no_launch } => {
+        Cmd::Gui {
+            open,
+            install: build,
+            no_launch,
+        } => {
             let mut built = false;
             let gui = match (install::find_gui(), *build) {
                 (Some(g), false) => g,
@@ -567,9 +573,7 @@ async fn run(cli: Cli) -> Result<()> {
                 host: host.clone(),
                 port,
                 insecure_plaintext,
-                threads: threads.unwrap_or_else(|| {
-                    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
-                }),
+                threads: threads.unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)),
                 timeout: std::time::Duration::from_secs(timeout),
             },
             store,
@@ -700,10 +704,17 @@ async fn run(cli: Cli) -> Result<()> {
             use agent_chat_proto::phone;
             let status: StatusInfo = client.call(Request::Status).await?;
             let Some(jid) = status.account.clone() else {
-                return Err(Exit(3, "no account configured; run `agent-chat account add` or `account register` first".into()).into());
+                return Err(Exit(
+                    3,
+                    "no account configured; run `agent-chat account add` or `account register` first".into(),
+                )
+                .into());
             };
             let domain = jid.rsplit('@').next().unwrap_or_default().to_owned();
-            let devices: Vec<DeviceInfo> = client.call(Request::OmemoDevices { jid: None }).await.unwrap_or_default();
+            let devices: Vec<DeviceInfo> = client
+                .call(Request::OmemoDevices { jid: None })
+                .await
+                .unwrap_or_default();
             let fingerprints: Vec<(u32, String)> = devices
                 .iter()
                 .filter(|d| d.this_device)
@@ -726,7 +737,9 @@ async fn run(cli: Cli) -> Result<()> {
                              server it can reach over the network."
                         );
                     }
-                    println!("Scan with your phone's camera; it opens your XMPP app (Monal or Siskin on iPhone, Conversations on Android).\n");
+                    println!(
+                        "Scan with your phone's camera; it opens your XMPP app (Monal or Siskin on iPhone, Conversations on Android).\n"
+                    );
                     if !contact {
                         println!("1. Create your own account on {domain}:");
                         print!("{}", phone::qr_terminal(&register_uri));
@@ -753,7 +766,9 @@ async fn run(cli: Cli) -> Result<()> {
             let setup = agent_chat_proto::instructions::AgentSetup {
                 profile: profile.name.clone(),
                 jid: status.account.clone(),
-                cli: agent_chat_daemon::web::preferred_cli_path().to_string_lossy().into_owned(),
+                cli: agent_chat_daemon::web::preferred_cli_path()
+                    .to_string_lossy()
+                    .into_owned(),
                 web_url: status.web_url.clone(),
             };
             let text = if skill {
@@ -923,8 +938,9 @@ async fn run(cli: Cli) -> Result<()> {
             RoomsCmd::Decline { room } => ok(client.call_value(Request::RoomInviteDecline { room }).await?),
         },
         Cmd::Presence { show, status } => {
-            let show = Show::parse(&show)
-                .ok_or_else(|| anyhow!("unknown presence {show:?}; use available, chat, away, xa, dnd or unavailable"))?;
+            let show = Show::parse(&show).ok_or_else(|| {
+                anyhow!("unknown presence {show:?}; use available, chat, away, xa, dnd or unavailable")
+            })?;
             let status = (!status.is_empty()).then(|| status.join(" "));
             ok(client.call_value(Request::SetPresence { show, status }).await?);
         }
@@ -981,7 +997,11 @@ type AccountSettings = (String, String, Option<String>, Option<u16>, bool);
 /// allows only for loopback peers.
 #[cfg(feature = "hub")]
 async fn hub_account(name: &str, password_stdin: bool) -> Result<AccountSettings> {
-    let password = if password_stdin { Some(read_password(name, true)?) } else { None };
+    let password = if password_stdin {
+        Some(read_password(name, true)?)
+    } else {
+        None
+    };
     let (jid, password, host, port) = hub::create_hub_account(name, password).await?;
     Ok((jid, password, Some(host), Some(port), true))
 }
@@ -992,11 +1012,7 @@ async fn hub_account(_name: &str, _password_stdin: bool) -> Result<AccountSettin
 }
 
 /// `account register`: progress as JSON lines on stderr, one result object on stdout.
-async fn register(
-    profile: &Profile,
-    opts: agent_chat_daemon::register::RegisterOptions,
-    store: Storage,
-) -> Result<()> {
+async fn register(profile: &Profile, opts: agent_chat_daemon::register::RegisterOptions, store: Storage) -> Result<()> {
     use agent_chat_daemon::register::{Progress, register as do_register};
     let progress = |p: Progress| eprintln!("{}", serde_json::to_string(&p).expect("serializable"));
     let registered = match do_register(&opts, &progress).await {
@@ -1051,9 +1067,7 @@ fn read_password(jid: &str, from_stdin: bool) -> Result<String> {
         return Ok(p);
     }
     if !std::io::stdin().is_terminal() {
-        return Err(anyhow!(
-            "no password: use --password-stdin or set AGENT_CHAT_PASSWORD"
-        ));
+        return Err(anyhow!("no password: use --password-stdin or set AGENT_CHAT_PASSWORD"));
     }
     rpassword::prompt_password(format!("Password for {jid}: ")).context("reading password")
 }

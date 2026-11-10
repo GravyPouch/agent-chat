@@ -131,7 +131,10 @@ unsafe extern "C" fn store_session(
     ud: *mut c_void,
 ) -> c_int {
     let (name, dev) = unsafe { address(addr) };
-    match unsafe { cell(ud) }.inner.store_session(&name, dev, unsafe { slice(record, record_len) }) {
+    match unsafe { cell(ud) }
+        .inner
+        .store_session(&name, dev, unsafe { slice(record, record_len) })
+    {
         Ok(()) => OK,
         Err(e) => log_err("store_session", &e),
     }
@@ -178,7 +181,10 @@ unsafe extern "C" fn load_pre_key(record: *mut *mut sys::signal_buffer, id: u32,
 }
 
 unsafe extern "C" fn store_pre_key(id: u32, record: *mut u8, len: usize, ud: *mut c_void) -> c_int {
-    match unsafe { cell(ud) }.inner.store_pre_key(id, unsafe { slice(record, len) }) {
+    match unsafe { cell(ud) }
+        .inner
+        .store_pre_key(id, unsafe { slice(record, len) })
+    {
         Ok(()) => OK,
         Err(e) => log_err("store_pre_key", &e),
     }
@@ -207,7 +213,10 @@ unsafe extern "C" fn load_signed_pre_key(record: *mut *mut sys::signal_buffer, i
 }
 
 unsafe extern "C" fn store_signed_pre_key(id: u32, record: *mut u8, len: usize, ud: *mut c_void) -> c_int {
-    match unsafe { cell(ud) }.inner.store_signed_pre_key(id, unsafe { slice(record, len) }) {
+    match unsafe { cell(ud) }
+        .inner
+        .store_signed_pre_key(id, unsafe { slice(record, len) })
+    {
         Ok(()) => OK,
         Err(e) => log_err("store_signed_pre_key", &e),
     }
@@ -263,7 +272,10 @@ unsafe extern "C" fn save_identity(
     ud: *mut c_void,
 ) -> c_int {
     let (name, dev) = unsafe { address(addr) };
-    match unsafe { cell(ud) }.inner.save_identity(&name, dev, unsafe { slice(key, key_len) }) {
+    match unsafe { cell(ud) }
+        .inner
+        .save_identity(&name, dev, unsafe { slice(key, key_len) })
+    {
         Ok(()) => OK,
         Err(e) => log_err("save_identity", &e),
     }

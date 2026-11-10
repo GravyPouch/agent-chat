@@ -20,8 +20,16 @@ impl Rgb {
         if hex.len() != 6 {
             return None;
         }
-        let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok().map(|v| f64::from(v) / 255.0);
-        Some(Rgb { r: channel(0)?, g: channel(2)?, b: channel(4)? })
+        let channel = |i: usize| {
+            u8::from_str_radix(&hex[i..i + 2], 16)
+                .ok()
+                .map(|v| f64::from(v) / 255.0)
+        };
+        Some(Rgb {
+            r: channel(0)?,
+            g: channel(2)?,
+            b: channel(4)?,
+        })
     }
 
     /// 8-bit channels, rounded.
@@ -47,7 +55,13 @@ impl Rgb {
 
     /// WCAG relative luminance.
     pub fn luminance(self) -> f64 {
-        let lin = |c: f64| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        let lin = |c: f64| {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
         0.2126 * lin(self.r) + 0.7152 * lin(self.g) + 0.0722 * lin(self.b)
     }
 }
@@ -91,11 +105,19 @@ fn max_chroma(l: f64, h: f64) -> f64 {
 }
 
 fn y_from_l(l: f64) -> f64 {
-    if l <= 8.0 { l / KAPPA } else { ((l + 16.0) / 116.0).powi(3) }
+    if l <= 8.0 {
+        l / KAPPA
+    } else {
+        ((l + 16.0) / 116.0).powi(3)
+    }
 }
 
 fn from_linear(c: f64) -> f64 {
-    if c <= 0.003_130_8 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    if c <= 0.003_130_8 {
+        12.92 * c
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// HSLuv (hue in degrees, saturation and lightness in `0..=100`) to sRGB.
@@ -104,7 +126,11 @@ pub fn hsluv(h: f64, s: f64, l: f64) -> Rgb {
     let s = s.clamp(0.0, 100.0);
     let l = l.clamp(0.0, 100.0);
     // HSLuv → LCh(uv)
-    let c = if l > 99.999_999_9 || l < 0.000_000_01 { 0.0 } else { max_chroma(l, h) / 100.0 * s };
+    let c = if l > 99.999_999_9 || l < 0.000_000_01 {
+        0.0
+    } else {
+        max_chroma(l, h) / 100.0 * s
+    };
     if l <= 0.0 {
         return Rgb::BLACK;
     }
@@ -134,9 +160,18 @@ mod tests {
         // Known values from the HSLuv reference snapshot.
         assert_eq!(hsluv(0.0, 0.0, 100.0).to_hex(), "#ffffff");
         assert_eq!(hsluv(0.0, 0.0, 0.0).to_hex(), "#000000");
-        assert_eq!(hsluv(12.177_050_630_061_776, 100.0, 53.237_115_595_429_54).to_hex(), "#ff0000");
-        assert_eq!(hsluv(127.715_012_949_240_96, 100.0, 87.735_550_352_036_2).to_hex(), "#00ff00");
-        assert_eq!(hsluv(265.874_528_754_118_5, 100.0, 32.300_740_312_419_1).to_hex(), "#0000ff");
+        assert_eq!(
+            hsluv(12.177_050_630_061_776, 100.0, 53.237_115_595_429_54).to_hex(),
+            "#ff0000"
+        );
+        assert_eq!(
+            hsluv(127.715_012_949_240_96, 100.0, 87.735_550_352_036_2).to_hex(),
+            "#00ff00"
+        );
+        assert_eq!(
+            hsluv(265.874_528_754_118_5, 100.0, 32.300_740_312_419_1).to_hex(),
+            "#0000ff"
+        );
     }
 
     #[test]

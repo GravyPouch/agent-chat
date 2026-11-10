@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use agent_chat_proto::model::{
-    ConversationSummary, Delivery, EncryptionInfo, EncryptionProtocol, Filter, Message, MessageKind,
-    MessageSource, Room, Trust,
+    ConversationSummary, Delivery, EncryptionInfo, EncryptionProtocol, Filter, Message, MessageKind, MessageSource,
+    Room, Trust,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -98,6 +98,9 @@ pub struct DedupeKeys<'a> {
     pub origin_id: Option<&'a str>,
     pub xmpp_id: Option<&'a str>,
 }
+
+/// A saved room: JID, nickname, password, autojoin.
+pub type RoomRow = (String, String, Option<String>, bool);
 
 pub struct Store {
     conn: Connection,
@@ -234,11 +237,7 @@ impl Store {
     pub fn get_message(&self, id: i64) -> Result<Option<Message>> {
         Ok(self
             .conn
-            .query_row(
-                &format!("{SELECT_MESSAGE} WHERE id = ?1"),
-                params![id],
-                row_to_message,
-            )
+            .query_row(&format!("{SELECT_MESSAGE} WHERE id = ?1"), params![id], row_to_message)
             .optional()?)
     }
 
@@ -368,13 +367,7 @@ impl Store {
     }
 
     /// Whether a freshly stored message should be handed to a waiting consumer.
-    pub fn deliverable_to(
-        &self,
-        d: &Delivery,
-        filter: &Filter,
-        require_trusted: bool,
-        m: &Message,
-    ) -> Result<bool> {
+    pub fn deliverable_to(&self, d: &Delivery, filter: &Filter, require_trusted: bool, m: &Message) -> Result<bool> {
         if m.own && !d.include_own {
             return Ok(false);
         }
@@ -409,7 +402,7 @@ impl Store {
 
     // ------------------------------------------------------------------ rooms
 
-    pub fn rooms(&self) -> Result<Vec<(String, String, Option<String>, bool)>> {
+    pub fn rooms(&self) -> Result<Vec<RoomRow>> {
         let mut stmt = self
             .conn
             .prepare("SELECT jid, nick, password, autojoin FROM rooms ORDER BY jid")?;
@@ -660,7 +653,10 @@ mod tests {
             s.insert_message(&msg("bob@x", "bob@x", &format!("m{i}"))).unwrap();
         }
         let h = s.history("bob@x", 3, None).unwrap();
-        assert_eq!(h.iter().map(|m| m.body.as_str()).collect::<Vec<_>>(), ["m2", "m3", "m4"]);
+        assert_eq!(
+            h.iter().map(|m| m.body.as_str()).collect::<Vec<_>>(),
+            ["m2", "m3", "m4"]
+        );
         let older = s.history("bob@x", 10, Some(h[0].id)).unwrap();
         assert_eq!(older.len(), 2);
         let conv = s.conversations().unwrap();

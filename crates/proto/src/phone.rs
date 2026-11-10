@@ -45,9 +45,7 @@ pub fn contact_uri(jid: &str, fingerprints: &[(u32, String)]) -> String {
 /// Domains a phone can't reach (this machine only).
 pub fn local_only(domain: &str) -> bool {
     let d = domain.trim_end_matches('.').to_ascii_lowercase();
-    d == "localhost"
-        || d.ends_with(".localhost")
-        || d.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    d == "localhost" || d.ends_with(".localhost") || d.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// The QR code as a standalone SVG document (black on white, with a quiet zone).

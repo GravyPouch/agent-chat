@@ -85,7 +85,11 @@ fn ok_json(out: Output, what: &[&str]) -> Value {
 }
 
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 fn wait_for_state(env: &Env, profile: &str, state: &str, within: Duration) {
@@ -143,7 +147,10 @@ fn two_agents_chat_through_the_hub_and_survive_a_restart() {
     assert!(Path::new(&env.hub_dir().join("hub.json")).exists());
 
     for (user, pw) in [("alice", "alice-password-123"), ("bob", "bob-password-4567")] {
-        let created = ok_json(env.run_with_stdin(&["hub", "user", "add", user, "--password-stdin"], pw), &["user add"]);
+        let created = ok_json(
+            env.run_with_stdin(&["hub", "user", "add", user, "--password-stdin"], pw),
+            &["user add"],
+        );
         assert_eq!(created["jid"], format!("{user}@hubtest.local"));
         assert!(created.get("password").is_none(), "a chosen password is not echoed");
         assert_eq!(created["connect"]["port"], port);
@@ -175,9 +182,15 @@ fn two_agents_chat_through_the_hub_and_survive_a_restart() {
 
     // Acceptance test 5: scenario 1 of §8.3, both directions.
     let m = exchange(&env, "bob", "alice", "alice@hubtest.local", "hello alice");
-    assert_eq!((m["from"].as_str(), m["body"].as_str()), (Some("bob@hubtest.local"), Some("hello alice")));
+    assert_eq!(
+        (m["from"].as_str(), m["body"].as_str()),
+        (Some("bob@hubtest.local"), Some("hello alice"))
+    );
     let m = exchange(&env, "alice", "bob", "bob@hubtest.local", "hi bob");
-    assert_eq!((m["from"].as_str(), m["body"].as_str()), (Some("alice@hubtest.local"), Some("hi bob")));
+    assert_eq!(
+        (m["from"].as_str(), m["body"].as_str()),
+        (Some("alice@hubtest.local"), Some("hi bob"))
+    );
 
     // Acceptance test 6.
     let status = env.json(&["hub", "status"]);
@@ -206,11 +219,29 @@ fn account_add_hub_creates_and_configures_an_account() {
     let port = free_port();
     env.json(&["hub", "init", "--listen", &format!("127.0.0.1:{port}")]);
     // `--hub` starts the hub if needed and generates a password.
-    let st = env.json(&["--profile", "alice", "account", "add", "--hub", "alice", "--store", "config"]);
+    let st = env.json(&[
+        "--profile",
+        "alice",
+        "account",
+        "add",
+        "--hub",
+        "alice",
+        "--store",
+        "config",
+    ]);
     assert_eq!(st["account"], "alice@localhost");
     assert_eq!(st["state"], "online", "{st}");
     // The name is taken now: exit code 6, like `account register`.
-    let out = env.run(&["--profile", "bob", "account", "add", "--hub", "alice", "--store", "config"]);
+    let out = env.run(&[
+        "--profile",
+        "bob",
+        "account",
+        "add",
+        "--hub",
+        "alice",
+        "--store",
+        "config",
+    ]);
     assert_eq!(out.status.code(), Some(6), "{}", String::from_utf8_lossy(&out.stderr));
     let users = env.json(&["hub", "user", "list"]);
     assert_eq!(users.as_array().unwrap().len(), 1);

@@ -264,7 +264,11 @@ pub struct EngineConfig {
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        EngineConfig { transition_ms: 240, auto_blink: true, wander: true }
+        EngineConfig {
+            transition_ms: 240,
+            auto_blink: true,
+            wander: true,
+        }
     }
 }
 
@@ -312,7 +316,9 @@ impl RawEye {
 
 impl Pose {
     fn to_frame(self) -> Frame {
-        Frame { eyes: [self.left.to_eye(), self.right.to_eye()] }
+        Frame {
+            eyes: [self.left.to_eye(), self.right.to_eye()],
+        }
     }
 }
 
@@ -355,7 +361,10 @@ fn web_pose(action: Action, elapsed: f64) -> Pose {
             corner_y: corner,
         }
     };
-    Pose { left: eye(0), right: eye(1) }
+    Pose {
+        left: eye(0),
+        right: eye(1),
+    }
 }
 
 /// `mixEye`: interpolate two eyes, morphing ellipses and rounded rectangles.
@@ -387,7 +396,10 @@ fn mix_eye(a: &RawEye, b: &RawEye, t: f32) -> RawEye {
 }
 
 fn mix(a: &Pose, b: &Pose, t: f32) -> Pose {
-    Pose { left: mix_eye(&a.left, &b.left, t), right: mix_eye(&a.right, &b.right, t) }
+    Pose {
+        left: mix_eye(&a.left, &b.left, t),
+        right: mix_eye(&a.right, &b.right, t),
+    }
 }
 
 /// Within 58 units of the head edge an eye narrows (BoopFace.cpp `edgeFactor`).
@@ -587,7 +599,10 @@ impl Engine {
                 self.next_blink_at = now + 1900.0 + f64::from(self.rng.next_f32()) * 2600.0;
             }
         } else if self.config.auto_blink && now >= self.next_blink_at {
-            self.blink = Some(Blink { start: now, duration: 150.0 + f64::from(self.rng.next_f32()) * 70.0 });
+            self.blink = Some(Blink {
+                start: now,
+                duration: 150.0 + f64::from(self.rng.next_f32()) * 70.0,
+            });
         }
     }
 
@@ -596,7 +611,11 @@ impl Engine {
     fn pose_at(&self, now: f64) -> Pose {
         let mut elapsed = now - self.started;
         let total = f64::from(self.action.duration_ms());
-        let selected = if total > 0.0 && elapsed >= total { Action::Idle } else { self.action };
+        let selected = if total > 0.0 && elapsed >= total {
+            Action::Idle
+        } else {
+            self.action
+        };
         if selected == Action::WaitingSpin && elapsed >= 120.0 {
             elapsed = 120.0 + (elapsed - 120.0) % 3200.0;
         }
@@ -619,7 +638,10 @@ impl Engine {
                 corner: -1.0,
                 corner_y: -1.0,
             };
-            Pose { left: eye(46.0, 50.0 + phase.sin() * 10.0), right: eye(114.0, 50.0 + (phase + 0.7).sin() * 10.0) }
+            Pose {
+                left: eye(46.0, 50.0 + phase.sin() * 10.0),
+                right: eye(114.0, 50.0 + (phase + 0.7).sin() * 10.0),
+            }
         } else {
             web_pose(selected, elapsed)
         };
@@ -648,7 +670,11 @@ impl Engine {
             }
             if let Some(b) = self.blink {
                 let phase = (((now - b.start) / b.duration) as f32).clamp(0.0, 1.0);
-                let open = if phase < 0.5 { lerp(1.0, 0.08, phase * 2.0) } else { lerp(0.08, 1.0, (phase - 0.5) * 2.0) };
+                let open = if phase < 0.5 {
+                    lerp(1.0, 0.08, phase * 2.0)
+                } else {
+                    lerp(0.08, 1.0, (phase - 0.5) * 2.0)
+                };
                 for e in [&mut p.left, &mut p.right] {
                     e.ry = (e.ry * open).max(1.3);
                     e.y += (58.0 - 2.0 * e.ry) * 0.02;
@@ -762,7 +788,10 @@ mod tests {
         e.set_action(Action::WaitingSpin); // no restart
         let b = run(&mut e, 10_000);
         assert_eq!(e.action(), Action::WaitingSpin);
-        assert!(a.iter().chain(&b).any(|f| f.eyes[0].cx != a[0].eyes[0].cx), "the eyes circle");
+        assert!(
+            a.iter().chain(&b).any(|f| f.eyes[0].cx != a[0].eyes[0].cx),
+            "the eyes circle"
+        );
         assert_eq!(e.next_change(), Some(Duration::ZERO));
 
         e.set_action(Action::Input);
@@ -806,7 +835,14 @@ mod tests {
             }
         }
         assert!(rested, "idle has quiet stretches with no frames needed");
-        let still = Engine::new(EngineConfig { auto_blink: false, wander: false, ..Default::default() }, 1);
+        let still = Engine::new(
+            EngineConfig {
+                auto_blink: false,
+                wander: false,
+                ..Default::default()
+            },
+            1,
+        );
         assert_eq!(still.next_change(), None);
     }
 

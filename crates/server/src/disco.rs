@@ -68,14 +68,25 @@ mod tests {
     #[test]
     fn ping_and_session() {
         let r = handle_domain_stanza("hub.local", &iq("<ping xmlns='urn:xmpp:ping'/>", "get")).unwrap();
-        assert_eq!((r.attr("type"), r.attr("id"), r.attr("to")), (Some("result"), Some("q1"), Some("a@hub.local/r")));
-        let r = handle_domain_stanza("hub.local", &iq("<session xmlns='urn:ietf:params:xml:ns:xmpp-session'/>", "set")).unwrap();
+        assert_eq!(
+            (r.attr("type"), r.attr("id"), r.attr("to")),
+            (Some("result"), Some("q1"), Some("a@hub.local/r"))
+        );
+        let r = handle_domain_stanza(
+            "hub.local",
+            &iq("<session xmlns='urn:ietf:params:xml:ns:xmpp-session'/>", "set"),
+        )
+        .unwrap();
         assert_eq!(r.attr("type"), Some("result"));
     }
 
     #[test]
     fn disco_info_parses() {
-        let r = handle_domain_stanza("hub.local", &iq("<query xmlns='http://jabber.org/protocol/disco#info'/>", "get")).unwrap();
+        let r = handle_domain_stanza(
+            "hub.local",
+            &iq("<query xmlns='http://jabber.org/protocol/disco#info'/>", "get"),
+        )
+        .unwrap();
         let info = DiscoInfoResult::try_from(r.get_child("query", ns::DISCO_INFO).unwrap().clone()).unwrap();
         assert_eq!(info.identities[0].category, "server");
         assert!(info.features.iter().any(|f| f == ns::PING));
@@ -85,9 +96,15 @@ mod tests {
     fn unknown_requests_get_service_unavailable() {
         let r = handle_domain_stanza("hub.local", &iq("<query xmlns='jabber:iq:version'/>", "get")).unwrap();
         assert_eq!(r.attr("type"), Some("error"));
-        assert!(r.get_child("error", "jabber:client").unwrap().has_child("service-unavailable", ns::XMPP_STANZAS));
+        assert!(
+            r.get_child("error", "jabber:client")
+                .unwrap()
+                .has_child("service-unavailable", ns::XMPP_STANZAS)
+        );
         assert!(handle_domain_stanza("hub.local", &iq("", "result")).is_none());
-        let msg: Element = "<message xmlns='jabber:client' to='hub.local'><body>x</body></message>".parse().unwrap();
+        let msg: Element = "<message xmlns='jabber:client' to='hub.local'><body>x</body></message>"
+            .parse()
+            .unwrap();
         assert!(handle_domain_stanza("hub.local", &msg).is_none());
     }
 }

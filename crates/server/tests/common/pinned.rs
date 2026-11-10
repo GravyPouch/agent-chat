@@ -101,7 +101,9 @@ impl ServerConnector for PinnedStartTls {
             return Err(io_err("the server does not offer STARTTLS"));
         }
         stream
-            .send(&XmppStreamElement::Starttls(starttls::Nonza::Request(starttls::Request)))
+            .send(&XmppStreamElement::Starttls(starttls::Nonza::Request(
+                starttls::Request,
+            )))
             .await?;
         loop {
             match stream.next().await {

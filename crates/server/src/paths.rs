@@ -72,7 +72,11 @@ impl HubPaths {
 
     /// Resolve a path from the config relative to the hub directory.
     pub fn resolve_file(&self, p: &Path) -> PathBuf {
-        if p.is_absolute() { p.to_owned() } else { self.dir.join(p) }
+        if p.is_absolute() {
+            p.to_owned()
+        } else {
+            self.dir.join(p)
+        }
     }
 
     /// The admin socket.
@@ -120,9 +124,7 @@ pub fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
-        let mut f = opts
-            .open(&tmp)
-            .with_context(|| format!("writing {}", tmp.display()))?;
+        let mut f = opts.open(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
         f.write_all(contents)?;
         f.sync_all()?;
     }
@@ -148,7 +150,10 @@ mod tests {
         let p = HubPaths::at("/x/hub");
         assert_eq!(p.config(), Path::new("/x/hub/hub.toml"));
         assert_eq!(p.db(), PathBuf::from("/x/hub/hub.db"));
-        assert_eq!(p.resolve_file(Path::new("tls/cert.pem")), PathBuf::from("/x/hub/tls/cert.pem"));
+        assert_eq!(
+            p.resolve_file(Path::new("tls/cert.pem")),
+            PathBuf::from("/x/hub/tls/cert.pem")
+        );
         assert_eq!(p.resolve_file(Path::new("/etc/c.pem")), PathBuf::from("/etc/c.pem"));
     }
 

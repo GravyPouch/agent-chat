@@ -365,10 +365,7 @@ mod tests {
         let accepted = accept_stream(io, "jabber:client", Timeouts::tight()).await.unwrap();
         budget.reset();
         let pending = accepted.send_header(StreamHeader::default()).await.unwrap();
-        let mut stream = pending
-            .send_features::<Element>(&Default::default())
-            .await
-            .unwrap();
+        let mut stream = pending.send_features::<Element>(&Default::default()).await.unwrap();
         let r = stream.next().await.unwrap();
         if r.is_err() {
             assert!(budget.exceeded());
@@ -442,6 +439,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 10);
-        assert!(start.elapsed() >= Duration::from_secs(2), "reads were not delayed: {:?}", start.elapsed());
+        assert!(
+            start.elapsed() >= Duration::from_secs(2),
+            "reads were not delayed: {:?}",
+            start.elapsed()
+        );
     }
 }

@@ -19,8 +19,7 @@ pub const NS_OMEMO2: &str = "urn:xmpp:omemo:2";
 pub const NS_LEGACY: &str = "eu.siacs.conversations.axolotl";
 
 /// Body sent alongside encrypted payloads for clients without OMEMO.
-pub const FALLBACK_BODY: &str =
-    "This message is encrypted with OMEMO, which your client doesn't seem to support.";
+pub const FALLBACK_BODY: &str = "This message is encrypted with OMEMO, which your client doesn't seem to support.";
 
 /// Preferred first.
 pub const VERSIONS: [Version; 2] = [Version::Omemo2, Version::Legacy];

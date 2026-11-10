@@ -37,26 +37,44 @@ impl MemoryStore {
     }
 
     pub fn remote_identity(&self, name: &str, device_id: i32) -> Option<Vec<u8>> {
-        self.0.lock().unwrap().identities.get(&(name.to_owned(), device_id)).cloned()
+        self.0
+            .lock()
+            .unwrap()
+            .identities
+            .get(&(name.to_owned(), device_id))
+            .cloned()
     }
 }
 
 impl OmemoStore for MemoryStore {
     fn identity_key_pair(&mut self) -> StoreResult<(Vec<u8>, Vec<u8>)> {
-        self.0.lock().unwrap().identity.clone().ok_or_else(|| "no identity".into())
+        self.0
+            .lock()
+            .unwrap()
+            .identity
+            .clone()
+            .ok_or_else(|| "no identity".into())
     }
     fn local_registration_id(&mut self) -> StoreResult<u32> {
         Ok(self.0.lock().unwrap().registration_id)
     }
     fn save_identity(&mut self, name: &str, device_id: i32, key: &[u8]) -> StoreResult<()> {
-        self.0.lock().unwrap().identities.insert((name.into(), device_id), key.to_vec());
+        self.0
+            .lock()
+            .unwrap()
+            .identities
+            .insert((name.into(), device_id), key.to_vec());
         Ok(())
     }
     fn load_session(&mut self, name: &str, device_id: i32) -> StoreResult<Option<Vec<u8>>> {
         Ok(self.0.lock().unwrap().sessions.get(&(name.into(), device_id)).cloned())
     }
     fn store_session(&mut self, name: &str, device_id: i32, record: &[u8]) -> StoreResult<()> {
-        self.0.lock().unwrap().sessions.insert((name.into(), device_id), record.to_vec());
+        self.0
+            .lock()
+            .unwrap()
+            .sessions
+            .insert((name.into(), device_id), record.to_vec());
         Ok(())
     }
     fn contains_session(&mut self, name: &str, device_id: i32) -> StoreResult<bool> {
@@ -73,7 +91,15 @@ impl OmemoStore for MemoryStore {
         Ok(before - g.sessions.len())
     }
     fn sub_device_sessions(&mut self, name: &str) -> StoreResult<Vec<i32>> {
-        Ok(self.0.lock().unwrap().sessions.keys().filter(|(n, _)| n == name).map(|(_, d)| *d).collect())
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .sessions
+            .keys()
+            .filter(|(n, _)| n == name)
+            .map(|(_, d)| *d)
+            .collect())
     }
     fn load_pre_key(&mut self, id: u32) -> StoreResult<Option<Vec<u8>>> {
         Ok(self.0.lock().unwrap().pre_keys.get(&id).cloned())

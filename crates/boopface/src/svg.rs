@@ -60,10 +60,18 @@ pub fn render_frame_svg(params: &FaceParams, frame: Option<&Frame>, size: u32) -
         let _ = write!(s, r#"<path d="{head}" fill="{}"/>"#, palette.base[0].to_hex());
     } else {
         // Base paint, then shine, volume, edge reflection and rim, as in `build`.
-        for fill in ["url(#skinBase)", "url(#skinShine)", "url(#skinVolume)", "url(#skinEdge)"] {
+        for fill in [
+            "url(#skinBase)",
+            "url(#skinShine)",
+            "url(#skinVolume)",
+            "url(#skinEdge)",
+        ] {
             let _ = write!(s, r#"<path d="{head}" fill="{fill}"/>"#);
         }
-        let _ = write!(s, r#"<path d="{head}" fill="none" stroke="url(#skinRim)" stroke-width="1.25"/>"#);
+        let _ = write!(
+            s,
+            r#"<path d="{head}" fill="none" stroke="url(#skinRim)" stroke-width="1.25"/>"#
+        );
         if params.look == Look::Ball {
             for fill in ["url(#skinBallShade)", "url(#skinBallHot)"] {
                 let _ = write!(s, r#"<path d="{head}" fill="{fill}"/>"#);
@@ -81,7 +89,11 @@ pub fn render_frame_svg(params: &FaceParams, frame: Option<&Frame>, size: u32) -
 
     let (ax, ay, ar) = ANTENNA;
     if flat {
-        let _ = write!(s, r#"<circle cx="{ax}" cy="{ay}" r="{ar}" fill="{}"/>"#, palette.antenna[0].to_hex());
+        let _ = write!(
+            s,
+            r#"<circle cx="{ax}" cy="{ay}" r="{ar}" fill="{}"/>"#,
+            palette.antenna[0].to_hex()
+        );
     } else {
         let _ = write!(
             s,
@@ -153,7 +165,10 @@ fn radial(s: &mut String, id: &str, cx: f64, cy: f64, r: f64, stops: &[(f64, Rgb
 }
 
 fn linear(s: &mut String, id: &str, [x1, y1, x2, y2]: [f64; 4], stops: &[(f64, Rgb, f64)]) {
-    let _ = write!(s, r#"<linearGradient id="{id}" x1="{x1:.3}" y1="{y1:.3}" x2="{x2:.3}" y2="{y2:.3}">"#);
+    let _ = write!(
+        s,
+        r#"<linearGradient id="{id}" x1="{x1:.3}" y1="{y1:.3}" x2="{x2:.3}" y2="{y2:.3}">"#
+    );
     for &(o, c, a) in stops {
         stop(s, o, c, a);
     }
@@ -168,9 +183,18 @@ fn skin_defs(s: &mut String, look: Look, p: &crate::params::Palette) {
     let (cx, cy) = (0.5 + lx * 0.30, 0.30 + ly * 0.17);
     let white = Rgb::WHITE;
     let ball = look == Look::Ball;
-    let dark = if ball { p.base[3] } else { Rgb::from_hex("#091126").unwrap_or(Rgb::BLACK) };
+    let dark = if ball {
+        p.base[3]
+    } else {
+        Rgb::from_hex("#091126").unwrap_or(Rgb::BLACK)
+    };
     let reflect = if ball { p.base[0] } else { p.rim };
-    let base_stops: Vec<(f64, Rgb, f64)> = p.base.iter().enumerate().map(|(i, &c)| (i as f64 / 3.0, c, 1.0)).collect();
+    let base_stops: Vec<(f64, Rgb, f64)> = p
+        .base
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| (i as f64 / 3.0, c, 1.0))
+        .collect();
 
     if look == Look::Gradient {
         linear(s, "skinBase", [0.05, 0.05, 0.85, 0.98], &base_stops);
@@ -183,7 +207,12 @@ fn skin_defs(s: &mut String, look: Look, p: &crate::params::Palette) {
         cx,
         cy - 0.10,
         0.70,
-        &[(0.0, white, p.shine), (0.23, white, p.shine * 0.30), (0.65, white, 0.035), (1.0, white, 0.0)],
+        &[
+            (0.0, white, p.shine),
+            (0.23, white, p.shine * 0.30),
+            (0.65, white, 0.035),
+            (1.0, white, 0.0),
+        ],
     );
     radial(
         s,
@@ -191,13 +220,24 @@ fn skin_defs(s: &mut String, look: Look, p: &crate::params::Palette) {
         0.5 + lx * 0.12,
         0.35 + ly * 0.08,
         0.76,
-        &[(0.0, dark, 0.0), (0.58, dark, 0.0), (0.82, dark, p.shade * 0.27), (1.0, dark, p.shade)],
+        &[
+            (0.0, dark, 0.0),
+            (0.58, dark, 0.0),
+            (0.82, dark, p.shade * 0.27),
+            (1.0, dark, p.shade),
+        ],
     );
     linear(
         s,
         "skinRim",
         [0.5 + lx * 0.5, 0.0, 0.5 - lx * 0.5, 1.0],
-        &[(0.0, white, 0.95), (0.28, p.rim, 0.60), (0.52, p.rim, 0.06), (0.82, p.rim, 0.13), (1.0, p.rim, 0.65)],
+        &[
+            (0.0, white, 0.95),
+            (0.28, p.rim, 0.60),
+            (0.52, p.rim, 0.06),
+            (0.82, p.rim, 0.13),
+            (1.0, p.rim, 0.65),
+        ],
     );
     radial(
         s,
@@ -213,7 +253,11 @@ fn skin_defs(s: &mut String, look: Look, p: &crate::params::Palette) {
         cx,
         cy.max(0.1),
         0.85,
-        &[(0.0, p.antenna[0], 1.0), (0.43, p.antenna[1], 1.0), (1.0, p.antenna[2], 1.0)],
+        &[
+            (0.0, p.antenna[0], 1.0),
+            (0.43, p.antenna[1], 1.0),
+            (1.0, p.antenna[2], 1.0),
+        ],
     );
     if ball {
         radial(
@@ -265,7 +309,11 @@ mod tests {
         Look::ALL
             .iter()
             .enumerate()
-            .map(|(i, &look)| FaceParams { hue_raw: (i as u16) * 13_000, look, roundness: 20 + i as u8 * 20 })
+            .map(|(i, &look)| FaceParams {
+                hue_raw: (i as u16) * 13_000,
+                look,
+                roundness: 20 + i as u8 * 20,
+            })
             .collect()
     }
 
