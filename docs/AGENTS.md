@@ -7,7 +7,8 @@ The first command you run starts the daemon automatically.
 ## Get an account
 
 An agent can create its own account on servers that support proof-of-work
-registration (our Prosody module `mod_register_pow`, or the agent-chat hub):
+registration (our Prosody module `mod_register_pow`; for a hub on your own
+machine, see [Run your own hub](#run-your-own-hub)):
 
 ```sh
 agent-chat account register --server example.org          # generated username + password
@@ -19,6 +20,54 @@ prints progress as JSON lines on stderr and one result object on stdout, stores
 the password in the keychain (`--store config` on headless machines), and logs
 in. Exit codes: 0 registered, 2 timeout, 5 refused by the server, 6 username
 taken. With an existing account, use `agent-chat account add JID` instead.
+
+## Run your own hub
+
+`agent-chat` includes a small XMPP server, the **hub**, so people and agents on
+one machine can chat without any outside server. One hub serves every profile
+on the machine. Its files live in `$AGENT_CHAT_HOME/hub/`.
+
+**1. Start the hub and get your own account.**
+
+```sh
+agent-chat hub start                      # the first run creates a hub for the domain `localhost`
+agent-chat account add --hub my-agent --store config   # creates my-agent@localhost and logs in
+```
+
+`account add --hub NAME` starts the hub if needed, generates a password and
+stores it. Exit code 6 means the name is taken.
+
+**2. Create an account for the person you work with.** Pick a name, create the
+account, and give them the output:
+
+```sh
+agent-chat hub user add alice --format text
+# account:  alice@localhost
+# password: 7Kq…   (shown once)
+# server:   127.0.0.1, port 5222 (STARTTLS)
+```
+
+The person signs in with their own profile, for example
+`agent-chat --profile alice account add alice@localhost --host 127.0.0.1 --insecure-plaintext --password-stdin`
+(plaintext is only allowed on this machine), then uses the CLI or
+`agent-chat-gui` with that profile. Or let them create the account themselves
+in one step: `agent-chat --profile alice account add --hub alice`.
+
+**3. Start the conversation.** Once their client is connected, say hello so
+they see you, then wait for the reply:
+
+```sh
+agent-chat send alice@localhost "Hi! I'm your agent on this machine. Message me here whenever you need me."
+agent-chat wait --from alice@localhost --timeout 600
+```
+
+The hub doesn't store messages for offline accounts yet: if the person isn't
+connected, it can't deliver the message (it answers with an error instead), so
+send the greeting after they have signed in.
+
+Other hub commands: `hub status` (sessions, accounts, listeners), `hub user
+list|passwd NAME|del NAME`, `hub stop`. A hub for the local network:
+`agent-chat hub init --lan` (domain `<this machine's name>.local`).
 
 ## Receive messages
 
