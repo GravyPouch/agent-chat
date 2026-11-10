@@ -7,6 +7,12 @@
   - v1 has **no federation**.
   - Over time it grows into a **hosted service "for anyone"**.
   - Prosody stays the dev/test reference server and the option for operators who want it. This document does not revisit that choice.
+- **Decisions on the open questions (2026-11-10):**
+  - **Domain:** a real domain name chosen at setup (`agent-chat hub init --domain NAME`). `localhost` isn't the default, because accounts can never leave their domain and the hosted path needs a domain the user owns.
+  - **Process:** a separate hub process (`agent-chat hub start`, the same binary) that serves every local profile, auto-started by the CLI when needed. This was recommended, and the user didn't object after an explanation.
+  - **Stock clients that must work in v1:** Dino and Gajim, in addition to agent-chat. Conversations and Monal are best-effort.
+  - **License:** GPL-3.0-or-later, the same as the rest of the project (not AGPL).
+  - Everything else in §12 uses this document's proposed defaults until the user says otherwise.
 - **Scope of this document:**
   - the v1 feature set and its non-goals;
   - the architecture;
@@ -1654,6 +1660,8 @@ Lonewolf, also written largely with AI agents, reached c2s, roster, carbons and 
 ---
 
 ## 12. Open questions for the user
+
+> Questions 1 (domain), 2 (process model), 4 (stock clients) and 6 (license) were decided on 2026-11-10; see the decisions at the top of this document. The rest still use the recommendations below.
 
 1. **The hub's domain.** For local mode, is `localhost` acceptable, given that those JIDs can never move? For LAN mode, should `hub init --lan` require a name such as `hub.lan`, `<hostname>.local` or a real domain you own? *Recommendation:* `localhost` for local-only; require an explicit `--domain` for LAN; recommend a real domain.
 2. **Process model.** Is a separate hub process (`agent-chat hub run`), in the same binary, acceptable? Or do you want the hub to run inside a daemon? *Recommendation:* separate process, optional auto-start from the daemon.
