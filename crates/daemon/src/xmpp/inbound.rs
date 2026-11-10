@@ -171,6 +171,11 @@ fn classify_inner(
     if m.type_ == MessageType::Headline {
         return Classified::Ignore("headline");
     }
+    // Invitations arrive live (handled before classifying); archived or
+    // carbon copies are not chat messages.
+    if m.type_ != MessageType::Groupchat && parse_invite(&m).is_some() {
+        return Classified::Ignore("invitation");
+    }
     let has_body = body_of(&m).is_some_and(|b| !b.is_empty());
     let encrypted = has_omemo(&m);
 
@@ -1018,6 +1023,23 @@ mod tests {
             ))
             .is_none()
         );
+    }
+
+    #[test]
+    fn archived_invitations_are_not_messages() {
+        let xml = r#"<message xmlns='jabber:client' to='alice@example.org/ac'>
+              <result xmlns='urn:xmpp:mam:2' queryid='q1' id='A9'>
+                <forwarded xmlns='urn:xmpp:forward:0'>
+                  <delay xmlns='urn:xmpp:delay' stamp='2026-01-02T03:04:05Z'/>
+                  <message xmlns='jabber:client' from='team@conf.example.org' to='alice@example.org'>
+                    <x xmlns='http://jabber.org/protocol/muc#user'><invite from='bob@example.org/x'/></x>
+                    <body>bob@example.org/x invited you to the room team@conf.example.org</body>
+                  </message>
+                </forwarded></result></message>"#;
+        assert!(matches!(
+            run(xml, Some(("q1", OWN)), None),
+            Classified::Ignore("invitation")
+        ));
     }
 
     #[test]

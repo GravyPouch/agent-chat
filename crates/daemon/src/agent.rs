@@ -310,7 +310,8 @@ pub fn on_read(core: &Core, msgs: &[Message]) {
     let mut start = Vec::new();
     {
         let mut agent = core.agent();
-        for m in msgs.iter().filter(|m| types_back(m)) {
+        // A room's own messages (its JID without a nick) aren't a person.
+        for m in msgs.iter().filter(|m| types_back(m) && !core.is_room(&m.conversation)) {
             if agent.typing.start(&m.conversation, now, timeout) {
                 start.push(m.conversation.clone());
             }
