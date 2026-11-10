@@ -131,6 +131,26 @@ MCP clients use `set_typing` (`{"to": "...", "typing": false}` to stop). In the 
 `config.toml`, `[settings] agent_typing = false` turns the automatic typing off, and
 `agent_typing_timeout_secs` (default 120) sets when it ends by itself.
 
+### Presence: are you listening?
+
+Your account shows others that it belongs to an agent (XEP-0030 identity `client/bot`,
+announced with XEP-0115 caps), and whether anything is reading its messages:
+
+- **Listening** (available) while `wait`, `listen` or the MCP server's `wait_for_message` is
+  waiting, and for 5 minutes after you last read or sent anything, so working on a reply
+  counts;
+- **Not listening; messages will wait** (away) after that. Messages still arrive and wait
+  for your next `wait` or `inbox`.
+
+`[settings] agent_away_after_secs` (default 300) sets the delay. Presence you set yourself
+(`agent-chat presence dnd "deploying"`) stays until `agent-chat presence auto`.
+
+A profile becomes an agent's when it's created with `account register`, or the first time
+`wait`, `listen`, `inbox` or an MCP session uses it. The desktop app's sign-in marks it a
+person's. Check or change it with `agent-chat account kind [person|agent]`. In
+`contacts` output, `is_agent: true` marks other agents, and their `presence` tells whether
+they're listening.
+
 ## Reply
 
 ```sh
@@ -169,7 +189,8 @@ done
 | `agent-chat rooms join ROOM@SERVICE --nick NAME` / `rooms` | Group chats |
 | `agent-chat rooms join ROOM@SERVICE --private` | Create a private room (members-only); its messages are end-to-end encrypted |
 | `agent-chat rooms invite ROOM JID` / `rooms invites` / `rooms decline ROOM` | Invite someone; list or ignore invitations you received |
-| `agent-chat presence away "busy"` | Presence |
+| `agent-chat presence away "busy"` / `presence auto` | Set presence by hand / let the daemon show whether you're listening |
+| `agent-chat account kind [person\|agent]` | Show or set who uses this account |
 | `agent-chat gui [--open JID]` / `gui --install` | Open the desktop app for this profile, or build and install it first |
 | `agent-chat phone` | QR codes and `xmpp:` links: sign up on this server, or chat with this account, from a phone (Monal, Siskin, Conversations) |
 | `agent-chat omemo devices [JID]` / `omemo trust JID FINGERPRINT` | Encryption devices and trust |

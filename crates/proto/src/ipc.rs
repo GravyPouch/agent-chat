@@ -8,8 +8,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    ChatState, Contact, Delivery, EncryptionProtocol, Filter, Message, PresenceInfo, RoomInvite, Show, StatusInfo,
-    SubscriptionRequest,
+    AccountKind, ChatState, Contact, Delivery, EncryptionProtocol, Filter, Message, PresenceInfo, RoomInvite, Show,
+    StatusInfo, SubscriptionRequest,
 };
 
 /// How `send` should treat end-to-end encryption.
@@ -130,12 +130,21 @@ pub enum Request {
     RoomInviteDecline { room: String },
     /// Leave a room and forget it. Result: `null`.
     RoomLeave { jid: String },
-    /// Change our presence. Result: `null`.
+    /// Change our presence. Agents keep it until [`Request::AutoPresence`].
+    /// Result: `null`.
     SetPresence {
         show: Show,
         #[serde(default)]
         status: Option<String>,
     },
+    /// Let the daemon manage presence again (agents: "Listening" while a
+    /// consumer waits, away when nobody has for a while). Result: `null`.
+    AutoPresence,
+    /// Say whether a person or an agent uses this account. Result: [`StatusInfo`].
+    SetAccountKind { kind: AccountKind },
+    /// Identify the client on this connection: `cli`, `mcp` or `gui`. An
+    /// MCP session makes an account of unknown kind an agent's. Result: `null`.
+    Hello { client: String },
     /// OMEMO devices of a JID (or our own when `None`). Result: `Vec<model::DeviceInfo>`.
     OmemoDevices {
         #[serde(default)]
@@ -187,6 +196,10 @@ pub struct AccountParams {
     /// Where to keep the password.
     #[serde(default)]
     pub password_storage: PasswordStorage,
+    /// Who uses the account; `None` keeps what the profile says (or lets
+    /// the first agent consumer decide).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<AccountKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -394,6 +407,25 @@ mod tests {
         .unwrap();
         let back: Request = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, Request::Wait { no_typing: true, .. }));
+    }
+
+    #[test]
+    fn agent_requests() {
+        let f: ClientFrame =
+            serde_json::from_str(r#"{"id":8,"method":"set_account_kind","params":{"kind":"agent"}}"#).unwrap();
+        assert_eq!(
+            f.request,
+            Request::SetAccountKind {
+                kind: AccountKind::Agent
+            }
+        );
+        let f: ClientFrame = serde_json::from_str(r#"{"id":9,"method":"auto_presence"}"#).unwrap();
+        assert_eq!(f.request, Request::AutoPresence);
+        let f: ClientFrame = serde_json::from_str(r#"{"id":10,"method":"hello","params":{"client":"mcp"}}"#).unwrap();
+        assert_eq!(f.request, Request::Hello { client: "mcp".into() });
+        // Account params from older clients have no kind.
+        let p: AccountParams = serde_json::from_str(r#"{"jid":"a@b","password":"x"}"#).unwrap();
+        assert_eq!(p.kind, None);
     }
 
     #[test]

@@ -236,6 +236,73 @@ pub struct PresenceInfo {
     pub show: Show,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub status: Option<String>,
+    /// The client behind this presence is an AI agent (it advertises the
+    /// XEP-0030 identity `client/bot`).
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub is_agent: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
+/// Status text of an agent while a consumer is waiting for messages.
+pub const LISTENING_STATUS: &str = "Listening";
+/// Status text of an agent nobody is reading for (presence `away`).
+pub const NOT_LISTENING_STATUS: &str = "Not listening; messages will wait";
+
+impl PresenceInfo {
+    pub fn new(show: Show, status: Option<String>) -> Self {
+        Self {
+            show,
+            status,
+            is_agent: false,
+        }
+    }
+
+    /// How an agent's presence reads to people: "listening", "not listening
+    /// (messages will wait)", "away — reason", "offline"…
+    pub fn agent_label(&self) -> String {
+        let status = self.status.as_deref().filter(|s| !s.is_empty());
+        match (self.show, status) {
+            (Show::Unavailable, _) => "offline".into(),
+            (Show::Available | Show::Chat, None | Some(LISTENING_STATUS)) => "listening".into(),
+            (Show::Away | Show::Xa, Some(NOT_LISTENING_STATUS)) => "not listening (messages will wait)".into(),
+            (Show::Available | Show::Chat, Some(s)) => format!("online — {s}"),
+            (Show::Away | Show::Xa, None) => "away (messages will wait)".into(),
+            (Show::Away | Show::Xa, Some(s)) => format!("away — {s}"),
+            (Show::Dnd, None) => "busy".into(),
+            (Show::Dnd, Some(s)) => format!("busy — {s}"),
+        }
+    }
+}
+
+/// Who uses an account: a person (desktop app, phone) or an AI agent. Agents
+/// advertise the XEP-0030 identity `client/bot` and say in their presence
+/// whether anything is listening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountKind {
+    #[default]
+    Person,
+    Agent,
+}
+
+impl AccountKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AccountKind::Person => "person",
+            AccountKind::Agent => "agent",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "person" | "human" => AccountKind::Person,
+            "agent" | "bot" => AccountKind::Agent,
+            _ => return None,
+        })
+    }
 }
 
 /// XEP-0085 chat state notification.
@@ -274,6 +341,10 @@ pub struct Contact {
     #[serde(default)]
     pub groups: Vec<String>,
     pub presence: PresenceInfo,
+    /// An AI agent (learned from its client's identity; remembered while
+    /// it is offline).
+    #[serde(default)]
+    pub is_agent: bool,
 }
 
 /// An incoming subscription request awaiting approval.
@@ -341,6 +412,12 @@ pub struct StatusInfo {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_error: Option<String>,
     pub presence: PresenceInfo,
+    /// Whether this account is used by a person or an agent.
+    #[serde(default)]
+    pub kind: AccountKind,
+    /// Agents: is a consumer reading messages right now (or was, recently)?
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub listening: Option<bool>,
     pub daemon_pid: u32,
     /// The daemon's local setup page (instructions, MCP config).
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -395,5 +472,61 @@ impl Default for Delivery {
             include_own: false,
             from_start: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_labels() {
+        let p = |show, status: Option<&str>| PresenceInfo::new(show, status.map(str::to_owned)).agent_label();
+        assert_eq!(p(Show::Available, Some(LISTENING_STATUS)), "listening");
+        assert_eq!(p(Show::Available, None), "listening");
+        assert_eq!(
+            p(Show::Away, Some(NOT_LISTENING_STATUS)),
+            "not listening (messages will wait)"
+        );
+        assert_eq!(p(Show::Away, Some("lunch")), "away — lunch");
+        assert_eq!(p(Show::Xa, None), "away (messages will wait)");
+        assert_eq!(p(Show::Dnd, Some("deploying")), "busy — deploying");
+        assert_eq!(p(Show::Available, Some("on call")), "online — on call");
+        assert_eq!(p(Show::Unavailable, Some(LISTENING_STATUS)), "offline");
+    }
+
+    #[test]
+    fn new_fields_are_optional_in_json() {
+        // Older daemons and clients don't know about agents.
+        let c: Contact = serde_json::from_str(
+            r#"{"jid":"bob@example.org","subscription":"both","pending_out":false,"presence":{"show":"available"}}"#,
+        )
+        .unwrap();
+        assert!(!c.is_agent);
+        assert!(!c.presence.is_agent);
+        let s: StatusInfo =
+            serde_json::from_str(r#"{"profile":"default","state":"online","presence":{"show":"away"},"daemon_pid":1}"#)
+                .unwrap();
+        assert_eq!(s.kind, AccountKind::Person);
+        assert_eq!(s.listening, None);
+        // A person's presence stays as compact as before.
+        let json = serde_json::to_string(&PresenceInfo::default()).unwrap();
+        assert_eq!(json, r#"{"show":"available"}"#);
+        let agent = PresenceInfo {
+            is_agent: true,
+            ..PresenceInfo::new(Show::Available, Some(LISTENING_STATUS.into()))
+        };
+        let json = serde_json::to_string(&agent).unwrap();
+        assert_eq!(json, r#"{"show":"available","status":"Listening","is_agent":true}"#);
+        assert_eq!(serde_json::from_str::<PresenceInfo>(&json).unwrap(), agent);
+    }
+
+    #[test]
+    fn account_kind_names() {
+        assert_eq!(AccountKind::parse("agent"), Some(AccountKind::Agent));
+        assert_eq!(AccountKind::parse("bot"), Some(AccountKind::Agent));
+        assert_eq!(AccountKind::parse("person"), Some(AccountKind::Person));
+        assert_eq!(AccountKind::parse("robot"), None);
+        assert_eq!(serde_json::to_string(&AccountKind::Agent).unwrap(), r#""agent""#);
     }
 }

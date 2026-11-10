@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use agent_chat_proto::ipc::PasswordStorage;
+use agent_chat_proto::model::AccountKind;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +55,14 @@ pub struct Settings {
     /// Seconds after which an agent's "typing" ends by itself.
     #[serde(default = "default_typing_timeout")]
     pub agent_typing_timeout_secs: u64,
+    /// `person` or `agent`. Unset: a person's, until an agent consumer
+    /// (`wait`, `listen`, `inbox`, MCP) uses the profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_kind: Option<AccountKind>,
+    /// Agents: seconds without any consumer before presence becomes away
+    /// ("Not listening; messages will wait").
+    #[serde(default = "default_away_after")]
+    pub agent_away_after_secs: u64,
 }
 
 impl Default for Settings {
@@ -65,8 +74,14 @@ impl Default for Settings {
             http_port: default_http_port(),
             agent_typing: true,
             agent_typing_timeout_secs: default_typing_timeout(),
+            account_kind: None,
+            agent_away_after_secs: default_away_after(),
         }
     }
+}
+
+fn default_away_after() -> u64 {
+    300
 }
 
 fn yes() -> bool {
@@ -205,8 +220,13 @@ mod tests {
         let cfg: Config = toml::from_str("[settings]\nmam_backfill = 10\n").unwrap();
         assert!(cfg.settings.agent_typing);
         assert_eq!(cfg.settings.agent_typing_timeout_secs, 120);
-        let cfg: Config = toml::from_str("[settings]\nagent_typing = false\n").unwrap();
+        assert_eq!(cfg.settings.account_kind, None);
+        assert_eq!(cfg.settings.agent_away_after_secs, 300);
+        let cfg: Config = toml::from_str("[settings]\nagent_typing = false\naccount_kind = \"agent\"\n").unwrap();
         assert!(!cfg.settings.agent_typing);
+        assert_eq!(cfg.settings.account_kind, Some(AccountKind::Agent));
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("account_kind = \"agent\""), "{text}");
     }
 
     #[test]

@@ -12,10 +12,11 @@ use agent_chat_proto::model::{ChatState, MessageKind, MessageSource, PresenceInf
 use chrono::{DateTime, Utc};
 use tokio_xmpp::FromElementError;
 use tokio_xmpp::minidom::Element;
+use xmpp_parsers::caps::Caps;
 use xmpp_parsers::carbons;
 use xmpp_parsers::chatstates::ChatState as XChatState;
 use xmpp_parsers::delay::Delay;
-use xmpp_parsers::disco::DiscoInfoQuery;
+use xmpp_parsers::disco::{DiscoInfoQuery, DiscoInfoResult};
 use xmpp_parsers::iq::Iq;
 use xmpp_parsers::jid::{BareJid, Jid};
 use xmpp_parsers::mam;
@@ -29,6 +30,7 @@ use xmpp_parsers::stanza_id::{OriginId, StanzaId};
 
 use crate::core::Core;
 use crate::store::{DedupeKeys, NewMessage};
+use crate::xmpp::disco;
 use crate::xmpp::session::SessionHandle;
 
 /// Lookups `classify` needs from daemon state.
@@ -496,10 +498,7 @@ pub fn presence_info(p: &Presence) -> PresenceInfo {
             Some(XShow::Dnd) => Show::Dnd,
         },
     };
-    PresenceInfo {
-        show,
-        status: p.statuses.values().next().cloned(),
-    }
+    PresenceInfo::new(show, p.statuses.values().next().cloned())
 }
 
 pub fn on_presence(core: &Arc<Core>, handle: &SessionHandle, p: Presence) {
@@ -528,23 +527,137 @@ pub fn on_presence(core: &Arc<Core>, handle: &SessionHandle, p: Presence) {
         }
         PresenceType::None | PresenceType::Unavailable => {
             let resource = from.resource().map(|r| r.to_string()).unwrap_or_default();
-            let info = presence_info(&p);
-            let best = {
+            let mut info = presence_info(&p);
+            let online = info.show != Show::Unavailable;
+            let caps = find_presence_payload::<Caps>(&p);
+            if online {
+                // Agent or person? Known caps answer at once; otherwise ask.
+                match caps
+                    .as_ref()
+                    .and_then(|c| core.state().caps_agents.get(&disco::caps_key(c)).copied())
+                {
+                    Some(is_agent) => info.is_agent = is_agent,
+                    None => {
+                        info.is_agent = core
+                            .state()
+                            .presence
+                            .get(&bare)
+                            .and_then(|r| r.get(&resource))
+                            .is_some_and(|old| old.is_agent);
+                        learn_identity(core, handle, from.clone(), caps);
+                    }
+                }
+            }
+            {
                 let mut st = core.state();
                 let entry = st.presence.entry(bare.clone()).or_default();
-                if info.show == Show::Unavailable {
-                    entry.remove(&resource);
-                } else {
+                if online {
                     entry.insert(resource, info);
+                } else {
+                    entry.remove(&resource);
                 }
-                crate::core::best_presence(st.presence.get(&bare))
-            };
+            }
+            if online {
+                remember_kind(core, &bare);
+            }
             core.emit(Event::Presence {
+                presence: core.contact_presence(&bare),
                 jid: bare,
-                presence: best,
             });
         }
         _ => {}
+    }
+}
+
+fn find_presence_payload<T>(p: &Presence) -> Option<T>
+where
+    T: TryFrom<Element, Error = FromElementError>,
+{
+    p.payloads.iter().find_map(|el| T::try_from(el.clone()).ok())
+}
+
+/// Find out whether the client behind `from` is an agent: disco#info for
+/// its caps hash (verified, then cached by hash, also across restarts), or
+/// for the full JID when it sends no caps.
+fn learn_identity(core: &Arc<Core>, handle: &SessionHandle, from: Jid, caps: Option<Caps>) {
+    let key = caps.as_ref().map(disco::caps_key);
+    if let Some(key) = &key
+        && let Ok(Some(v)) = core.store().kv_get(&format!("caps:{key}"))
+    {
+        let is_agent = v == "agent";
+        core.state().caps_agents.insert(key.clone(), is_agent);
+        set_resource_kind(core, &from, is_agent);
+        return;
+    }
+    let pending = key.clone().unwrap_or_else(|| from.to_string());
+    if !core.state().disco_pending.insert(pending.clone()) {
+        return; // already asking
+    }
+    let core = core.clone();
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        let node = caps.as_ref().map(disco::caps_node);
+        let result = handle
+            .iq_get(Some(from.clone()), DiscoInfoQuery { node })
+            .await
+            .ok()
+            .flatten()
+            .and_then(|el| DiscoInfoResult::try_from(el).ok());
+        core.state().disco_pending.remove(&pending);
+        let Some(info) = result else {
+            return;
+        };
+        let is_agent = disco::is_agent(&info);
+        if let (Some(c), Some(key)) = (&caps, &key) {
+            if !disco::verify_caps(c, &info) {
+                tracing::debug!("caps hash of {from} doesn't match its disco#info; not caching it");
+            } else {
+                core.state().caps_agents.insert(key.clone(), is_agent);
+                let value = if is_agent { "agent" } else { "person" };
+                let _ = core.store().kv_set(&format!("caps:{key}"), value);
+            }
+        }
+        set_resource_kind(&core, &from, is_agent);
+    });
+}
+
+/// Record what one of a contact's clients is, and tell subscribers.
+fn set_resource_kind(core: &Core, from: &Jid, is_agent: bool) {
+    let bare = from.to_bare().to_string();
+    let resource = from.resource().map(|r| r.to_string()).unwrap_or_default();
+    {
+        let mut st = core.state();
+        let Some(info) = st.presence.get_mut(&bare).and_then(|r| r.get_mut(&resource)) else {
+            return; // went offline meanwhile
+        };
+        if info.is_agent == is_agent {
+            return;
+        }
+        info.is_agent = is_agent;
+    }
+    remember_kind(core, &bare);
+    core.emit(Event::Presence {
+        presence: core.contact_presence(&bare),
+        jid: bare,
+    });
+    core.emit(Event::ContactsChanged);
+}
+
+/// A contact is an agent while any of its online clients is one; remember
+/// the answer for when it's offline.
+fn remember_kind(core: &Core, bare: &str) {
+    let key = bare.to_lowercase();
+    let is_agent = core
+        .state()
+        .presence
+        .get(bare)
+        .is_some_and(|r| r.values().any(|p| p.is_agent));
+    let changed = core.state().contact_agents.insert(key.clone(), is_agent) != Some(is_agent);
+    if changed {
+        let _ = core.store().kv_set(
+            &format!("contact-kind:{key}"),
+            if is_agent { "agent" } else { "person" },
+        );
     }
 }
 
@@ -678,7 +791,7 @@ pub fn on_iq_request(core: &Arc<Core>, handle: &SessionHandle, iq: Iq) -> Option
                 });
             }
             if let Ok(q) = DiscoInfoQuery::try_from(payload.clone()) {
-                let disco = crate::xmpp::disco::our_disco(q.node);
+                let disco = disco::our_disco(q.node, core.account_kind());
                 return Some(Iq::Result {
                     from: None,
                     to: from,

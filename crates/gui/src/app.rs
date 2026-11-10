@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use agent_chat_proto::ipc::{AccountParams, ContactList, EncryptionMode, Event, PasswordStorage, Request};
 use agent_chat_proto::model::{
-    ChatState, ConnectionState, Contact, ConversationSummary, DeviceInfo, Message, MessageKind, MessageSource, Room,
-    RoomInvite, Show, StatusInfo, SubscriptionRequest, Trust,
+    AccountKind, ChatState, ConnectionState, Contact, ConversationSummary, DeviceInfo, Message, MessageKind,
+    MessageSource, Room, RoomInvite, Show, StatusInfo, SubscriptionRequest, Trust,
 };
 use agent_chat_proto::{CallError, IpcClient};
 use boopface::Signal;
@@ -71,8 +71,10 @@ impl Render for ErrorView {
 struct ChatEntry {
     jid: String,
     title: String,
+    /// Last message, or a room's topic.
     preview: Option<String>,
     presence: Option<Show>,
+    is_agent: bool,
     unread: u64,
 }
 
@@ -535,6 +537,7 @@ impl ChatApp {
             Event::Presence { jid, presence } => {
                 let online = presence.show != Show::Unavailable;
                 if let Some(c) = self.contacts.iter_mut().find(|c| c.jid == jid) {
+                    c.is_agent |= presence.is_agent;
                     c.presence = presence;
                 }
                 self.face_signal(&jid, Signal::Online(online), cx);
@@ -708,6 +711,8 @@ impl ChatApp {
             port,
             insecure_plaintext: self.account_insecure,
             password_storage: PasswordStorage::Keychain,
+            // Accounts set up in the desktop app are people's.
+            kind: Some(AccountKind::Person),
         };
         self.call::<StatusInfo>(Request::SetAccount(params), cx, |this, r, cx| {
             this.account_busy = false;
@@ -1376,6 +1381,7 @@ impl ChatApp {
                     p.replace('\n', " ")
                 }),
                 presence: contact.map(|x| x.presence.show),
+                is_agent: contact.is_some_and(|x| x.is_agent),
                 unread: c.unread,
             });
         }
@@ -1386,8 +1392,9 @@ impl ChatApp {
             .map(|x| ChatEntry {
                 jid: x.jid.clone(),
                 title: x.name.clone().unwrap_or_else(|| x.jid.clone()),
-                preview: None,
+                preview: x.is_agent.then(|| format!("Agent · {}", x.presence.agent_label())),
                 presence: Some(x.presence.show),
+                is_agent: x.is_agent,
                 unread: 0,
             })
             .collect();
@@ -1404,17 +1411,15 @@ impl ChatApp {
             .unwrap_or(0)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn sidebar_row(
-        &self,
-        id: SharedString,
-        jid: String,
-        title: String,
-        subtitle: Option<String>,
-        presence: Option<Show>,
-        unread: u64,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn sidebar_row(&self, id: SharedString, entry: ChatEntry, cx: &mut Context<Self>) -> impl IntoElement {
+        let ChatEntry {
+            jid,
+            title,
+            preview: subtitle,
+            presence,
+            is_agent,
+            unread,
+        } = entry;
         let active = self.selected.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(&jid));
         let room = self.rooms.iter().any(|r| r.jid.eq_ignore_ascii_case(&jid));
         let theme = cx.theme().clone();
@@ -1457,7 +1462,20 @@ impl ChatApp {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).truncate().child(title))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .min_w_0()
+                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).truncate().child(title))
+                            .when(is_agent, |el| {
+                                el.child(
+                                    Icon::new(IconName::Bot)
+                                        .xsmall()
+                                        .flex_none()
+                                        .text_color(theme.muted_foreground),
+                                )
+                            }),
+                    )
                     .when_some(subtitle, |el, s| {
                         el.child(div().text_xs().text_color(theme.muted_foreground).truncate().child(s))
                     }),
@@ -1489,7 +1507,12 @@ impl ChatApp {
         let theme = cx.theme().clone();
         let status = self.status.clone();
         let own_show = status.as_ref().map(|s| s.presence.show).unwrap_or(Show::Unavailable);
+        let agent_label = status
+            .as_ref()
+            .filter(|s| s.kind == AccountKind::Agent && s.state == ConnectionState::Online)
+            .map(|s| format!("Agent · {}", s.presence.agent_label()));
         let (state_label, state_color) = match status.as_ref().map(|s| s.state) {
+            Some(ConnectionState::Online) if agent_label.is_some() => ("", show_color(own_show, cx)),
             Some(ConnectionState::Online) => ("Online", theme.green),
             Some(ConnectionState::Connecting) => ("Connecting…", theme.yellow),
             Some(ConnectionState::Reconnecting) => ("Reconnecting…", theme.yellow),
@@ -1518,16 +1541,8 @@ impl ChatApp {
         let mut chat_rows = Vec::new();
         for (i, e) in self.chat_entries().into_iter().enumerate() {
             chat_rows.push(
-                self.sidebar_row(
-                    SharedString::from(format!("chat-{i}")),
-                    e.jid,
-                    e.title,
-                    e.preview,
-                    e.presence,
-                    e.unread,
-                    cx,
-                )
-                .into_any_element(),
+                self.sidebar_row(SharedString::from(format!("chat-{i}")), e, cx)
+                    .into_any_element(),
             );
         }
         let mut room_rows = Vec::new();
@@ -1547,17 +1562,17 @@ impl ChatApp {
                 "not joined".to_string()
             });
             let unread = self.room_unread(&r.jid);
+            let entry = ChatEntry {
+                jid: r.jid.clone(),
+                title: local_part(&r.jid),
+                preview: subtitle,
+                presence: None,
+                is_agent: false,
+                unread,
+            };
             room_rows.push(
-                self.sidebar_row(
-                    SharedString::from(format!("room-{i}")),
-                    r.jid.clone(),
-                    local_part(&r.jid),
-                    subtitle,
-                    None,
-                    unread,
-                    cx,
-                )
-                .into_any_element(),
+                self.sidebar_row(SharedString::from(format!("room-{i}")), entry, cx)
+                    .into_any_element(),
             );
         }
 
@@ -1621,7 +1636,11 @@ impl ChatApp {
                                             .items_center()
                                             .child(div().size(px(7.)).rounded_full().bg(state_color))
                                             .child(
-                                                div().text_xs().text_color(theme.muted_foreground).child(state_label),
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme.muted_foreground)
+                                                    .truncate()
+                                                    .child(agent_label.unwrap_or_else(|| state_label.to_owned())),
                                             )
                                     }),
                             )
@@ -1812,6 +1831,7 @@ impl ChatApp {
                     .map(|s| format!(" · {s}"))
                     .unwrap_or_default()
             ),
+            (_, Some(c)) if c.is_agent => format!("Agent · {}", c.presence.agent_label()),
             (_, Some(c)) => format!(
                 "{}{}",
                 c.presence.show.as_str(),
@@ -1819,6 +1839,8 @@ impl ChatApp {
             ),
             _ => String::new(),
         };
+        let presence_dot = contact.as_ref().map(|c| show_color(c.presence.show, cx));
+        let is_agent = contact.as_ref().is_some_and(|c| c.is_agent);
         let address_copied = self.just_copied("peer-address");
         let room_private = room.as_ref().is_some_and(|r| r.private);
         let encrypted = room.is_none() && !self.devices.is_empty();
@@ -1846,7 +1868,30 @@ impl ChatApp {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(title))
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .min_w_0()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(title))
+                            .when(is_agent, |el| {
+                                el.child(
+                                    h_flex()
+                                        .id("agent-badge")
+                                        .flex_none()
+                                        .gap_1()
+                                        .px_1p5()
+                                        .rounded_md()
+                                        .bg(theme.muted)
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(Icon::new(IconName::Bot).xsmall())
+                                        .child("Agent")
+                                        .tooltip(|window, cx| {
+                                            Tooltip::new("This contact is an AI agent").build(window, cx)
+                                        }),
+                                )
+                            }),
+                    )
                     .child(
                         h_flex()
                             .min_w_0()
@@ -1879,8 +1924,12 @@ impl ChatApp {
                                         el.child(address.clone()).child(Icon::new(IconName::Copy).xsmall())
                                     }),
                             )
+                            .child("·")
+                            .when_some(presence_dot, |el, color| {
+                                el.child(div().flex_none().size(px(7.)).rounded_full().bg(color))
+                            })
                             .when(!details.is_empty(), |el| {
-                                el.child(div().min_w_0().truncate().child(format!("· {details}")))
+                                el.child(div().min_w_0().truncate().child(details))
                             }),
                     ),
             )

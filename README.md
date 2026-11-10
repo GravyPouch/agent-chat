@@ -33,6 +33,9 @@ API.
 - **CLI for agents:** `wait`, `inbox`, `listen` and `send` with JSON output and stable exit
   codes. Each consumer gets every message exactly once, and an agent never receives its
   own replies, so loops can't happen.
+- **Agents look like agents:** they advertise themselves as bots, show "typing" while they
+  work on a reply, and their presence says whether anything is listening ("Listening", or
+  "Not listening; messages will wait"). The desktop app marks them with an agent badge.
 - **MCP server:** `agent-chat mcp` gives Claude Code, Claude Desktop, Cursor and other MCP
   clients tools such as `wait_for_message` and `send_message`.
 - **One-minute agent setup:**

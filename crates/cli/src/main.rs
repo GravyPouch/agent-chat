@@ -12,8 +12,8 @@ use std::process::ExitCode;
 
 use agent_chat_proto::ipc::{AccountParams, ContactList, EncryptionMode, ErrorCode, PasswordStorage, Request};
 use agent_chat_proto::model::{
-    ChatState, ConversationSummary, Delivery, DeviceInfo, Filter, Message, MessageKind, Room, RoomInvite, Show,
-    StatusInfo,
+    AccountKind, ChatState, ConversationSummary, Delivery, DeviceInfo, Filter, Message, MessageKind, Room, RoomInvite,
+    Show, StatusInfo,
 };
 use agent_chat_proto::{CallError, DaemonLauncher, IpcClient, Profile};
 use anyhow::{Context, Result, anyhow};
@@ -121,7 +121,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<RoomsCmd>,
     },
-    /// Set presence: available, chat, away, xa, dnd or unavailable.
+    /// Set presence: available, chat, away, xa, dnd or unavailable; `auto`
+    /// hands it back to the daemon (agents: listening / not listening).
     Presence {
         show: String,
         /// Optional status text.
@@ -272,9 +273,19 @@ enum AccountCmd {
         /// Where to keep the password.
         #[arg(long, value_enum, default_value_t = Storage::Keychain)]
         store: Storage,
+        /// Who uses the account (default: decided by its first use; `wait`,
+        /// `listen` and MCP make it an agent's).
+        #[arg(long, value_enum)]
+        kind: Option<KindArg>,
     },
     /// Show the configured account and connection state.
     Show,
+    /// Show or set who uses this account: a person or an agent. Agents
+    /// advertise themselves as bots and show whether they're listening.
+    Kind {
+        #[arg(value_enum)]
+        kind: Option<KindArg>,
+    },
     /// Create a new account on a server (solving its proof-of-work challenge
     /// if it has one) and use it for this profile.
     ///
@@ -314,6 +325,21 @@ enum AccountCmd {
 enum Storage {
     Keychain,
     Config,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum KindArg {
+    Person,
+    Agent,
+}
+
+impl From<KindArg> for AccountKind {
+    fn from(k: KindArg) -> Self {
+        match k {
+            KindArg::Person => AccountKind::Person,
+            KindArg::Agent => AccountKind::Agent,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -830,6 +856,16 @@ async fn run(cli: Cli) -> Result<()> {
             let status: StatusInfo = client.call(Request::Status).await?;
             print_status(fmt, &status);
         }
+        Cmd::Account(AccountCmd::Kind { kind }) => {
+            let status: StatusInfo = match kind {
+                Some(kind) => client.call(Request::SetAccountKind { kind: kind.into() }).await?,
+                None => client.call(Request::Status).await?,
+            };
+            match fmt {
+                Format::Json => print_json(&serde_json::json!({"kind": status.kind, "listening": status.listening})),
+                Format::Text => println!("{}", status.kind.as_str()),
+            }
+        }
         Cmd::Account(AccountCmd::Add {
             jid,
             password_stdin,
@@ -838,6 +874,7 @@ async fn run(cli: Cli) -> Result<()> {
             port,
             insecure_plaintext,
             store,
+            kind,
         }) => {
             let (jid, password, host, port, insecure_plaintext) = if hub {
                 hub_account(&jid, password_stdin).await?
@@ -856,6 +893,7 @@ async fn run(cli: Cli) -> Result<()> {
                         Storage::Keychain => PasswordStorage::Keychain,
                         Storage::Config => PasswordStorage::ConfigFile,
                     },
+                    kind: kind.map(Into::into),
                 }))
                 .await?;
             print_status(fmt, &status);
@@ -877,10 +915,15 @@ async fn run(cli: Cli) -> Result<()> {
                     Format::Json => print_json(&list),
                     Format::Text => {
                         for c in &list.contacts {
+                            let presence = if c.is_agent {
+                                format!("agent · {}", c.presence.agent_label())
+                            } else {
+                                c.presence.show.as_str().to_owned()
+                            };
                             println!(
                                 "{:<40} {:<11} {:<5} {}",
                                 c.jid,
-                                c.presence.show.as_str(),
+                                presence,
                                 c.subscription,
                                 c.name.clone().unwrap_or_default()
                             );
@@ -961,9 +1004,10 @@ async fn run(cli: Cli) -> Result<()> {
             }
             RoomsCmd::Decline { room } => ok(client.call_value(Request::RoomInviteDecline { room }).await?),
         },
+        Cmd::Presence { show, .. } if show == "auto" => ok(client.call_value(Request::AutoPresence).await?),
         Cmd::Presence { show, status } => {
             let show = Show::parse(&show).ok_or_else(|| {
-                anyhow!("unknown presence {show:?}; use available, chat, away, xa, dnd or unavailable")
+                anyhow!("unknown presence {show:?}; use available, chat, away, xa, dnd, unavailable or auto")
             })?;
             let status = (!status.is_empty()).then(|| status.join(" "));
             ok(client.call_value(Request::SetPresence { show, status }).await?);
@@ -1063,6 +1107,8 @@ async fn register(profile: &Profile, opts: agent_chat_daemon::register::Register
                 Storage::Keychain => PasswordStorage::Keychain,
                 Storage::Config => PasswordStorage::ConfigFile,
             },
+            // Self-registration is how agents get accounts.
+            kind: Some(AccountKind::Agent),
         }))
         .await?;
     println!(
@@ -1142,7 +1188,19 @@ fn print_status(fmt: Format, s: &StatusInfo) {
         Format::Text => {
             println!("profile:  {}", s.profile);
             println!("account:  {}", s.account.as_deref().unwrap_or("(none)"));
+            println!("kind:     {}", s.kind.as_str());
             println!("state:    {:?}", s.state);
+            if let Some(listening) = s.listening {
+                println!(
+                    "presence: {} ({})",
+                    s.presence.agent_label(),
+                    if listening {
+                        "a consumer is listening"
+                    } else {
+                        "nobody is listening"
+                    }
+                );
+            }
             if let Some(j) = &s.bound_jid {
                 println!("bound as: {j}");
             }

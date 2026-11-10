@@ -33,6 +33,8 @@ pub async fn after_login(core: &Arc<Core>, handle: &SessionHandle) -> Result<()>
     if let Err(e) = fetch_roster(core, handle).await {
         tracing::warn!("roster fetch failed: {e:#}");
     }
+    // An agent announces whether anything is listening from the start.
+    crate::agent::refresh_presence(core);
     send_presence(core, handle)?;
     if let Err(e) = handle.iq_set(None, carbons::Enable).await {
         tracing::warn!("could not enable carbons: {e:#}");
@@ -196,7 +198,7 @@ pub fn deny_subscription(core: &Core, handle: &SessionHandle, jid: &str) -> Resu
 
 // ----------------------------------------------------------------- presence
 
-fn make_presence(info: &PresenceInfo) -> Presence {
+fn make_presence(info: &PresenceInfo, kind: agent_chat_proto::model::AccountKind) -> Presence {
     let mut p = Presence::available();
     p.show = match info.show {
         Show::Available | Show::Unavailable => None,
@@ -208,7 +210,7 @@ fn make_presence(info: &PresenceInfo) -> Presence {
     if let Some(s) = &info.status {
         p.set_status("", s.as_str());
     }
-    p.add_payload(crate::xmpp::disco::caps());
+    p.add_payload(crate::xmpp::disco::caps(kind));
     p
 }
 
@@ -217,7 +219,7 @@ pub fn send_presence(core: &Core, handle: &SessionHandle) -> Result<()> {
     if info.show == Show::Unavailable {
         handle.send(Presence::unavailable())?;
     } else {
-        handle.send(make_presence(&info))?;
+        handle.send(make_presence(&info, core.account_kind()))?;
     }
     Ok(())
 }
@@ -236,7 +238,7 @@ pub fn set_presence(core: &Core, handle: &SessionHandle, info: PresenceInfo) -> 
     let info = core.state().status.presence.clone();
     for (room, nick) in rooms {
         if let Ok(to) = Jid::new(&format!("{room}/{nick}")) {
-            let _ = handle.send(make_presence(&info).with_to(to));
+            let _ = handle.send(make_presence(&info, core.account_kind()).with_to(to));
         }
     }
     core.emit(Event::Status(core.status()));
@@ -352,7 +354,7 @@ async fn start_join(
     }
     let to = room_jid.with_resource_str(nick)?;
     let info = core.state().status.presence.clone();
-    handle.send(make_presence(&info).with_to(to).with_payload(muc))?;
+    handle.send(make_presence(&info, core.account_kind()).with_to(to).with_payload(muc))?;
     core.emit(Event::RoomsChanged);
     Ok(())
 }

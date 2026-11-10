@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use agent_chat_proto::Profile;
 use agent_chat_proto::ipc::{ErrorCode, Event, IpcError};
-use agent_chat_proto::model::{ConnectionState, Contact, Message, PresenceInfo, Room, Show, StatusInfo};
+use agent_chat_proto::model::{AccountKind, ConnectionState, Contact, Message, PresenceInfo, Room, Show, StatusInfo};
 use anyhow::Result;
 use tokio::sync::{Notify, broadcast};
 use xmpp_parsers::jid::Jid;
@@ -65,6 +65,13 @@ pub struct State {
     pub rooms: HashMap<String, RoomRuntime>,
     /// MAM query id → archive JID that must answer it
     pub mam_queries: HashMap<String, String>,
+    /// Bare JID → whether its client is an agent, as last learned (also
+    /// remembered in the store while the contact is offline).
+    pub contact_agents: HashMap<String, bool>,
+    /// Caps hash (`algo:ver`) → is it an agent's client; verified hashes only.
+    pub caps_agents: HashMap<String, bool>,
+    /// disco#info queries in flight (caps keys or full JIDs).
+    pub disco_pending: BTreeSet<String>,
 }
 
 pub struct Core {
@@ -97,6 +104,8 @@ impl Core {
             bound_jid: None,
             last_error: None,
             presence: PresenceInfo::default(),
+            kind: config.settings.account_kind.unwrap_or_default(),
+            listening: None,
             daemon_pid: std::process::id(),
             web_url: None,
         };
@@ -113,6 +122,9 @@ impl Core {
                 pending_invites: Vec::new(),
                 rooms: HashMap::new(),
                 mam_queries: HashMap::new(),
+                contact_agents: HashMap::new(),
+                caps_agents: HashMap::new(),
+                disco_pending: BTreeSet::new(),
             }),
             session: Mutex::new(None),
             omemo: Mutex::new(None),
@@ -201,7 +213,7 @@ impl Core {
     }
 
     fn set_state(&self, state: ConnectionState, error: Option<String>) {
-        let status = {
+        {
             let mut st = self.state();
             st.status.state = state;
             if error.is_some() {
@@ -210,13 +222,36 @@ impl Core {
             if state != ConnectionState::Online && state != ConnectionState::Reconnecting {
                 st.status.bound_jid = None;
             }
-            st.status.clone()
-        };
-        self.emit(Event::Status(status));
+        }
+        self.emit(Event::Status(self.status()));
     }
 
     pub fn status(&self) -> StatusInfo {
-        self.state().status.clone()
+        let mut status = self.state().status.clone();
+        status.kind = self.account_kind();
+        status.listening = (status.kind == AccountKind::Agent).then(|| crate::agent::is_listening(self));
+        status
+    }
+
+    /// Who uses this account (a person unless configured or detected).
+    pub fn account_kind(&self) -> AccountKind {
+        self.config.lock().unwrap().settings.account_kind.unwrap_or_default()
+    }
+
+    /// Is `bare` an agent? What we last learned, else what the store remembers.
+    pub fn contact_is_agent(&self, bare: &str) -> bool {
+        let key = bare.to_lowercase();
+        if let Some(known) = self.state().contact_agents.get(&key) {
+            return *known;
+        }
+        let remembered = self
+            .store()
+            .kv_get(&format!("contact-kind:{key}"))
+            .ok()
+            .flatten()
+            .is_some_and(|v| v == "agent");
+        self.state().contact_agents.insert(key, remembered);
+        remembered
     }
 
     /// Called by the session actor when a fresh (non-resumed) stream is up.
@@ -266,6 +301,8 @@ impl Core {
     // ------------------------------------------------------- views for IPC
 
     pub fn contacts(&self) -> Vec<Contact> {
+        let jids: Vec<String> = self.state().roster.keys().cloned().collect();
+        let agents: HashMap<String, bool> = jids.iter().map(|j| (j.clone(), self.contact_is_agent(j))).collect();
         let st = self.state();
         st.roster
             .iter()
@@ -275,7 +312,8 @@ impl Core {
                 subscription: e.subscription.clone(),
                 pending_out: e.pending_out,
                 groups: e.groups.clone(),
-                presence: best_presence(st.presence.get(jid)),
+                presence: best_presence(st.presence.get(jid), agents.get(jid).copied().unwrap_or(false)),
+                is_agent: agents.get(jid).copied().unwrap_or(false),
             })
             .collect()
     }
@@ -346,11 +384,52 @@ impl Core {
     }
 }
 
-pub fn best_presence(resources: Option<&HashMap<String, PresenceInfo>>) -> PresenceInfo {
+/// The presence to show for a contact: its most available client. For an
+/// agent (`agent_contact`, or any agent client online) that is its most
+/// available agent client, so whether it listens isn't hidden or faked by
+/// another client on the same account; with none online it is offline.
+pub fn best_presence(resources: Option<&HashMap<String, PresenceInfo>>, agent_contact: bool) -> PresenceInfo {
+    let offline = PresenceInfo::new(Show::Unavailable, None);
+    let Some(resources) = resources else {
+        return offline;
+    };
+    let agent = agent_contact || resources.values().any(|p| p.is_agent);
     resources
-        .and_then(|r| r.values().max_by_key(|p| p.show.rank()).cloned())
-        .unwrap_or(PresenceInfo {
-            show: Show::Unavailable,
-            status: None,
-        })
+        .values()
+        .filter(|p| p.is_agent || !agent)
+        .max_by_key(|p| p.show.rank())
+        .cloned()
+        .unwrap_or(offline)
+}
+
+impl Core {
+    /// What a contact's presence looks like now (see [`best_presence`]).
+    pub fn contact_presence(&self, bare: &str) -> PresenceInfo {
+        let agent = self.contact_is_agent(bare);
+        best_presence(self.state().presence.get(bare), agent)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn best_presence_prefers_agent_clients() {
+        let mut r = HashMap::new();
+        assert_eq!(best_presence(None, false).show, Show::Unavailable);
+        assert_eq!(best_presence(Some(&r), false).show, Show::Unavailable);
+        r.insert("phone".to_owned(), PresenceInfo::new(Show::Away, None));
+        r.insert("laptop".to_owned(), PresenceInfo::new(Show::Available, None));
+        assert_eq!(best_presence(Some(&r), false).show, Show::Available);
+        // A known agent whose agent client is offline is offline, whatever
+        // other clients of the account do.
+        assert_eq!(best_presence(Some(&r), true).show, Show::Unavailable);
+        // An agent on the same account: its presence is what counts.
+        let mut agent = PresenceInfo::new(Show::Away, Some(agent_chat_proto::model::NOT_LISTENING_STATUS.into()));
+        agent.is_agent = true;
+        r.insert("agent".to_owned(), agent.clone());
+        assert_eq!(best_presence(Some(&r), false), agent);
+        assert_eq!(best_presence(Some(&r), true), agent);
+    }
 }
