@@ -10,6 +10,14 @@
 //!
 //! The rate limit is a token bucket. When it is empty, reads are delayed,
 //! not failed, which throttles a flood without disconnecting.
+//!
+//! On the write side, [`Budget::arm_features_filter`] makes the next
+//! flushed write drop an empty `<mechanisms/>` element: xmpp-parsers 0.23
+//! always serializes `StreamFeatures::sasl_mechanisms`, even when empty,
+//! and tokio-xmpp's `send_features` only takes that type. RFC 6120 §6.4.1
+//! requires at least one `<mechanism/>`, and tokio-xmpp clients reject a
+//! second `<mechanisms/>` element. Remove this once the hub writes its
+//! own features element.
 
 use std::future::Future;
 use std::io;
@@ -24,12 +32,14 @@ use tokio::time::{Instant, Sleep};
 
 const READ_BUFFER: usize = 8 * 1024;
 
-/// Shared between the [`ConnIo`] (which counts) and the session (which resets).
+/// Per-connection controls shared between the [`ConnIo`] (which counts
+/// and filters) and the stream code (which resets and arms).
 #[derive(Debug)]
 pub struct Budget {
     used: AtomicUsize,
     limit: AtomicUsize,
     exceeded: AtomicBool,
+    filter_features: AtomicBool,
 }
 
 impl Budget {
@@ -38,7 +48,14 @@ impl Budget {
             used: AtomicUsize::new(0),
             limit: AtomicUsize::new(limit),
             exceeded: AtomicBool::new(false),
+            filter_features: AtomicBool::new(false),
         })
+    }
+
+    /// Drop an empty `<mechanisms/>` from the next flushed write (the
+    /// stream features). See the module documentation.
+    pub fn arm_features_filter(&self) {
+        self.filter_features.store(true, Ordering::Relaxed);
     }
 
     /// Start counting a new top-level element.
@@ -166,6 +183,27 @@ pub struct ConnIo<S> {
     budget: Arc<Budget>,
     rate: Option<RateLimit>,
     delay: Option<Pin<Box<Sleep>>>,
+    /// Writes held back while the features filter is armed.
+    held: Vec<u8>,
+    /// Filtered bytes still to be written, and how far we got.
+    out: Vec<u8>,
+    out_pos: usize,
+}
+
+const EMPTY_MECHANISMS: [&[u8]; 4] = [
+    b"<mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'></mechanisms>",
+    b"<mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>",
+    b"<mechanisms xmlns=\"urn:ietf:params:xml:ns:xmpp-sasl\"></mechanisms>",
+    b"<mechanisms xmlns=\"urn:ietf:params:xml:ns:xmpp-sasl\"/>",
+];
+
+fn strip_empty_mechanisms(mut data: Vec<u8>) -> Vec<u8> {
+    for pat in EMPTY_MECHANISMS {
+        while let Some(i) = data.windows(pat.len()).position(|w| w == pat) {
+            data.drain(i..i + pat.len());
+        }
+    }
+    data
 }
 
 impl<S> ConnIo<S> {
@@ -178,6 +216,9 @@ impl<S> ConnIo<S> {
             budget,
             rate,
             delay: None,
+            held: Vec::new(),
+            out: Vec::new(),
+            out_pos: 0,
         }
     }
 
@@ -254,13 +295,41 @@ impl<S: AsyncRead + Unpin> AsyncBufRead for ConnIo<S> {
     }
 }
 
+impl<S: AsyncWrite + Unpin> ConnIo<S> {
+    /// Write out what the features filter produced.
+    fn poll_drain_out(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        while self.out_pos < self.out.len() {
+            let n = ready!(Pin::new(&mut self.inner).poll_write(cx, &self.out[self.out_pos..]))?;
+            if n == 0 {
+                return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
+            }
+            self.out_pos += n;
+        }
+        self.out.clear();
+        self.out_pos = 0;
+        Poll::Ready(Ok(()))
+    }
+}
+
 impl<S: AsyncWrite + Unpin> AsyncWrite for ConnIo<S> {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+        let this = self.get_mut();
+        ready!(this.poll_drain_out(cx))?;
+        if this.budget.filter_features.load(Ordering::Relaxed) {
+            this.held.extend_from_slice(buf);
+            return Poll::Ready(Ok(buf.len()));
+        }
+        Pin::new(&mut this.inner).poll_write(cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+        let this = self.get_mut();
+        if this.budget.filter_features.swap(false, Ordering::Relaxed) {
+            this.out = strip_empty_mechanisms(std::mem::take(&mut this.held));
+            this.out_pos = 0;
+        }
+        ready!(this.poll_drain_out(cx))?;
+        Pin::new(&mut this.inner).poll_flush(cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -336,6 +405,19 @@ mod tests {
             stream.next().await.unwrap().unwrap();
             budget.reset();
         }
+    }
+
+    #[test]
+    fn strips_only_empty_mechanisms() {
+        let input = b"<stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/>\
+            <mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'></mechanisms></stream:features>"
+            .to_vec();
+        assert_eq!(
+            strip_empty_mechanisms(input),
+            b"<stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/></stream:features>"
+        );
+        let full = b"<mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>PLAIN</mechanism></mechanisms>";
+        assert_eq!(strip_empty_mechanisms(full.to_vec()), full);
     }
 
     #[tokio::test(start_paused = true)]

@@ -9,6 +9,10 @@ description = "agent-chat hub: a small XMPP server for people and AI agents"
 name = "agent_chat_server"
 path = "src/lib.rs"
 
+[[bin]]
+name = "agent-chat-hub"
+path = "src/bin/agent-chat-hub.rs"
+
 # Dependency rule (docs/design/embedded-server.md §5.1): no agent-chat-daemon,
 # omemo or omemo-sys here.
 [dependencies]
