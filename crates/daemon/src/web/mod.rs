@@ -68,8 +68,8 @@ fn phone_section(core: &Core) -> String {
     if phone::local_only(&domain) {
         return format!(
             "<p class=\"muted\">This account is on <code>{}</code>, which only this computer can reach. \
-             To connect from a phone, use a server the phone can reach, for example the Tailscale test server \
-             (<code>dev/tailscale</code>). Then QR codes to sign up and to chat with this account appear here.</p>",
+             To connect from a phone, use a server the phone can reach. \
+             Then QR codes to sign up and to chat with this account appear here.</p>",
             html_escape(&domain)
         );
     }
@@ -87,7 +87,7 @@ fn phone_section(core: &Core) -> String {
     };
     format!(
         "<p class=\"muted\">Scan with your phone's camera. It opens your XMPP app: Monal or Siskin on iPhone, \
-         Conversations on Android. On a Tailscale server, the phone also needs the Tailscale app connected.</p>\
+         Conversations on Android.</p>\
          <div class=\"qrs\">{}{}</div>",
         card(
             &format!("1. Create your own account on {domain}"),

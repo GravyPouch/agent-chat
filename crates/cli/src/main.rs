@@ -705,7 +705,7 @@ async fn run(cli: Cli) -> Result<()> {
                     if local {
                         println!(
                             "Note: {jid} is on `{domain}`, which only this computer can reach. A phone needs a \
-                             server it can reach, such as the Tailscale test server (dev/tailscale)."
+                             server it can reach over the network."
                         );
                     }
                     println!("Scan with your phone's camera; it opens your XMPP app (Monal or Siskin on iPhone, Conversations on Android).\n");
