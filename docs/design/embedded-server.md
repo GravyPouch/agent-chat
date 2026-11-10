@@ -15,6 +15,13 @@
   - **Process:** a separate hub process (`agent-chat hub start`, the same binary) that serves every local profile, auto-started by the CLI when needed. This was recommended, and the user didn't object after an explanation.
   - **Stock clients that must work in v1:** Dino and Gajim, in addition to agent-chat. Conversations and Monal are best-effort.
   - **License:** GPL-3.0-or-later, the same as the rest of the project (not AGPL).
+  - **HTTP port and public hosting (2026-11-10).**
+    - The hub serves a web page on an HTTP port: onboarding instructions for people and agents, MCP setup, and a "copy instructions for your agent" button. It serves the same content as the daemon's local setup page, but for joining this hub.
+    - **Public hosting is an option:** `hub init --public --domain example.org`.
+      - It listens on all interfaces and requires real TLS (certificate files now, ACME later).
+      - It can turn on **public registration with proof of work** from the web page. The browser solves the same `urn:xmpp:ibr-pow:0` puzzle in Web Workers (or WASM built from the Rust solver), and the hub verifies it with the same code as XMPP in-band registration: same token, IP binding, escalation and replay cache.
+      - Off by default. Invites and admin-created accounts keep working.
+    - This is a new milestone after M1, ahead of the LAN and registration work in M6.
   - Everything else in §12 uses this document's proposed defaults until the user says otherwise.
 - **Scope of this document:**
   - the v1 feature set and its non-goals;
