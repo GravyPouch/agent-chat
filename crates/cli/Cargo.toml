@@ -11,9 +11,15 @@ description = "Command-line interface for agent-chat"
 name = "agent-chat"
 path = "src/main.rs"
 
+[features]
+default = ["hub"]
+# The embedded XMPP server (`agent-chat hub …`). Off for a slim client build.
+hub = ["dep:agent-chat-server"]
+
 [dependencies]
 agent-chat-proto.workspace = true
 agent-chat-daemon.workspace = true
+agent-chat-server = { workspace = true, optional = true }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -22,6 +22,9 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
+#[cfg(feature = "hub")]
+mod hub;
+
 #[derive(Parser)]
 #[command(name = "agent-chat", version, about = "XMPP chat for people and AI agents")]
 struct Cli {
@@ -190,6 +193,10 @@ enum Cmd {
         #[arg(long)]
         skills_dir: Option<std::path::PathBuf>,
     },
+    /// Run your own XMPP server: the agent-chat hub.
+    #[cfg(feature = "hub")]
+    #[command(subcommand)]
+    Hub(hub::HubCmd),
 }
 
 #[derive(Args)]
@@ -235,10 +242,15 @@ impl ReadArgs {
 enum AccountCmd {
     /// Set the account for this profile and connect.
     Add {
+        /// The account's JID (with --hub, just a name is enough).
         jid: String,
         /// Read the password from stdin instead of prompting.
         #[arg(long)]
         password_stdin: bool,
+        /// Create the account on the local agent-chat hub (starting the hub
+        /// if needed) with a generated password, unless --password-stdin.
+        #[arg(long, conflicts_with_all = ["host", "port", "insecure_plaintext"])]
+        hub: bool,
         /// Server host (skips DNS SRV lookup).
         #[arg(long)]
         host: Option<String>,
@@ -413,8 +425,14 @@ fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    let profile = Profile::resolve(cli.profile.as_deref())?;
     let fmt = cli.format;
+    // Hub commands don't use a profile or the daemon.
+    #[cfg(feature = "hub")]
+    if let Cmd::Hub(_) = &cli.cmd {
+        let Cmd::Hub(cmd) = cli.cmd else { unreachable!() };
+        return hub::run(cmd, fmt).await;
+    }
+    let profile = Profile::resolve(cli.profile.as_deref())?;
 
     // Daemon commands that must not auto-start the daemon.
     if let Cmd::Daemon(cmd) = &cli.cmd {
@@ -767,6 +785,8 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
+        #[cfg(feature = "hub")]
+        Cmd::Hub(_) => unreachable!("handled before resolving the profile"),
         Cmd::Account(AccountCmd::Show) => {
             let status: StatusInfo = client.call(Request::Status).await?;
             print_status(fmt, &status);
@@ -774,12 +794,18 @@ async fn run(cli: Cli) -> Result<()> {
         Cmd::Account(AccountCmd::Add {
             jid,
             password_stdin,
+            hub,
             host,
             port,
             insecure_plaintext,
             store,
         }) => {
-            let password = read_password(&jid, password_stdin)?;
+            let (jid, password, host, port, insecure_plaintext) = if hub {
+                hub_account(&jid, password_stdin).await?
+            } else {
+                let password = read_password(&jid, password_stdin)?;
+                (jid, password, host, port, insecure_plaintext)
+            };
             let status: StatusInfo = client
                 .call(Request::SetAccount(AccountParams {
                     jid,
@@ -946,6 +972,24 @@ async fn run(cli: Cli) -> Result<()> {
 }
 
 fn ok(_: serde_json::Value) {}
+
+type AccountSettings = (String, String, Option<String>, Option<u16>, bool);
+
+/// `account add --hub NAME`: create the account on the local hub and
+/// connect to it over loopback. Until the client can pin the hub's
+/// certificate (M6), that is plaintext SCRAM on loopback, which the hub
+/// allows only for loopback peers.
+#[cfg(feature = "hub")]
+async fn hub_account(name: &str, password_stdin: bool) -> Result<AccountSettings> {
+    let password = if password_stdin { Some(read_password(name, true)?) } else { None };
+    let (jid, password, host, port) = hub::create_hub_account(name, password).await?;
+    Ok((jid, password, Some(host), Some(port), true))
+}
+
+#[cfg(not(feature = "hub"))]
+async fn hub_account(_name: &str, _password_stdin: bool) -> Result<AccountSettings> {
+    Err(anyhow!("this agent-chat was built without the `hub` feature"))
+}
 
 /// `account register`: progress as JSON lines on stderr, one result object on stdout.
 async fn register(

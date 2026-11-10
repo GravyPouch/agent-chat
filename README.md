@@ -58,6 +58,8 @@ API.
 - **Agent self-registration:** a proof-of-work extension to in-band registration
   (`urn:xmpp:ibr-pow:0`). The client is `agent-chat account register`; a Prosody module is
   included for servers.
+- **Its own server (early):** `agent-chat hub` runs a small XMPP server for people and
+  agents on one machine, with no Docker or outside server needed.
 
 <p align="center"><img src="docs/screenshots/encrypted-room.png" width="720" alt="An end-to-end encrypted group chat"></p>
 
@@ -117,6 +119,26 @@ agent-chat --profile bob send alice@localhost "hello, encrypted"
 
 `--insecure-plaintext` is refused for anything but localhost. Real servers always use TLS.
 
+### Your own hub (no Docker)
+
+agent-chat includes a small XMPP server, the **hub**, for people and agents on one
+machine. It's early: it has accounts, TLS and 1:1 messages, but no contacts, presence or
+offline messages yet (see the [plan](docs/design/embedded-server.md)).
+
+```sh
+agent-chat hub start                                    # domain localhost, 127.0.0.1:5222
+agent-chat --profile alice account add --hub alice --store config   # creates alice@localhost
+agent-chat --profile bob account add --hub bob --store config
+agent-chat --profile alice wait --timeout 60 &
+agent-chat --profile bob send alice@localhost "hello"
+agent-chat hub status                                   # 2 sessions
+```
+
+The hub uses port 5222, like the Prosody test server, so stop that first
+(`docker compose -f dev/prosody/docker-compose.yml down`). `hub init --lan` creates a hub
+for the local network named `<hostname>.local`, and `hub init --domain NAME` picks another
+name. Choose before the first start: the domain can't be changed later.
+
 ## How it works
 
 Each profile (one account) runs a small **daemon** that holds the XMPP connection, stores
@@ -127,6 +149,7 @@ the desktop app all talk to that daemon over a local socket.
 |---|---|
 | `crates/proto` | Shared types, the IPC protocol and client, and the agent instruction text |
 | `crates/daemon` | XMPP session, SQLite store, OMEMO integration, setup page |
+| `crates/server` | The agent-chat hub: a small XMPP server, run with `agent-chat hub …` or the standalone `agent-chat-hub` |
 | `crates/cli` | The `agent-chat` binary: CLI, `daemon run`, `mcp`, `install` |
 | `crates/gui` | `agent-chat-gui`, the desktop app (GPUI Kit) |
 | `crates/omemo`, `crates/omemo-sys` | Safe OMEMO layer over the vendored libomemo-c |
@@ -142,7 +165,7 @@ The design notes in [`docs/design/`](docs/design) cover:
 ## Development
 
 ```sh
-cargo test                               # unit tests, including two-device OMEMO sessions
+cargo test                               # unit tests, two-device OMEMO sessions, hub tests
 dev/prosody/setup.sh                     # local Prosody (with mod_register_pow)
 dev/omemo-bot/interop-test.sh            # OMEMO interop against python-omemo, both versions
 ```
@@ -153,7 +176,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues privately; see
 ## Roadmap
 
 - **agent-chat hub** ([plan](docs/design/embedded-server.md)): our own small XMPP server.
-  - **Local by default:** domain `localhost`, with a `.local` option for LAN.
+  - **Done (M1):** accounts, TLS and 1:1 messages between people and agents on one
+    machine.
+  - **Next:** contacts and presence, offline messages, stream resumption and archive,
+    OMEMO, group chats, then sign-up and LAN invites.
   - **Later:** optional public hosting with web sign-up via proof of work.
 - **Avatars:** published avatars (XEP-0084), with the generated faces as the fallback.
 - **Probation limits** for self-registered accounts.

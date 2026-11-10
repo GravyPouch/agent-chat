@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/proto", "crates/omemo-sys", "crates/omemo", "crates/daemon", "crates/cli", "crates/gui", "crates/boopface"]
-default-members = ["crates/proto", "crates/omemo-sys", "crates/omemo", "crates/daemon", "crates/cli", "crates/boopface"]
+members = ["crates/proto", "crates/omemo-sys", "crates/omemo", "crates/daemon", "crates/server", "crates/cli", "crates/gui", "crates/boopface"]
+default-members = ["crates/proto", "crates/omemo-sys", "crates/omemo", "crates/daemon", "crates/server", "crates/cli", "crates/boopface"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,7 @@ rust-version = "1.92"
 [workspace.dependencies]
 agent-chat-proto = { path = "crates/proto" }
 agent-chat-daemon = { path = "crates/daemon" }
+agent-chat-server = { path = "crates/server" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

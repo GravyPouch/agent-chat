@@ -1370,6 +1370,69 @@ Lonewolf, also written largely with AI agents, reached c2s, roster, carbons and 
 5. E2E (`AGENT_CHAT_TEST_SERVER=hub`): scenario 1 of §8.3.
 6. `hub status` reports 2 sessions while two daemons are connected. `hub stop` makes both daemons report `Suspended`, then `Reset`, when the hub restarts.
 
+#### M1 status and implementation notes (2026-11-10)
+
+**Done.** M1 is implemented in `crates/server` and `crates/cli/src/hub.rs`. All six acceptance tests are automated, and `cargo test` runs them:
+
+| Test | Where |
+|---|---|
+| 1 | `crates/server/tests/m1.rs`: `at1_scram_sha256_plus_over_tls13`, `at1_scram_sha256_over_loopback_plaintext`, `at1_plain_is_refused_before_tls`. They assert the mechanism through `hub status` counters. |
+| 2 | `at2_wrong_password_and_unknown_user_look_the_same` |
+| 3 | `at3_300_kib_stanza_after_auth_is_a_policy_violation`, `at3_unauthenticated_stanza_over_10000_bytes_is_a_policy_violation` (exactly 10,000 bytes passes the budget) |
+| 4 | `at4_second_bind_with_same_resource_replaces_the_first` |
+| 5, 6 | `crates/cli/tests/hub_e2e.rs`: the real binary, a temporary `AGENT_CHAT_HOME`, a hub and two daemons. `AGENT_CHAT_TEST_SERVER` defaults to `hub`; other values skip, because the Prosody variant isn't wired up yet. |
+
+Other tests:
+- SCRAM known-answer tests with the RFC 5802 and RFC 7677 examples, and `-PLUS` against the `sasl` crate's client with a fixed exporter value.
+- The store contract suite.
+- The exact byte budget and the rate limiter.
+- Routing per §5.5, `host-unknown`, STARTTLS injection, three SASL failures, a wrong pin, account deletion, and `system-shutdown` on stop.
+
+**Deviations and decisions made while implementing**
+1. **Empty `<mechanisms/>`.** xmpp-parsers 0.23 always serializes `StreamFeatures::sasl_mechanisms`, even when the set is empty, and `PendingFeaturesSend::send_features` only takes that type. The result breaks tokio-xmpp clients when we add our own ordered `<mechanisms>`, and violates RFC 6120 §6.4.1 after authentication. `ConnIo` therefore drops an empty `<mechanisms>` element from the one features write that the negotiator arms it for (`net/io.rs`). Replace this with our own features writer, or an upstream fix, before the stock-client tests.
+2. **PLAIN only under TLS.** §5.4 stage A says "never PLAIN" before TLS. Elsewhere the plan says "TLS or loopback". Acceptance test 1 requires refusing PLAIN before TLS, so PLAIN is offered only under TLS, loopback included. An `<auth>` for a mechanism that needs TLS gets `encryption-required`.
+3. **Keepalive.** On read silence the hub sends an XEP-0199 ping IQ, not whitespace: tokio-xmpp's `XmlStream` can't write raw whitespace.
+4. **tokio-xmpp's responder fits, with limits.** As expected, the server's stream header has no `xml:lang`. tokio-xmpp's header parser also rejects unknown attributes on the client's header. Watch for both with Gajim and Dino. If they cause trouble, the fallback is our own thin stream layer on rxml (§11).
+5. **Store.** Each write runs in its own transaction. Batching arrives with the archive (M3). Account ids are UUIDv4.
+6. **Offline delivery.** Until M2's offline storage, a `chat` or `normal` message to an account with no session gets `service-unavailable`.
+   - Presence is dropped, except directed presence to an online full JID.
+   - IQs to a bare JID or with no `to` are answered by the server: ping gets a result, everything else `service-unavailable`.
+   - `conference.<domain>` answers `service-unavailable` until M5.
+7. **Domain and listeners.** These follow the decision at the top:
+   - `hub init` defaults to `localhost` on loopback.
+   - `--lan [ADDR]` defaults the domain to `<hostname>.local`. On macOS that is the `scutil` LocalHostName, sanitized.
+   - Any other valid DNS name is accepted; IP literals are refused.
+   - `--listen ADDR` (repeatable) was added for custom ports and tests.
+   - `localhost` with a LAN listener is refused.
+   - An existing hub's domain can't be changed. Both `hub.toml` and the `hosts` row enforce this.
+8. **`hub.json`** holds pid, version, domain, the bound `c2s` addresses, `tls_mode`, `pin`, `admin_socket` and `started_at`.
+9. **`hub user …`** needs a running hub, because it only talks to the admin socket. `user add` also prints how to connect: host, port, STARTTLS and the pin.
+10. **`account add --hub NAME`** arrived in M1, because the user asked for an easy way for a person (and an agent) to get an account. It starts the hub if needed, creates the account with a generated password, and configures the profile.
+    - The daemon has no pinned-TLS connector yet, so the profile uses plaintext SCRAM over loopback (`insecure_plaintext`, loopback only).
+    - The pinned STARTTLS connector exists as a test helper (`crates/server/tests/common/pinned.rs`), ready to move into the daemon in M6.
+    - `docs/AGENTS.md` has a "Run your own hub" section: create an account for the person, then greet them.
+11. **Logging.** The detached hub appends to `hub.log` without ANSI colours. Daily rotation and `--trace-xml` are not done yet.
+12. **Limits.**
+    - Per-IP admission, the byte budget, the per-session byte rate (non-loopback) and the SASL backoff are in.
+    - SASL backoff is per account and per /24 or /56, with loopback exempt from the per-network key only.
+    - There's no per-stanza rate limit yet.
+    - Whitespace counts toward the next element's budget.
+13. **Fake salts.** Acceptance test 2 compares the transcripts with the nonces, the stream id and the salt masked. The salt is per-user by design; the fake one has the same length and is stable across attempts.
+14. **No registration in M1.** Per the later decision, defaults will be:
+    - plain XEP-0077 (no PoW) on `localhost`;
+    - invite-only on `.local`;
+    - PoW or invite only with `--public`.
+
+    `hub.toml` has room for `[registration]` and `[http]`. `accounts::create` is the single account-creation path for admin, XMPP and future HTTP registration.
+
+**Gaps carried into M2 and later**
+- Roster, presence, offline storage, carbons and caps: M2.
+- SM: M3. Without it, the daemons see `Reset` after every reconnect.
+- The empty-`<mechanisms>` workaround (item 1).
+- Gajim and Dino haven't been tried against the hub.
+- The daemon's pinned-TLS option: M6.
+- Log rotation.
+
 ### M2: roster, presence, offline storage, carbons, caps (2 weeks)
 
 **Scope**
