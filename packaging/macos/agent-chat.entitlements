@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for agent-chat.app and its bundled CLI.
+
+  Deliberately empty. The app is not sandboxed (it spawns the bundled CLI as its daemon
+  and reads the login keychain), it uses no JIT, and it loads no third-party dylibs:
+  libomemo-c and SQLite are linked statically and GPUI uses runtime-compiled shaders.
+  Add an exception here only after a notarized build fails at runtime because of it,
+  for example com.apple.security.cs.disable-library-validation.
+
+  Never add com.apple.security.get-task-allow: notarization rejects it.
+-->
+<plist version="1.0">
+<dict/>
+</plist>

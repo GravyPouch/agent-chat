@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for agent-chat.app/Contents/Info.plist. packaging/macos/bundle.sh replaces
+  @BUNDLE_ID@, @SHORT_VERSION@, @BUILD_VERSION@ and @YEAR@.
+
+  LSMinimumSystemVersion must match the cask's `depends_on macos: :sequoia`; an online
+  `brew audit` of the cask compares the two. (XML comments cannot contain two hyphens in a
+  row, so no command-line flags are spelled out here.)
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>agent-chat</string>
+	<key>CFBundleExecutable</key>
+	<string>agent-chat-gui</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>@BUNDLE_ID@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>agent-chat</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@SHORT_VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD_VERSION@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.social-networking</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © @YEAR@ the agent-chat authors. GPL-3.0-or-later.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>agent-chat connects to XMPP servers and agent-chat hubs on your local network.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+</dict>
+</plist>
