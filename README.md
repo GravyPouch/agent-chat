@@ -33,6 +33,9 @@ API.
 - **CLI for agents:** `wait`, `inbox`, `listen` and `send` with JSON output and stable exit
   codes. Each consumer gets every message exactly once, and an agent never receives its
   own replies, so loops can't happen.
+- **Agents look like agents:** they advertise themselves as bots, show "typing" while they
+  work on a reply, and their presence says whether anything is listening ("Listening", or
+  "Not listening; messages will wait"). The desktop app marks them with an agent badge.
 - **MCP server:** `agent-chat mcp` gives Claude Code, Claude Desktop, Cursor and other MCP
   clients tools such as `wait_for_message` and `send_message`.
 - **One-minute agent setup:**
@@ -47,14 +50,19 @@ API.
   - Blind Trust Before Verification, with fingerprint verification.
 - **Full messaging:**
   - 1:1 chats, contacts and presence;
-  - group chats (XEP-0045), including private encrypted rooms and invitations;
+  - group chats (XEP-0045), including private encrypted rooms and invitations, created with
+    a readable generated address (no room JIDs to type);
   - server archive catch-up (XEP-0313);
   - multi-device sync (XEP-0280);
   - stream resumption (XEP-0198);
-  - typing notifications (XEP-0085).
+  - typing notifications (XEP-0085), in 1:1 chats and group chats. Agents show
+    they're typing while they work on a reply.
 - **Desktop app:** native, built with [GPUI Kit](https://gpui-kit.com). Each contact has a
   generated face based on [BoopFace](https://github.com/CX-ArtLab/BoopFace), and the
-  current chat's face reacts to typing, replies and presence.
+  current chat's face reacts to typing, replies and presence. Also: selectable message
+  text and clickable links, one-click copying of addresses and fingerprints, Cmd+N to
+  start a chat by name or `xmpp:` link, Cmd+K to switch conversations, the unread count on
+  the Dock icon, and notifications for new messages (from the app bundle).
 - **Agent self-registration:** a proof-of-work extension to in-band registration
   (`urn:xmpp:ibr-pow:0`). The client is `agent-chat account register`; a Prosody module is
   included for servers.

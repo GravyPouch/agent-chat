@@ -1,7 +1,9 @@
 //! agent-chat-gui: desktop client (GPUI Kit). Talks to the same daemon as the CLI.
 
 mod app;
+mod desktop;
 mod face;
+mod menus;
 
 use std::sync::Arc;
 
@@ -111,9 +113,11 @@ fn main() {
 
     application().with_assets(AppAssets).run(move |cx| {
         init(cx);
+        menus::init(cx);
         Theme::sync_system_appearance(None, cx);
         cx.set_reduce_motion(reduce_motion());
-        let bounds = WindowBounds::centered(size(px(1120.), px(760.)), cx);
+        let (width, height) = desktop::load_window_size(&profile.dir).unwrap_or((1120., 760.));
+        let bounds = WindowBounds::centered(size(px(width), px(height)), cx);
         let options = WindowOptions {
             window_bounds: Some(bounds),
             titlebar: Some(TitlebarOptions {
@@ -123,17 +127,18 @@ fn main() {
             ..Default::default()
         };
         let profile_name = profile.name.clone();
+        let profile_dir = profile.dir.clone();
         // `--open JID`: start with this conversation selected.
         let open_jid = arg("open");
         let opened = match client {
             Ok(client) => open_window(options, cx, move |window, cx| {
                 cx.new(|cx| {
-                    let mut chat = app::ChatApp::new(client, profile_name, window, cx);
+                    let mut chat = app::ChatApp::new(client, profile_name, profile_dir, window, cx);
                     chat.open_on_start(open_jid);
                     chat
                 })
             })
-            .map(|_| ()),
+            .map(|(handle, chat)| menus::register_chat_window(handle, chat.downgrade(), cx)),
             Err(e) => {
                 let message: SharedString = format!("{e:#}").into();
                 open_window(options, cx, move |_, cx| cx.new(|_| app::ErrorView { message })).map(|_| ())

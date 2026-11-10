@@ -12,10 +12,11 @@ use agent_chat_proto::model::{ChatState, MessageKind, MessageSource, PresenceInf
 use chrono::{DateTime, Utc};
 use tokio_xmpp::FromElementError;
 use tokio_xmpp::minidom::Element;
+use xmpp_parsers::caps::Caps;
 use xmpp_parsers::carbons;
 use xmpp_parsers::chatstates::ChatState as XChatState;
 use xmpp_parsers::delay::Delay;
-use xmpp_parsers::disco::DiscoInfoQuery;
+use xmpp_parsers::disco::{DiscoInfoQuery, DiscoInfoResult};
 use xmpp_parsers::iq::Iq;
 use xmpp_parsers::jid::{BareJid, Jid};
 use xmpp_parsers::mam;
@@ -29,6 +30,7 @@ use xmpp_parsers::stanza_id::{OriginId, StanzaId};
 
 use crate::core::Core;
 use crate::store::{DedupeKeys, NewMessage};
+use crate::xmpp::disco;
 use crate::xmpp::session::SessionHandle;
 
 /// Lookups `classify` needs from daemon state.
@@ -65,10 +67,12 @@ pub enum Classified {
         room: String,
         subject: String,
     },
-    /// XEP-0085 chat state from a contact in a 1:1 chat (bare JID).
+    /// XEP-0085 chat state from a contact (bare JID), or from a room
+    /// occupant (room JID and nick).
     ChatState {
         jid: String,
         state: ChatState,
+        nick: Option<String>,
     },
     Ignore(&'static str),
 }
@@ -167,6 +171,11 @@ fn classify_inner(
     if m.type_ == MessageType::Headline {
         return Classified::Ignore("headline");
     }
+    // Invitations arrive live (handled before classifying); archived or
+    // carbon copies are not chat messages.
+    if m.type_ != MessageType::Groupchat && parse_invite(&m).is_some() {
+        return Classified::Ignore("invitation");
+    }
     let has_body = body_of(&m).is_some_and(|b| !b.is_empty());
     let encrypted = has_omemo(&m);
 
@@ -201,6 +210,19 @@ fn classify_inner(
             };
         }
         if !has_body && !encrypted {
+            // XEP-0085 in a room: someone else typing. Our own states come
+            // back reflected; archived ones are stale.
+            if source == MessageSource::Live
+                && let Some(state) = find_payload::<XChatState>(&m).map(chat_state_of)
+                && let Some(nick) = &nick
+                && (ctx.room_nick)(&room).as_ref() != Some(nick)
+            {
+                return Classified::ChatState {
+                    jid: room,
+                    state,
+                    nick: Some(nick.clone()),
+                };
+            }
             return Classified::Ignore("groupchat without body");
         }
         let our_nick = (ctx.room_nick)(&room);
@@ -310,18 +332,26 @@ fn chat_state(ctx: &Ctx<'_>, m: &Message, source: MessageSource, sent_carbon: bo
     if source == MessageSource::Mam || sent_carbon {
         return None;
     }
-    let state = match find_payload::<XChatState>(m)? {
+    let state = chat_state_of(find_payload::<XChatState>(m)?);
+    let from = m.from.as_ref()?.to_bare().to_string();
+    if same_bare(&from, &ctx.own.to_string()) || (ctx.room_nick)(&from).is_some() {
+        return None;
+    }
+    Some(Classified::ChatState {
+        jid: from,
+        state,
+        nick: None,
+    })
+}
+
+fn chat_state_of(state: XChatState) -> ChatState {
+    match state {
         XChatState::Active => ChatState::Active,
         XChatState::Composing => ChatState::Composing,
         XChatState::Paused => ChatState::Paused,
         XChatState::Inactive => ChatState::Inactive,
         XChatState::Gone => ChatState::Gone,
-    };
-    let from = m.from.as_ref()?.to_bare().to_string();
-    if same_bare(&from, &ctx.own.to_string()) || (ctx.room_nick)(&from).is_some() {
-        return None;
     }
-    Some(Classified::ChatState { jid: from, state })
 }
 
 /// A group chat invitation: XEP-0045 mediated (`muc#user` from the room) or
@@ -402,7 +432,7 @@ pub async fn on_message(core: &Arc<Core>, handle: &SessionHandle, m: Message) {
             }
             core.emit(Event::RoomSubject { room, subject });
         }
-        Classified::ChatState { jid, state } => core.emit(Event::ChatState { jid, state }),
+        Classified::ChatState { jid, state, nick } => core.emit(Event::ChatState { jid, state, nick }),
         Classified::Store(p) => {
             if let Err(e) = store_parsed(core, handle, *p).await {
                 tracing::warn!("failed to store message: {e:#}");
@@ -473,10 +503,7 @@ pub fn presence_info(p: &Presence) -> PresenceInfo {
             Some(XShow::Dnd) => Show::Dnd,
         },
     };
-    PresenceInfo {
-        show,
-        status: p.statuses.values().next().cloned(),
-    }
+    PresenceInfo::new(show, p.statuses.values().next().cloned())
 }
 
 pub fn on_presence(core: &Arc<Core>, handle: &SessionHandle, p: Presence) {
@@ -505,23 +532,137 @@ pub fn on_presence(core: &Arc<Core>, handle: &SessionHandle, p: Presence) {
         }
         PresenceType::None | PresenceType::Unavailable => {
             let resource = from.resource().map(|r| r.to_string()).unwrap_or_default();
-            let info = presence_info(&p);
-            let best = {
+            let mut info = presence_info(&p);
+            let online = info.show != Show::Unavailable;
+            let caps = find_presence_payload::<Caps>(&p);
+            if online {
+                // Agent or person? Known caps answer at once; otherwise ask.
+                match caps
+                    .as_ref()
+                    .and_then(|c| core.state().caps_agents.get(&disco::caps_key(c)).copied())
+                {
+                    Some(is_agent) => info.is_agent = is_agent,
+                    None => {
+                        info.is_agent = core
+                            .state()
+                            .presence
+                            .get(&bare)
+                            .and_then(|r| r.get(&resource))
+                            .is_some_and(|old| old.is_agent);
+                        learn_identity(core, handle, from.clone(), caps);
+                    }
+                }
+            }
+            {
                 let mut st = core.state();
                 let entry = st.presence.entry(bare.clone()).or_default();
-                if info.show == Show::Unavailable {
-                    entry.remove(&resource);
-                } else {
+                if online {
                     entry.insert(resource, info);
+                } else {
+                    entry.remove(&resource);
                 }
-                crate::core::best_presence(st.presence.get(&bare))
-            };
+            }
+            if online {
+                remember_kind(core, &bare);
+            }
             core.emit(Event::Presence {
+                presence: core.contact_presence(&bare),
                 jid: bare,
-                presence: best,
             });
         }
         _ => {}
+    }
+}
+
+fn find_presence_payload<T>(p: &Presence) -> Option<T>
+where
+    T: TryFrom<Element, Error = FromElementError>,
+{
+    p.payloads.iter().find_map(|el| T::try_from(el.clone()).ok())
+}
+
+/// Find out whether the client behind `from` is an agent: disco#info for
+/// its caps hash (verified, then cached by hash, also across restarts), or
+/// for the full JID when it sends no caps.
+fn learn_identity(core: &Arc<Core>, handle: &SessionHandle, from: Jid, caps: Option<Caps>) {
+    let key = caps.as_ref().map(disco::caps_key);
+    if let Some(key) = &key
+        && let Ok(Some(v)) = core.store().kv_get(&format!("caps:{key}"))
+    {
+        let is_agent = v == "agent";
+        core.state().caps_agents.insert(key.clone(), is_agent);
+        set_resource_kind(core, &from, is_agent);
+        return;
+    }
+    let pending = key.clone().unwrap_or_else(|| from.to_string());
+    if !core.state().disco_pending.insert(pending.clone()) {
+        return; // already asking
+    }
+    let core = core.clone();
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        let node = caps.as_ref().map(disco::caps_node);
+        let result = handle
+            .iq_get(Some(from.clone()), DiscoInfoQuery { node })
+            .await
+            .ok()
+            .flatten()
+            .and_then(|el| DiscoInfoResult::try_from(el).ok());
+        core.state().disco_pending.remove(&pending);
+        let Some(info) = result else {
+            return;
+        };
+        let is_agent = disco::is_agent(&info);
+        if let (Some(c), Some(key)) = (&caps, &key) {
+            if !disco::verify_caps(c, &info) {
+                tracing::debug!("caps hash of {from} doesn't match its disco#info; not caching it");
+            } else {
+                core.state().caps_agents.insert(key.clone(), is_agent);
+                let value = if is_agent { "agent" } else { "person" };
+                let _ = core.store().kv_set(&format!("caps:{key}"), value);
+            }
+        }
+        set_resource_kind(&core, &from, is_agent);
+    });
+}
+
+/// Record what one of a contact's clients is, and tell subscribers.
+fn set_resource_kind(core: &Core, from: &Jid, is_agent: bool) {
+    let bare = from.to_bare().to_string();
+    let resource = from.resource().map(|r| r.to_string()).unwrap_or_default();
+    {
+        let mut st = core.state();
+        let Some(info) = st.presence.get_mut(&bare).and_then(|r| r.get_mut(&resource)) else {
+            return; // went offline meanwhile
+        };
+        if info.is_agent == is_agent {
+            return;
+        }
+        info.is_agent = is_agent;
+    }
+    remember_kind(core, &bare);
+    core.emit(Event::Presence {
+        presence: core.contact_presence(&bare),
+        jid: bare,
+    });
+    core.emit(Event::ContactsChanged);
+}
+
+/// A contact is an agent while any of its online clients is one; remember
+/// the answer for when it's offline.
+fn remember_kind(core: &Core, bare: &str) {
+    let key = bare.to_lowercase();
+    let is_agent = core
+        .state()
+        .presence
+        .get(bare)
+        .is_some_and(|r| r.values().any(|p| p.is_agent));
+    let changed = core.state().contact_agents.insert(key.clone(), is_agent) != Some(is_agent);
+    if changed {
+        let _ = core.store().kv_set(
+            &format!("contact-kind:{key}"),
+            if is_agent { "agent" } else { "person" },
+        );
     }
 }
 
@@ -604,14 +745,15 @@ fn on_room_presence(core: &Arc<Core>, handle: &SessionHandle, room: &str, from: 
         let core = core.clone();
         let handle = handle.clone();
         let room = room.to_owned();
-        let private = core
+        let (private, name) = core
             .state()
             .rooms
             .get(&room.to_lowercase())
-            .is_some_and(|r| r.create_private);
+            .map(|r| (r.create_private, r.create_name.clone()))
+            .unwrap_or_default();
         tokio::spawn(async move {
             let result = if created {
-                crate::xmpp::actions::configure_new_room(&core, &handle, &room, private).await
+                crate::xmpp::actions::configure_new_room(&core, &handle, &room, private, name.as_deref()).await
             } else {
                 crate::xmpp::actions::refresh_room_info(&core, &handle, &room).await
             };
@@ -655,7 +797,7 @@ pub fn on_iq_request(core: &Arc<Core>, handle: &SessionHandle, iq: Iq) -> Option
                 });
             }
             if let Ok(q) = DiscoInfoQuery::try_from(payload.clone()) {
-                let disco = crate::xmpp::disco::our_disco(q.node);
+                let disco = disco::our_disco(q.node, core.account_kind());
                 return Some(Iq::Result {
                     from: None,
                     to: from,
@@ -884,9 +1026,26 @@ mod tests {
     }
 
     #[test]
+    fn archived_invitations_are_not_messages() {
+        let xml = r#"<message xmlns='jabber:client' to='alice@example.org/ac'>
+              <result xmlns='urn:xmpp:mam:2' queryid='q1' id='A9'>
+                <forwarded xmlns='urn:xmpp:forward:0'>
+                  <delay xmlns='urn:xmpp:delay' stamp='2026-01-02T03:04:05Z'/>
+                  <message xmlns='jabber:client' from='team@conf.example.org' to='alice@example.org'>
+                    <x xmlns='http://jabber.org/protocol/muc#user'><invite from='bob@example.org/x'/></x>
+                    <body>bob@example.org/x invited you to the room team@conf.example.org</body>
+                  </message>
+                </forwarded></result></message>"#;
+        assert!(matches!(
+            run(xml, Some(("q1", OWN)), None),
+            Classified::Ignore("invitation")
+        ));
+    }
+
+    #[test]
     fn chat_states_without_body() {
         let state = |xml: &str, room: Option<(&str, &str)>| match run(xml, None, room) {
-            Classified::ChatState { jid, state } => Some((jid, state)),
+            Classified::ChatState { jid, state, nick: None } => Some((jid, state)),
             Classified::Ignore("no body") => None,
             other => panic!("unexpected {other:?}"),
         };
@@ -927,9 +1086,19 @@ mod tests {
             ),
             None
         );
-        // In a room, chat states are never reported.
+        // In a room: the occupant typing, by nick; our own reflection isn't news.
         let c = run(
             "<message xmlns='jabber:client' type='groupchat' from='room@conf.example.org/bob'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>",
+            None,
+            Some(("room@conf.example.org", "alice")),
+        );
+        assert!(
+            matches!(&c, Classified::ChatState { jid, state: ChatState::Composing, nick: Some(n) }
+                if jid == "room@conf.example.org" && n == "bob"),
+            "{c:?}"
+        );
+        let c = run(
+            "<message xmlns='jabber:client' type='groupchat' from='room@conf.example.org/alice'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>",
             None,
             Some(("room@conf.example.org", "alice")),
         );

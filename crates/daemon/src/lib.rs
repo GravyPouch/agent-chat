@@ -1,5 +1,6 @@
 //! agent-chat daemon: XMPP session, message store and local IPC server.
 
+pub mod agent;
 pub mod config;
 pub mod core;
 pub mod daemon;

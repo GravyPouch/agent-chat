@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use tokio_xmpp::minidom::Element;
 use xmpp_parsers::carbons;
-use xmpp_parsers::disco::{DiscoInfoQuery, DiscoInfoResult};
+use xmpp_parsers::disco::{DiscoInfoQuery, DiscoInfoResult, DiscoItemsQuery, DiscoItemsResult};
 use xmpp_parsers::jid::{BareJid, Jid};
 use xmpp_parsers::mam::{self, QueryId};
 use xmpp_parsers::message::{Id as MessageId, Lang, Message as XMessage};
@@ -33,6 +33,8 @@ pub async fn after_login(core: &Arc<Core>, handle: &SessionHandle) -> Result<()>
     if let Err(e) = fetch_roster(core, handle).await {
         tracing::warn!("roster fetch failed: {e:#}");
     }
+    // An agent announces whether anything is listening from the start.
+    crate::agent::refresh_presence(core);
     send_presence(core, handle)?;
     if let Err(e) = handle.iq_set(None, carbons::Enable).await {
         tracing::warn!("could not enable carbons: {e:#}");
@@ -117,7 +119,19 @@ fn internal(e: impl std::fmt::Display) -> IpcError {
 }
 
 pub async fn add_contact(handle: &SessionHandle, jid: &str, name: Option<String>) -> Result<(), IpcError> {
-    let bare = parse_bare(jid)?;
+    use agent_chat_proto::address::{ChatTarget, parse_chat_target};
+    // "bob" on our own server, or a pasted xmpp: link.
+    let jid = match parse_chat_target(jid, Some(handle.own.domain().as_str())) {
+        Some(ChatTarget::Contact(j)) => j,
+        Some(ChatTarget::Room(r)) => {
+            return Err(IpcError::new(
+                ErrorCode::BadRequest,
+                format!("{r} is a group chat; join it with `agent-chat rooms join {r}`"),
+            ));
+        }
+        None => jid.to_owned(),
+    };
+    let bare = parse_bare(&jid)?;
     let item = RosterItem {
         jid: bare.clone(),
         name,
@@ -196,7 +210,7 @@ pub fn deny_subscription(core: &Core, handle: &SessionHandle, jid: &str) -> Resu
 
 // ----------------------------------------------------------------- presence
 
-fn make_presence(info: &PresenceInfo) -> Presence {
+fn make_presence(info: &PresenceInfo, kind: agent_chat_proto::model::AccountKind) -> Presence {
     let mut p = Presence::available();
     p.show = match info.show {
         Show::Available | Show::Unavailable => None,
@@ -208,7 +222,7 @@ fn make_presence(info: &PresenceInfo) -> Presence {
     if let Some(s) = &info.status {
         p.set_status("", s.as_str());
     }
-    p.add_payload(crate::xmpp::disco::caps());
+    p.add_payload(crate::xmpp::disco::caps(kind));
     p
 }
 
@@ -217,7 +231,7 @@ pub fn send_presence(core: &Core, handle: &SessionHandle) -> Result<()> {
     if info.show == Show::Unavailable {
         handle.send(Presence::unavailable())?;
     } else {
-        handle.send(make_presence(&info))?;
+        handle.send(make_presence(&info, core.account_kind()))?;
     }
     Ok(())
 }
@@ -236,7 +250,7 @@ pub fn set_presence(core: &Core, handle: &SessionHandle, info: PresenceInfo) -> 
     let info = core.state().status.presence.clone();
     for (room, nick) in rooms {
         if let Ok(to) = Jid::new(&format!("{room}/{nick}")) {
-            let _ = handle.send(make_presence(&info).with_to(to));
+            let _ = handle.send(make_presence(&info, core.account_kind()).with_to(to));
         }
     }
     core.emit(Event::Status(core.status()));
@@ -315,6 +329,108 @@ fn apply_room_features(rt: &mut RoomRuntime, info: &DiscoInfoResult) {
     rt.mam = info.features.contains(xmpp_parsers::ns::MAM);
     rt.nonanonymous = info.features.contains("muc_nonanonymous");
     rt.membersonly = info.features.contains("muc_membersonly");
+    rt.name = info
+        .identities
+        .iter()
+        .find(|i| i.category == "conference")
+        .and_then(|i| i.name.clone())
+        .filter(|n| !n.is_empty());
+}
+
+/// The account's group chat service: the first `conference/text` item of
+/// our server (disco#items, then disco#info on each), else
+/// `conference.<domain>`. Remembered for the session.
+pub async fn muc_service(core: &Core, handle: &SessionHandle) -> String {
+    if let Some(s) = core.state().muc_service.clone() {
+        return s;
+    }
+    let domain = handle.own.domain().to_string();
+    let mut found = None;
+    let server: Option<Jid> = Jid::new(&domain).ok();
+    if let Ok(Some(el)) = handle.iq_get(server, DiscoItemsQuery { node: None, rsm: None }).await
+        && let Ok(items) = DiscoItemsResult::try_from(el)
+    {
+        for item in items.items.iter().filter(|i| i.node.is_none()).take(20) {
+            let info = handle
+                .iq_get(Some(item.jid.clone()), DiscoInfoQuery { node: None })
+                .await
+                .ok()
+                .flatten()
+                .and_then(|el| DiscoInfoResult::try_from(el).ok());
+            if info.is_some_and(|i| {
+                i.identities
+                    .iter()
+                    .any(|id| id.category == "conference" && id.type_ == "text")
+            }) {
+                found = Some(item.jid.to_string());
+                break;
+            }
+        }
+    }
+    let service = found.unwrap_or_else(|| format!("conference.{domain}"));
+    core.state().muc_service = Some(service.clone());
+    service
+}
+
+/// Create a group chat with a readable address on our group chat service,
+/// join it, wait until it's configured, and invite people.
+pub async fn create_room(
+    core: &Arc<Core>,
+    handle: &SessionHandle,
+    name: Option<String>,
+    private: bool,
+    invite: Vec<String>,
+    nick: Option<String>,
+) -> Result<Room, IpcError> {
+    use agent_chat_proto::rooms::{random_room_name, random_u64, room_slug};
+    let service = muc_service(core, handle).await;
+    let name = name.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
+    let base = name.as_deref().and_then(room_slug).unwrap_or_else(random_room_name);
+    // Never walk into somebody else's room by accident: find a free address.
+    let mut room = None;
+    for attempt in 0..6 {
+        let local = match attempt {
+            0 => base.clone(),
+            _ if name.is_none() => random_room_name(),
+            _ => format!("{base}-{}", 10 + random_u64() % 90),
+        };
+        let jid = BareJid::new(&format!("{local}@{service}")).map_err(internal)?;
+        if room_disco(handle, &jid).await.is_none() {
+            room = Some(jid.to_string());
+            break;
+        }
+    }
+    let room = room.ok_or_else(|| IpcError::new(ErrorCode::Internal, "couldn't find a free room address"))?;
+    {
+        // Picked up when our join creates the room.
+        let mut st = core.state();
+        let rt = st.rooms.entry(room.to_lowercase()).or_default();
+        rt.create_name = name.clone();
+    }
+    join_room(core, handle, &room, nick, None, private).await?;
+    // Invitations only work once the new room is configured (unlocked).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut events = core.events.subscribe();
+    loop {
+        let ready = core
+            .state()
+            .rooms
+            .get(&room.to_lowercase())
+            .is_some_and(|r| r.configured && (!private || r.is_private()));
+        if ready || tokio::time::timeout_at(deadline, events.recv()).await.is_err() {
+            break;
+        }
+    }
+    for jid in invite {
+        if let Err(e) = invite_to_room(core, handle, &room, &jid, None).await {
+            tracing::warn!("could not invite {jid} to {room}: {e}");
+        }
+    }
+    core.rooms()
+        .map_err(internal)?
+        .into_iter()
+        .find(|r| r.jid.eq_ignore_ascii_case(&room))
+        .ok_or_else(|| internal("room vanished"))
 }
 
 async fn start_join(
@@ -352,7 +468,7 @@ async fn start_join(
     }
     let to = room_jid.with_resource_str(nick)?;
     let info = core.state().status.presence.clone();
-    handle.send(make_presence(&info).with_to(to).with_payload(muc))?;
+    handle.send(make_presence(&info, core.account_kind()).with_to(to).with_payload(muc))?;
     core.emit(Event::RoomsChanged);
     Ok(())
 }
@@ -365,7 +481,13 @@ pub async fn join_room(
     password: Option<String>,
     private: bool,
 ) -> Result<Room, IpcError> {
-    let room_jid = parse_bare(room)?;
+    // A bare name means a room on our own group chat service.
+    let room = if room.contains('@') {
+        room.to_owned()
+    } else {
+        agent_chat_proto::rooms::room_address(room, &muc_service(core, handle).await)
+    };
+    let room_jid = parse_bare(&room)?;
     if room_jid.node().is_none() {
         return Err(IpcError::new(
             ErrorCode::BadRequest,
@@ -440,21 +562,47 @@ pub async fn join_room(
 
 /// Configure a room we just created: private (members-only, non-anonymous,
 /// persistent, hidden) for encrypted rooms, otherwise the default "instant
-/// room" (XEP-0045 §10.1.2). Unlocks the room either way.
-pub async fn configure_new_room(core: &Arc<Core>, handle: &SessionHandle, room: &str, private: bool) -> Result<()> {
+/// room" (XEP-0045 §10.1.2), with a display name if one was chosen.
+/// Unlocks the room either way.
+pub async fn configure_new_room(
+    core: &Arc<Core>,
+    handle: &SessionHandle,
+    room: &str,
+    private: bool,
+    name: Option<&str>,
+) -> Result<()> {
+    let name_field = name
+        .map(|n| {
+            format!(
+                "<field var='muc#roomconfig_roomname'><value>{}</value></field>",
+                crate::omemo::xml::escape(n)
+            )
+        })
+        .unwrap_or_default();
     let form = if private {
-        "<x xmlns='jabber:x:data' type='submit'>\
-         <field var='FORM_TYPE'><value>http://jabber.org/protocol/muc#roomconfig</value></field>\
-         <field var='muc#roomconfig_membersonly'><value>1</value></field>\
-         <field var='muc#roomconfig_whois'><value>anyone</value></field>\
-         <field var='muc#roomconfig_persistentroom'><value>1</value></field>\
-         <field var='muc#roomconfig_publicroom'><value>0</value></field>\
-         </x>"
+        format!(
+            "<x xmlns='jabber:x:data' type='submit'>\
+             <field var='FORM_TYPE'><value>http://jabber.org/protocol/muc#roomconfig</value></field>\
+             <field var='muc#roomconfig_membersonly'><value>1</value></field>\
+             <field var='muc#roomconfig_whois'><value>anyone</value></field>\
+             <field var='muc#roomconfig_persistentroom'><value>1</value></field>\
+             <field var='muc#roomconfig_publicroom'><value>0</value></field>\
+             {name_field}</x>"
+        )
+    } else if name_field.is_empty() {
+        "<x xmlns='jabber:x:data' type='submit'/>".to_owned()
     } else {
-        "<x xmlns='jabber:x:data' type='submit'/>"
+        format!(
+            "<x xmlns='jabber:x:data' type='submit'>\
+             <field var='FORM_TYPE'><value>http://jabber.org/protocol/muc#roomconfig</value></field>\
+             {name_field}</x>"
+        )
     };
     let query: Element = format!("<query xmlns='http://jabber.org/protocol/muc#owner'>{form}</query>").parse()?;
     handle.iq_set(Some(Jid::new(room)?), query).await?;
+    if let Some(rt) = core.state().rooms.get_mut(&room.to_lowercase()) {
+        rt.create_name = None;
+    }
     refresh_room_info(core, handle, room).await
 }
 
@@ -466,6 +614,7 @@ pub async fn refresh_room_info(core: &Arc<Core>, handle: &SessionHandle, room: &
         && let Some(rt) = core.state().rooms.get_mut(&key)
     {
         apply_room_features(rt, &info);
+        rt.configured = true;
     }
     if core.room_is_private(room) {
         let mut members = BTreeSet::new();
@@ -595,6 +744,10 @@ pub async fn send_message(
     };
     msg.id = Some(MessageId(id.clone()));
     msg = msg.with_payload(OriginId { id: id.clone() });
+    if kind != MessageKind::MucPrivate {
+        // XEP-0085: a message ends "composing"; say so explicitly.
+        msg = msg.with_payload(xmpp_parsers::chatstates::ChatState::Active);
+    }
 
     // End-to-end encryption.
     let mut encryption = None;
@@ -667,8 +820,8 @@ pub async fn send_message(
     Ok(stored)
 }
 
-/// XEP-0085: tell a contact we're typing (or stopped). 1:1 chats only, and
-/// never stored (XEP-0334 `no-store`).
+/// XEP-0085: tell a contact or a joined room we're typing (or stopped).
+/// Never stored (XEP-0334 `no-store`).
 pub fn send_chat_state(
     core: &Core,
     handle: &SessionHandle,
@@ -680,10 +833,12 @@ pub fn send_chat_state(
 
     let to_jid =
         BareJid::new(to).map_err(|e| IpcError::new(ErrorCode::BadRequest, format!("invalid bare JID {to:?}: {e}")))?;
-    if core.room_nick(&to_jid.to_string()).is_some() {
+    let to_s = to_jid.to_string();
+    let room = core.room_nick(&to_s).is_some();
+    if room && core.joined_room_nick(&to_s).is_none() {
         return Err(IpcError::new(
             ErrorCode::BadRequest,
-            "chat states are only sent in 1:1 chats",
+            format!("not in room {to_s}; run `agent-chat rooms join {to_s}` first"),
         ));
     }
     let payload = match state {
@@ -693,7 +848,12 @@ pub fn send_chat_state(
         ChatState::Inactive => XChatState::Inactive,
         ChatState::Gone => XChatState::Gone,
     };
-    let mut msg = XMessage::chat(Some(to_jid.into())).with_payload(payload);
+    let mut msg = if room {
+        XMessage::groupchat(Some(to_jid.into()))
+    } else {
+        XMessage::chat(Some(to_jid.into()))
+    }
+    .with_payload(payload);
     msg.payloads
         .push(Element::builder("no-store", "urn:xmpp:hints").build());
     handle

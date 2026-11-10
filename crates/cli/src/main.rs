@@ -12,7 +12,8 @@ use std::process::ExitCode;
 
 use agent_chat_proto::ipc::{AccountParams, ContactList, EncryptionMode, ErrorCode, PasswordStorage, Request};
 use agent_chat_proto::model::{
-    ConversationSummary, Delivery, DeviceInfo, Filter, Message, MessageKind, Room, RoomInvite, Show, StatusInfo,
+    AccountKind, ChatState, ConversationSummary, Delivery, DeviceInfo, Filter, Message, MessageKind, Room, RoomInvite,
+    Show, StatusInfo,
 };
 use agent_chat_proto::{CallError, DaemonLauncher, IpcClient, Profile};
 use anyhow::{Context, Result, anyhow};
@@ -66,6 +67,15 @@ enum Cmd {
         #[command(flatten)]
         read: ReadArgs,
     },
+    /// Tell a contact or a joined room that you're typing (XEP-0085). It
+    /// ends when you send, with --stop, or by itself after the typing timeout.
+    Typing {
+        /// Contact JID or room JID.
+        jid: String,
+        /// Stop typing (sends "active").
+        #[arg(long)]
+        stop: bool,
+    },
     /// Send a message. TEXT defaults to stdin.
     Send {
         /// Contact JID, room JID, or room/nick for a private message.
@@ -111,7 +121,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<RoomsCmd>,
     },
-    /// Set presence: available, chat, away, xa, dnd or unavailable.
+    /// Set presence: available, chat, away, xa, dnd or unavailable; `auto`
+    /// hands it back to the daemon (agents: listening / not listening).
     Presence {
         show: String,
         /// Optional status text.
@@ -216,6 +227,9 @@ struct ReadArgs {
     /// Skip messages from untrusted OMEMO devices.
     #[arg(long)]
     require_trusted: bool,
+    /// Don't show the sender that you're typing after you read their message.
+    #[arg(long)]
+    no_typing: bool,
 }
 
 impl ReadArgs {
@@ -259,9 +273,19 @@ enum AccountCmd {
         /// Where to keep the password.
         #[arg(long, value_enum, default_value_t = Storage::Keychain)]
         store: Storage,
+        /// Who uses the account (default: decided by its first use; `wait`,
+        /// `listen` and MCP make it an agent's).
+        #[arg(long, value_enum)]
+        kind: Option<KindArg>,
     },
     /// Show the configured account and connection state.
     Show,
+    /// Show or set who uses this account: a person or an agent. Agents
+    /// advertise themselves as bots and show whether they're listening.
+    Kind {
+        #[arg(value_enum)]
+        kind: Option<KindArg>,
+    },
     /// Create a new account on a server (solving its proof-of-work challenge
     /// if it has one) and use it for this profile.
     ///
@@ -303,6 +327,21 @@ enum Storage {
     Config,
 }
 
+#[derive(Copy, Clone, ValueEnum)]
+enum KindArg {
+    Person,
+    Agent,
+}
+
+impl From<KindArg> for AccountKind {
+    fn from(k: KindArg) -> Self {
+        match k {
+            KindArg::Person => AccountKind::Person,
+            KindArg::Agent => AccountKind::Agent,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum ContactsCmd {
     List,
@@ -326,6 +365,24 @@ enum ContactsCmd {
 #[derive(Subcommand)]
 enum RoomsCmd {
     List,
+    /// Create a group chat with a readable generated address (like
+    /// quiet-otter-42@conference.example.org); private and encrypted unless
+    /// --public.
+    Create {
+        /// Display name; the address is made from it (default: generated).
+        #[arg(long)]
+        name: Option<String>,
+        /// A public room: not members-only, messages not encrypted.
+        #[arg(long)]
+        public: bool,
+        /// Invite someone (repeatable).
+        #[arg(long = "invite", value_name = "JID")]
+        invite: Vec<String>,
+        #[arg(long)]
+        nick: Option<String>,
+    },
+    /// Join a room by address, or by bare name on your server's group chat
+    /// service.
     Join {
         jid: String,
         #[arg(long)]
@@ -596,6 +653,7 @@ async fn run(cli: Cli) -> Result<()> {
                     filter: read.filter(),
                     timeout_secs: timeout,
                     require_trusted: read.require_trusted,
+                    no_typing: read.no_typing,
                 })
                 .await?;
             match m {
@@ -611,6 +669,7 @@ async fn run(cli: Cli) -> Result<()> {
                     peek,
                     limit,
                     require_trusted: read.require_trusted,
+                    no_typing: read.no_typing,
                 })
                 .await?;
             match fmt {
@@ -618,6 +677,7 @@ async fn run(cli: Cli) -> Result<()> {
                 Format::Text => msgs.iter().for_each(|m| print_message(fmt, m)),
             }
         }
+        // `listen` only watches, so it never shows the sender typing.
         Cmd::Listen { read } => loop {
             let m: Option<Message> = client
                 .call(Request::Wait {
@@ -625,6 +685,7 @@ async fn run(cli: Cli) -> Result<()> {
                     filter: read.filter(),
                     timeout_secs: None,
                     require_trusted: read.require_trusted,
+                    no_typing: true,
                 })
                 .await?;
             if let Some(m) = m {
@@ -668,6 +729,13 @@ async fn run(cli: Cli) -> Result<()> {
                 .await?;
             print_message(fmt, &m);
         }
+        Cmd::Typing { jid, stop } => ok(client
+            .call_value(Request::SendChatState {
+                to: jid,
+                state: if stop { ChatState::Active } else { ChatState::Composing },
+                auto_stop: true,
+            })
+            .await?),
         Cmd::History {
             conversation,
             limit,
@@ -806,6 +874,16 @@ async fn run(cli: Cli) -> Result<()> {
             let status: StatusInfo = client.call(Request::Status).await?;
             print_status(fmt, &status);
         }
+        Cmd::Account(AccountCmd::Kind { kind }) => {
+            let status: StatusInfo = match kind {
+                Some(kind) => client.call(Request::SetAccountKind { kind: kind.into() }).await?,
+                None => client.call(Request::Status).await?,
+            };
+            match fmt {
+                Format::Json => print_json(&serde_json::json!({"kind": status.kind, "listening": status.listening})),
+                Format::Text => println!("{}", status.kind.as_str()),
+            }
+        }
         Cmd::Account(AccountCmd::Add {
             jid,
             password_stdin,
@@ -814,6 +892,7 @@ async fn run(cli: Cli) -> Result<()> {
             port,
             insecure_plaintext,
             store,
+            kind,
         }) => {
             let (jid, password, host, port, insecure_plaintext) = if hub {
                 hub_account(&jid, password_stdin).await?
@@ -832,6 +911,7 @@ async fn run(cli: Cli) -> Result<()> {
                         Storage::Keychain => PasswordStorage::Keychain,
                         Storage::Config => PasswordStorage::ConfigFile,
                     },
+                    kind: kind.map(Into::into),
                 }))
                 .await?;
             print_status(fmt, &status);
@@ -853,10 +933,15 @@ async fn run(cli: Cli) -> Result<()> {
                     Format::Json => print_json(&list),
                     Format::Text => {
                         for c in &list.contacts {
+                            let presence = if c.is_agent {
+                                format!("agent · {}", c.presence.agent_label())
+                            } else {
+                                c.presence.show.as_str().to_owned()
+                            };
                             println!(
                                 "{:<40} {:<11} {:<5} {}",
                                 c.jid,
-                                c.presence.show.as_str(),
+                                presence,
                                 c.subscription,
                                 c.name.clone().unwrap_or_default()
                             );
@@ -889,6 +974,29 @@ async fn run(cli: Cli) -> Result<()> {
                             );
                         }
                     }
+                }
+            }
+            RoomsCmd::Create {
+                name,
+                public,
+                invite,
+                nick,
+            } => {
+                let room: Room = client
+                    .call(Request::RoomCreate {
+                        name,
+                        private: !public,
+                        invite,
+                        nick,
+                    })
+                    .await?;
+                match fmt {
+                    Format::Json => print_json(&room),
+                    Format::Text => println!(
+                        "created {}{}",
+                        room.jid,
+                        if room.private { " (private, encrypted)" } else { "" }
+                    ),
                 }
             }
             RoomsCmd::Join {
@@ -937,9 +1045,10 @@ async fn run(cli: Cli) -> Result<()> {
             }
             RoomsCmd::Decline { room } => ok(client.call_value(Request::RoomInviteDecline { room }).await?),
         },
+        Cmd::Presence { show, .. } if show == "auto" => ok(client.call_value(Request::AutoPresence).await?),
         Cmd::Presence { show, status } => {
             let show = Show::parse(&show).ok_or_else(|| {
-                anyhow!("unknown presence {show:?}; use available, chat, away, xa, dnd or unavailable")
+                anyhow!("unknown presence {show:?}; use available, chat, away, xa, dnd, unavailable or auto")
             })?;
             let status = (!status.is_empty()).then(|| status.join(" "));
             ok(client.call_value(Request::SetPresence { show, status }).await?);
@@ -1039,6 +1148,8 @@ async fn register(profile: &Profile, opts: agent_chat_daemon::register::Register
                 Storage::Keychain => PasswordStorage::Keychain,
                 Storage::Config => PasswordStorage::ConfigFile,
             },
+            // Self-registration is how agents get accounts.
+            kind: Some(AccountKind::Agent),
         }))
         .await?;
     println!(
@@ -1118,7 +1229,19 @@ fn print_status(fmt: Format, s: &StatusInfo) {
         Format::Text => {
             println!("profile:  {}", s.profile);
             println!("account:  {}", s.account.as_deref().unwrap_or("(none)"));
+            println!("kind:     {}", s.kind.as_str());
             println!("state:    {:?}", s.state);
+            if let Some(listening) = s.listening {
+                println!(
+                    "presence: {} ({})",
+                    s.presence.agent_label(),
+                    if listening {
+                        "a consumer is listening"
+                    } else {
+                        "nobody is listening"
+                    }
+                );
+            }
             if let Some(j) = &s.bound_jid {
                 println!("bound as: {j}");
             }

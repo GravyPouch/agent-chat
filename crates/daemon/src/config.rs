@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use agent_chat_proto::ipc::PasswordStorage;
+use agent_chat_proto::model::AccountKind;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +48,21 @@ pub struct Settings {
     /// Local setup page on 127.0.0.1 (first free port from here; 0 = off).
     #[serde(default = "default_http_port")]
     pub http_port: u16,
+    /// When an agent reads a 1:1 message (`wait`, `inbox`, MCP), tell the
+    /// sender it is typing until it replies or the timeout passes.
+    #[serde(default = "yes")]
+    pub agent_typing: bool,
+    /// Seconds after which an agent's "typing" ends by itself.
+    #[serde(default = "default_typing_timeout")]
+    pub agent_typing_timeout_secs: u64,
+    /// `person` or `agent`. Unset: a person's, until an agent consumer
+    /// (`wait`, `listen`, `inbox`, MCP) uses the profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_kind: Option<AccountKind>,
+    /// Agents: seconds without any consumer before presence becomes away
+    /// ("Not listening; messages will wait").
+    #[serde(default = "default_away_after")]
+    pub agent_away_after_secs: u64,
 }
 
 impl Default for Settings {
@@ -56,8 +72,24 @@ impl Default for Settings {
             default_nick: None,
             mam_backfill: default_backfill(),
             http_port: default_http_port(),
+            agent_typing: true,
+            agent_typing_timeout_secs: default_typing_timeout(),
+            account_kind: None,
+            agent_away_after_secs: default_away_after(),
         }
     }
+}
+
+fn default_away_after() -> u64 {
+    300
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_typing_timeout() -> u64 {
+    120
 }
 
 fn default_backfill() -> u32 {
@@ -184,6 +216,20 @@ mod tests {
     }
 
     #[test]
+    fn older_configs_get_the_new_defaults() {
+        let cfg: Config = toml::from_str("[settings]\nmam_backfill = 10\n").unwrap();
+        assert!(cfg.settings.agent_typing);
+        assert_eq!(cfg.settings.agent_typing_timeout_secs, 120);
+        assert_eq!(cfg.settings.account_kind, None);
+        assert_eq!(cfg.settings.agent_away_after_secs, 300);
+        let cfg: Config = toml::from_str("[settings]\nagent_typing = false\naccount_kind = \"agent\"\n").unwrap();
+        assert!(!cfg.settings.agent_typing);
+        assert_eq!(cfg.settings.account_kind, Some(AccountKind::Agent));
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("account_kind = \"agent\""), "{text}");
+    }
+
+    #[test]
     fn config_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -196,6 +242,8 @@ mod tests {
         let back = Config::load(&path).unwrap();
         assert_eq!(back.account.unwrap().jid, "a@localhost");
         assert_eq!(back.settings.mam_backfill, 50);
+        assert!(back.settings.agent_typing);
+        assert_eq!(back.settings.agent_typing_timeout_secs, 120);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -50,6 +50,8 @@ async fn handle_connection(core: Arc<Core>, stream: UnixStream) {
     // Requests run concurrently (a long `wait` must not block other calls)
     // and are aborted when the client goes away.
     let mut tasks = JoinSet::new();
+    // An MCP session: whatever it does counts as the agent being active.
+    let mut mcp = false;
     let mut lines = BufReader::new(read_half).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         while tasks.try_join_next().is_some() {}
@@ -67,6 +69,14 @@ async fn handle_connection(core: Arc<Core>, stream: UnixStream) {
                 continue;
             }
         };
+        if let Request::Hello { client } = &frame.request
+            && client == "mcp"
+        {
+            mcp = true;
+            crate::agent::note_consumer(&core);
+        } else if mcp {
+            crate::agent::note_activity(&core);
+        }
         if frame.request == Request::Subscribe {
             let mut events = core.events.subscribe();
             let etx = tx.clone();
@@ -127,6 +137,7 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             room,
             encryption,
         } => {
+            crate::agent::note_activity(core);
             let handle = core.session()?;
             json(actions::send_message(core, &handle, &to, body, room, encryption).await?)
         }
@@ -136,15 +147,23 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             peek,
             limit,
             require_trusted,
+            no_typing,
         } => {
-            let store = core.store();
-            let msgs = store
-                .undelivered(&delivery, &filter, require_trusted, limit)
-                .map_err(internal)?;
-            if !peek {
-                for m in &msgs {
-                    store.mark_delivered(&delivery.consumer, m.id).map_err(internal)?;
+            crate::agent::note_consumer(core);
+            let msgs = {
+                let store = core.store();
+                let msgs = store
+                    .undelivered(&delivery, &filter, require_trusted, limit)
+                    .map_err(internal)?;
+                if !peek {
+                    for m in &msgs {
+                        store.mark_delivered(&delivery.consumer, m.id).map_err(internal)?;
+                    }
                 }
+                msgs
+            };
+            if !peek && !no_typing {
+                crate::agent::on_read(core, &msgs);
             }
             json(msgs)
         }
@@ -153,7 +172,16 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             filter,
             timeout_secs,
             require_trusted,
-        } => json(wait(core, &delivery, &filter, timeout_secs, require_trusted).await?),
+            no_typing,
+        } => {
+            let m = wait(core, &delivery, &filter, timeout_secs, require_trusted).await?;
+            if let Some(m) = &m
+                && !no_typing
+            {
+                crate::agent::on_read(core, std::slice::from_ref(m));
+            }
+            json(m)
+        }
         Request::History {
             conversation,
             limit,
@@ -194,6 +222,19 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             Ok(Value::Null)
         }
         Request::Rooms => json(core.rooms().map_err(internal)?),
+        Request::RoomCreate {
+            name,
+            private,
+            invite,
+            nick,
+        } => {
+            let handle = core.session()?;
+            json(actions::create_room(core, &handle, name, private, invite, nick).await?)
+        }
+        Request::RoomService => {
+            let handle = core.session()?;
+            Ok(serde_json::json!({ "service": actions::muc_service(core, &handle).await }))
+        }
         Request::RoomJoin {
             jid,
             nick,
@@ -220,22 +261,33 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             Ok(Value::Null)
         }
         Request::SetPresence { show, status } => {
-            let info = PresenceInfo { show, status };
-            match core.session() {
-                Ok(handle) => actions::set_presence(core, &handle, info)?,
-                // Remember it for the next login.
-                Err(_) => core.state().status.presence = info,
-            }
+            crate::agent::set_presence_explicitly(core, PresenceInfo::new(show, status))?;
             Ok(Value::Null)
         }
+        Request::AutoPresence => {
+            crate::agent::auto_presence_again(core);
+            Ok(Value::Null)
+        }
+        Request::SetAccountKind { kind } => {
+            crate::agent::set_account_kind(core, kind)?;
+            json(core.status())
+        }
+        // Handled per connection in `handle_connection`.
+        Request::Hello { .. } => Ok(Value::Null),
         Request::OmemoDevices { jid } => json(crate::omemo::xmpp::list_devices(core, jid).await?),
         Request::OmemoSetTrust {
             jid,
             fingerprint,
             trusted,
         } => json(crate::omemo::xmpp::set_trust(core, &jid, &fingerprint, trusted).await?),
-        Request::SendChatState { to, state } => {
-            actions::send_chat_state(core, &core.session()?, &to, state)?;
+        Request::SendChatState { to, state, auto_stop } => {
+            crate::agent::send_chat_state(core, &to, state, auto_stop)?;
+            Ok(Value::Null)
+        }
+        Request::Reconnect => {
+            core.restart_session()
+                .await
+                .map_err(|e| IpcError::new(ErrorCode::NotConnected, format!("{e:#}")))?;
             Ok(Value::Null)
         }
         Request::Subscribe => Ok(Value::Null),
@@ -254,6 +306,8 @@ async fn wait(
     timeout_secs: Option<u64>,
     require_trusted: bool,
 ) -> Result<Option<Message>, IpcError> {
+    // While this blocks, the agent is listening.
+    let _listening = crate::agent::WaitGuard::new(core);
     // Subscribe before checking the store so nothing slips in between.
     let mut events = core.events.subscribe();
     let deadline = timeout_secs.map(|s| tokio::time::Instant::now() + Duration::from_secs(s));
@@ -335,6 +389,9 @@ async fn set_account(core: &Arc<Core>, p: AccountParams) -> Result<agent_chat_pr
     acct.validate()
         .map_err(|e| IpcError::new(ErrorCode::BadRequest, format!("{e:#}")))?;
     cfg.account = Some(acct);
+    if let Some(kind) = p.kind {
+        cfg.settings.account_kind = Some(kind);
+    }
     cfg.save(&core.profile.config_path()).map_err(internal)?;
     *core.config.lock().unwrap() = cfg;
 
