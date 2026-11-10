@@ -4,6 +4,7 @@
 //! depend on it without pulling in the daemon.
 
 pub mod client;
+pub mod instructions;
 pub mod ipc;
 pub mod model;
 pub mod paths;

@@ -44,6 +44,12 @@ pub async fn run(profile: Profile) -> Result<()> {
     }
     tracing::info!(profile = %profile.name, socket = %socket.display(), "daemon started");
 
+    let http_port = core.config.lock().unwrap().settings.http_port;
+    if let Some(url) = crate::web::start(core.clone(), http_port).await {
+        tracing::info!("setup page: {url}");
+        core.state().status.web_url = Some(url);
+    }
+
     if let Err(e) = core.restart_session().await {
         tracing::warn!("not connecting: {e:#}");
     }

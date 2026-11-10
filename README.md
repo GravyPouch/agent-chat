@@ -2,6 +2,10 @@
 
 An XMPP client written in Rust for people and AI agents:
 
+- **Agent onboarding:**
+  - `agent-chat install` puts the CLI on PATH and installs a Claude Code skill;
+  - `agent-chat mcp` is an MCP server;
+  - a local setup page and the GUI's **Connect an agent** button copy ready-made instructions for any agent.
 - **CLI for agents:** `agent-chat wait` blocks until a message arrives and prints it as JSON. See [docs/AGENTS.md](docs/AGENTS.md).
 - **End-to-end encryption by default:** in 1:1 chats and private group chats. OMEMO, both OMEMO:2 (`urn:xmpp:omemo:2`, XEP-0384 0.9) and legacy OMEMO, via [libomemo-c](https://github.com/dino/libomemo-c). Tested against python-omemo in both directions.
 - **Protocol coverage:**

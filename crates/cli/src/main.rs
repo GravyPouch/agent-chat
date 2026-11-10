@@ -4,6 +4,9 @@
 //! line). Exit codes: 0 ok, 1 error, 2 timeout, 3 not connected / no
 //! account, 4 encryption unavailable.
 
+mod install;
+mod mcp;
+
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
 
@@ -120,6 +123,51 @@ enum Cmd {
     /// Control the background daemon.
     #[command(subcommand)]
     Daemon(DaemonCmd),
+    /// Run an MCP server on stdio exposing agent-chat as tools (for Claude
+    /// Code, Claude Desktop, Cursor and other MCP clients).
+    Mcp {
+        /// Consumer name for wait/unread (separate from CLI agents).
+        #[arg(long, env = "AGENT_CHAT_MCP_CONSUMER", default_value = "mcp")]
+        consumer: String,
+    },
+    /// Instructions for connecting an agent: prints the prompt to paste into
+    /// an agent (or the skill / MCP config), and can copy it or open the page.
+    Setup {
+        /// Copy the agent prompt to the clipboard.
+        #[arg(long)]
+        copy: bool,
+        /// Open the local setup page in the browser.
+        #[arg(long)]
+        open: bool,
+        /// Print the agent skill (SKILL.md) instead.
+        #[arg(long, conflicts_with = "mcp_json")]
+        skill: bool,
+        /// Print the MCP client config (JSON) instead.
+        #[arg(long)]
+        mcp_json: bool,
+    },
+    /// Install the CLI (and GUI) on PATH and the agent skill for Claude Code.
+    Install {
+        /// Where to put the binaries (default: ~/.local/bin).
+        #[arg(long)]
+        bin_dir: Option<std::path::PathBuf>,
+        /// Skills directory (default: ~/.claude/skills).
+        #[arg(long)]
+        skills_dir: Option<std::path::PathBuf>,
+        /// Don't install the agent skill.
+        #[arg(long)]
+        no_skill: bool,
+        /// Also register the MCP server with Claude Code (`claude mcp add`).
+        #[arg(long)]
+        mcp: bool,
+    },
+    /// Remove what `install` put on this machine.
+    Uninstall {
+        #[arg(long)]
+        bin_dir: Option<std::path::PathBuf>,
+        #[arg(long)]
+        skills_dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Args)]
@@ -378,6 +426,40 @@ async fn run(cli: Cli) -> Result<()> {
         }
     }
 
+    // Local installation needs no daemon.
+    match &cli.cmd {
+        Cmd::Install { bin_dir, skills_dir, no_skill, mcp } => {
+            let out = install::install(
+                &profile,
+                install::InstallOptions {
+                    bin_dir: bin_dir.clone(),
+                    skills_dir: skills_dir.clone(),
+                    skill: !no_skill,
+                    mcp: *mcp,
+                },
+            )?;
+            match fmt {
+                Format::Json => print_json(&out),
+                Format::Text => {
+                    println!("Installed {}", out["cli"].as_str().unwrap_or_default());
+                    if let Some(s) = out["skill"].as_str() {
+                        println!("Agent skill: {s}");
+                    }
+                    if let Some(h) = out["path_hint"].as_str() {
+                        println!("Note: {h}");
+                    }
+                    println!("{}", out["next"].as_str().unwrap_or_default());
+                }
+            }
+            return Ok(());
+        }
+        Cmd::Uninstall { bin_dir, skills_dir } => {
+            print_json(&install::uninstall(bin_dir.clone(), skills_dir.clone())?);
+            return Ok(());
+        }
+        _ => {}
+    }
+
     // Registration runs before there is an account (no daemon needed yet).
     if let Cmd::Account(AccountCmd::Register { .. }) = &cli.cmd {
         let Cmd::Account(AccountCmd::Register {
@@ -533,7 +615,54 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Cmd::Account(AccountCmd::Register { .. }) => unreachable!("handled before connecting"),
+        Cmd::Account(AccountCmd::Register { .. }) | Cmd::Install { .. } | Cmd::Uninstall { .. } => {
+            unreachable!("handled before connecting")
+        }
+        Cmd::Mcp { consumer } => {
+            return mcp::serve(client, consumer).await;
+        }
+        Cmd::Setup {
+            copy,
+            open,
+            skill,
+            mcp_json,
+        } => {
+            let status: StatusInfo = client.call(Request::Status).await?;
+            let setup = agent_chat_proto::instructions::AgentSetup {
+                profile: profile.name.clone(),
+                jid: status.account.clone(),
+                cli: agent_chat_daemon::web::preferred_cli_path().to_string_lossy().into_owned(),
+                web_url: status.web_url.clone(),
+            };
+            let text = if skill {
+                setup.skill_md()
+            } else if mcp_json {
+                setup.mcp_json()
+            } else {
+                setup.agent_prompt()
+            };
+            if copy {
+                install::copy_to_clipboard(&text)?;
+                eprintln!("Copied to the clipboard. Paste it into your agent.");
+            }
+            if open {
+                match &status.web_url {
+                    Some(u) => install::open_url(u)?,
+                    None => return Err(anyhow!("the setup page is disabled (settings.http_port = 0)")),
+                }
+            }
+            if !copy && !open {
+                match fmt {
+                    Format::Text => print!("{text}"),
+                    Format::Json => print_json(&serde_json::json!({
+                        "prompt": setup.agent_prompt(),
+                        "web_url": status.web_url,
+                        "claude_mcp_add": setup.claude_mcp_add(),
+                        "mcp_json": serde_json::from_str::<serde_json::Value>(&setup.mcp_json())?,
+                    })),
+                }
+            }
+        }
         Cmd::Account(AccountCmd::Show) => {
             let status: StatusInfo = client.call(Request::Status).await?;
             print_status(fmt, &status);

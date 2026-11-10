@@ -96,6 +96,7 @@ impl Core {
             last_error: None,
             presence: PresenceInfo::default(),
             daemon_pid: std::process::id(),
+            web_url: None,
         };
         Arc::new(Self {
             profile,

@@ -7,6 +7,7 @@ pub mod omemo;
 pub mod register;
 pub mod server;
 pub mod store;
+pub mod web;
 pub mod xmpp;
 
 pub use daemon::run;

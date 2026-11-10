@@ -44,6 +44,9 @@ pub struct Settings {
     /// How many archived messages to fetch per archive on first sync.
     #[serde(default = "default_backfill")]
     pub mam_backfill: u32,
+    /// Local setup page on 127.0.0.1 (first free port from here; 0 = off).
+    #[serde(default = "default_http_port")]
+    pub http_port: u16,
 }
 
 impl Default for Settings {
@@ -52,12 +55,17 @@ impl Default for Settings {
             auto_accept_subscriptions: false,
             default_nick: None,
             mam_backfill: default_backfill(),
+            http_port: default_http_port(),
         }
     }
 }
 
 fn default_backfill() -> u32 {
     50
+}
+
+fn default_http_port() -> u16 {
+    7400
 }
 
 impl Config {

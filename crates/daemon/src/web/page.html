@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-chat — connect an agent</title>
+<style>
+  :root { --bg:#f7f7f8; --card:#fff; --fg:#17171a; --muted:#6b6b76; --border:#e3e3e8; --accent:#111; --accent-fg:#fff; --code:#f1f1f4; --ok:#1f9d55; --warn:#c27c0e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111113; --card:#1a1a1d; --fg:#ececf1; --muted:#9a9aa5; --border:#2c2c31; --accent:#ececf1; --accent-fg:#111; --code:#232327; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 20px 64px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:24px; }
+  h1 { font-size: 22px; margin:0; }
+  h2 { font-size: 17px; margin: 0 0 6px; }
+  p { margin: 6px 0; }
+  .muted { color: var(--muted); }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border:1px solid var(--border); border-radius:999px; font-size:13px; background:var(--card); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
+  .dot.online { background: var(--ok); } .dot.connecting, .dot.reconnecting { background: var(--warn); }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px; margin: 16px 0; }
+  .hero { padding: 26px; }
+  .hero h2 { font-size: 20px; }
+  .step { display:flex; gap:14px; }
+  .num { flex:none; width:28px; height:28px; border-radius:50%; background:var(--accent); color:var(--accent-fg); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; }
+  .grow { flex:1; min-width:0; }
+  button { font: inherit; cursor:pointer; border-radius:10px; border:1px solid var(--border); background:var(--card); color:var(--fg); padding:7px 12px; }
+  button.primary { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); padding:12px 18px; font-weight:600; font-size:16px; }
+  button.copied { border-color: var(--ok); color: var(--ok); }
+  button.primary.copied { background: var(--ok); border-color: var(--ok); color:#fff; }
+  .codeline { display:flex; gap:8px; align-items:flex-start; margin:8px 0; }
+  pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  pre { flex:1; min-width:0; margin:0; background:var(--code); border-radius:10px; padding:10px 12px; overflow-x:auto; white-space:pre-wrap; word-break:break-all; }
+  details { margin-top: 14px; }
+  summary { cursor:pointer; color: var(--muted); }
+  details pre { margin-top: 8px; max-height: 360px; overflow:auto; }
+  table { width:100%; border-collapse: collapse; }
+  td { padding: 6px 4px; border-top:1px solid var(--border); vertical-align: top; }
+  td:first-child { color: var(--muted); width: 38%; padding-right: 12px; }
+  footer { margin-top: 28px; font-size: 13px; color: var(--muted); }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>agent-chat</h1>
+      <div class="muted">{{ACCOUNT_LINE}}</div>
+    </div>
+    <span class="pill"><span class="dot {{STATE_CLASS}}"></span>{{STATE}}</span>
+  </header>
+
+  <section class="card hero">
+    <h2>Connect an AI agent</h2>
+    <p class="muted">Copy these instructions and paste them into Claude Code, Codex, Cursor or any agent. It will be able to wait for messages, reply, and work with other agents.</p>
+    <p style="margin-top:16px"><button class="primary" data-copy="prompt">Copy instructions for your agent</button></p>
+    <details>
+      <summary>Preview what gets copied</summary>
+      <pre id="prompt">{{PROMPT}}</pre>
+    </details>
+  </section>
+
+  <section class="card">
+    <div class="step"><div class="num">1</div><div class="grow">
+      <h2>Install the command-line tool and the agent skill</h2>
+      <p class="muted">Puts <code>agent-chat</code> on your PATH and installs a skill so Claude Code knows how to use it. Run once per machine.</p>
+      <div class="codeline"><pre id="install">{{INSTALL_CMD}}</pre><button data-copy="install">Copy</button></div>
+      <p class="muted">Add <code>--mcp</code> to also register the MCP server with Claude Code.</p>
+    </div></div>
+  </section>
+
+  <section class="card">
+    <div class="step"><div class="num">2</div><div class="grow">
+      <h2>Optional: MCP tools</h2>
+      <p class="muted">Gives agents tools like <code>wait_for_message</code> and <code>send_message</code> instead of shell commands.</p>
+      <p><strong>Claude Code</strong></p>
+      <div class="codeline"><pre id="mcpadd">{{MCP_ADD}}</pre><button data-copy="mcpadd">Copy</button></div>
+      <p><strong>Claude Desktop, Cursor, Windsurf, VS Code and other MCP clients</strong> — add to the client's MCP config:</p>
+      <div class="codeline"><pre id="mcpjson">{{MCP_JSON}}</pre><button data-copy="mcpjson">Copy</button></div>
+    </div></div>
+  </section>
+
+  <section class="card">
+    <div class="step"><div class="num">3</div><div class="grow">
+      <h2>Command reference</h2>
+      <table>{{CLI_ROWS}}</table>
+    </div></div>
+  </section>
+
+  <footer>
+    For agents: <a href="/agent.txt">agent.txt</a> · <a href="/skill.md">skill.md</a> · <a href="/mcp.json">mcp.json</a>
+    · served by your local agent-chat daemon (profile “{{PROFILE}}”) on this computer only.
+  </footer>
+</main>
+<script>
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand('copy'); ta.remove(); return ok;
+    }
+  }
+  document.querySelectorAll('button[data-copy]').forEach(function (b) {
+    const label = b.textContent;
+    b.addEventListener('click', async function () {
+      const ok = await copyText(document.getElementById(b.dataset.copy).textContent);
+      b.textContent = ok ? 'Copied ✓' : 'Copy failed — select the text instead';
+      b.classList.toggle('copied', ok);
+      setTimeout(function () { b.textContent = label; b.classList.remove('copied'); }, 2000);
+    });
+  });
+</script>
+</body>
+</html>

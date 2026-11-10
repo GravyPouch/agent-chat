@@ -93,6 +93,10 @@ pub struct ChatApp {
     room_nick: Entity<InputState>,
     room_private: bool,
     invite_jid: Entity<InputState>,
+    /// "Connect an agent" dialog: which copy button was just used, and the
+    /// result of the last install.
+    agent_copied: Option<&'static str>,
+    install_result: Option<String>,
     /// The animated face of the open 1:1 chat.
     face: Option<Entity<AnimatedFace>>,
     /// We told this contact we're typing (XEP-0085 "composing").
@@ -193,6 +197,8 @@ impl ChatApp {
             room_nick,
             room_private: true,
             invite_jid,
+            agent_copied: None,
+            install_result: None,
             face: None,
             composing_to: None,
             paused_timer: None,
@@ -812,6 +818,152 @@ impl ChatApp {
         });
     }
 
+    /// Instructions for connecting an agent to this profile.
+    fn agent_setup(&self) -> agent_chat_proto::instructions::AgentSetup {
+        let on_path = std::env::var_os("PATH").and_then(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.join("agent-chat"))
+                .find(|c| c.is_file())
+        });
+        let cli = on_path
+            .or_else(|| agent_chat_proto::DaemonLauncher::locate().ok().map(|l| l.program))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "agent-chat".into());
+        agent_chat_proto::instructions::AgentSetup {
+            profile: self.profile.clone(),
+            jid: self.status.as_ref().and_then(|s| s.account.clone()),
+            cli,
+            web_url: self.status.as_ref().and_then(|s| s.web_url.clone()),
+        }
+    }
+
+    fn copy_for_agent(&mut self, what: &'static str, cx: &mut Context<Self>) {
+        let setup = self.agent_setup();
+        let text = match what {
+            "mcp" => setup.claude_mcp_add(),
+            "install" => format!("{} install", setup.cmd()),
+            _ => setup.agent_prompt(),
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.agent_copied = Some(what);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+            let _ = this.update(cx, |a, cx| {
+                a.agent_copied = None;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn run_install(&mut self, cx: &mut Context<Self>) {
+        let Ok(launcher) = agent_chat_proto::DaemonLauncher::locate() else {
+            self.install_result = Some("Couldn't find the agent-chat binary next to this app.".into());
+            cx.notify();
+            return;
+        };
+        let profile = self.profile.clone();
+        self.install_result = Some("Installing…".into());
+        cx.notify();
+        let task = cx.background_executor().spawn(async move {
+            std::process::Command::new(&launcher.program)
+                .args(["--profile", &profile, "--format", "text", "install"])
+                .output()
+        });
+        cx.spawn(async move |this, cx| {
+            let out = task.await;
+            let _ = this.update(cx, |a, cx| {
+                a.install_result = Some(match out {
+                    Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_owned(),
+                    Ok(o) => format!("Install failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
+                    Err(e) => format!("Install failed: {e}"),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn open_connect_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.install_result = None;
+        let this = cx.entity();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let app = this.read(cx);
+            let setup = app.agent_setup();
+            let copied = app.agent_copied;
+            let install_result = app.install_result.clone();
+            let theme = cx.theme().clone();
+            let (t1, t2, t3, t4) = (this.clone(), this.clone(), this.clone(), this.clone());
+            let web_url = setup.web_url.clone();
+            dialog
+                .title("Connect an AI agent")
+                .width(px(680.))
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(
+                            "Copy these instructions and paste them into Claude Code, Codex, Cursor or any agent. \
+                             It will be able to wait for messages, reply, and work with other agents.",
+                        ))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("copy-agent-prompt")
+                                        .primary()
+                                        .label(if copied == Some("prompt") { "Copied ✓" } else { "Copy instructions for your agent" })
+                                        .on_click(move |_, _, cx| t1.update(cx, |a, cx| a.copy_for_agent("prompt", cx))),
+                                )
+                                .when_some(web_url, |el, url| {
+                                    el.child(Button::new("open-setup-page").ghost().label("Open setup page").on_click(
+                                        move |_, _, cx| cx.open_url(&url),
+                                    ))
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("agent-prompt-preview")
+                                .max_h(px(220.))
+                                .overflow_y_scroll()
+                                .p_3()
+                                .rounded_md()
+                                .bg(theme.muted)
+                                .text_xs()
+                                .font_family("Menlo")
+                                .child(setup.agent_prompt()),
+                        )
+                        .child(div().pt_1().text_sm().font_weight(FontWeight::SEMIBOLD).child("Command-line tool & agent skill"))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(
+                            "Puts agent-chat on your PATH and installs a skill so Claude Code knows how to use it.",
+                        ))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(Button::new("run-install").label("Install now").on_click(move |_, _, cx| {
+                                    t2.update(cx, |a, cx| a.run_install(cx))
+                                }))
+                                .child(
+                                    Button::new("copy-mcp")
+                                        .ghost()
+                                        .label(if copied == Some("mcp") { "Copied ✓" } else { "Copy MCP setup for Claude Code" })
+                                        .on_click(move |_, _, cx| t3.update(cx, |a, cx| a.copy_for_agent("mcp", cx))),
+                                )
+                                .child(
+                                    Button::new("copy-install")
+                                        .ghost()
+                                        .label(if copied == Some("install") { "Copied ✓" } else { "Copy install command" })
+                                        .on_click(move |_, _, cx| t4.update(cx, |a, cx| a.copy_for_agent("install", cx))),
+                                ),
+                        )
+                        .when_some(install_result, |el, r| {
+                            el.child(div().text_xs().font_family("Menlo").text_color(theme.muted_foreground).child(r))
+                        }),
+                )
+                .footer(DialogFooter::new().child(DialogClose::new().trigger(|b| b.label("Done"))))
+        });
+    }
+
     fn open_devices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(jid) = self.selected.clone() else { return };
         self.load_devices(jid.clone(), cx);
@@ -1134,6 +1286,14 @@ impl ChatApp {
                             .child(presence_button("p-available", "Available", Show::Available, cx))
                             .child(presence_button("p-away", "Away", Show::Away, cx))
                             .child(presence_button("p-dnd", "Busy", Show::Dnd, cx)),
+                    )
+                    .child(
+                        Button::new("connect-agent")
+                            .small()
+                            .w_full()
+                            .icon(IconName::Bot)
+                            .label("Connect an agent")
+                            .on_click(cx.listener(|this, _, window, cx| this.open_connect_agent(window, cx))),
                     ),
             )
             .child(

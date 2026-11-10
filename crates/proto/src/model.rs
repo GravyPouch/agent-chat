@@ -342,6 +342,9 @@ pub struct StatusInfo {
     pub last_error: Option<String>,
     pub presence: PresenceInfo,
     pub daemon_pid: u32,
+    /// The daemon's local setup page (instructions, MCP config).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub web_url: Option<String>,
 }
 
 /// Restricts which messages `inbox`/`wait` return.

@@ -21,3 +21,6 @@ tracing-subscriber.workspace = true
 chrono.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 rpassword = "7"
+
+[dev-dependencies]
+tempfile = "3"
