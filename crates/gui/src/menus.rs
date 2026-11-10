@@ -20,6 +20,7 @@ gpui_kit::actions!(
         Quit,
         NewChat,
         NewGroupChat,
+        SwitchChat,
         Minimize,
         Zoom,
     ]
@@ -42,6 +43,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-m", Minimize, None),
         KeyBinding::new("cmd-n", NewChat, None),
         KeyBinding::new("shift-cmd-n", NewGroupChat, None),
+        KeyBinding::new("cmd-k", SwitchChat, None),
     ]);
 
     cx.set_menus(vec![
@@ -59,6 +61,8 @@ pub fn init(cx: &mut App) {
         Menu::new("File").items([
             MenuItem::action("New Chat…", NewChat),
             MenuItem::action("New Group Chat…", NewGroupChat),
+            MenuItem::separator(),
+            MenuItem::action("Go to Conversation…", SwitchChat),
         ]),
         Menu::new("Edit").items([
             MenuItem::os_action("Undo", Undo, OsAction::Undo),
@@ -85,7 +89,8 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window) + 'static) {
 pub fn register_chat_window(handle: AnyWindowHandle, chat: WeakEntity<ChatApp>, cx: &mut App) {
     on_chat::<About>(handle, chat.clone(), cx, ChatApp::show_about);
     on_chat::<NewChat>(handle, chat.clone(), cx, ChatApp::new_chat);
-    on_chat::<NewGroupChat>(handle, chat, cx, ChatApp::new_group_chat);
+    on_chat::<NewGroupChat>(handle, chat.clone(), cx, ChatApp::new_group_chat);
+    on_chat::<SwitchChat>(handle, chat, cx, ChatApp::switch_chat);
 }
 
 fn on_chat<A: Action>(

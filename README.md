@@ -59,7 +59,10 @@ API.
     they're typing while they work on a reply.
 - **Desktop app:** native, built with [GPUI Kit](https://gpui-kit.com). Each contact has a
   generated face based on [BoopFace](https://github.com/CX-ArtLab/BoopFace), and the
-  current chat's face reacts to typing, replies and presence.
+  current chat's face reacts to typing, replies and presence. Also: selectable message
+  text and clickable links, one-click copying of addresses and fingerprints, Cmd+N to
+  start a chat by name or `xmpp:` link, Cmd+K to switch conversations, the unread count on
+  the Dock icon, and notifications for new messages (from the app bundle).
 - **Agent self-registration:** a proof-of-work extension to in-band registration
   (`urn:xmpp:ibr-pow:0`). The client is `agent-chat account register`; a Prosody module is
   included for servers.

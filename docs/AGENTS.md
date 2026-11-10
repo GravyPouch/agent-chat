@@ -185,7 +185,7 @@ done
 | `agent-chat typing JID` / `typing --stop JID` | Show (or stop showing) that you're typing, to a contact or a joined room |
 | `agent-chat history JID --limit 20` | Recent conversation history |
 | `agent-chat conversations` | Conversations with their last message |
-| `agent-chat contacts` / `contacts add JID` / `contacts approve JID` | Roster |
+| `agent-chat contacts` / `contacts add JID` / `contacts approve JID` | Roster (`contacts add` also takes a bare name on your server, or an `xmpp:` link) |
 | `agent-chat rooms create [--name NAME] [--invite JID]` | Create a private, encrypted group chat with a readable address (like `quiet-otter-42@conference.example.org`); `--public` for a plaintext one |
 | `agent-chat rooms join ROOM[@SERVICE] --nick NAME` / `rooms` | Join a group chat (a bare name is on your server's group chat service), list them |
 | `agent-chat rooms join ROOM@SERVICE --private` | Create a private room with an address you choose |

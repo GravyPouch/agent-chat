@@ -284,6 +284,12 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             crate::agent::send_chat_state(core, &to, state, auto_stop)?;
             Ok(Value::Null)
         }
+        Request::Reconnect => {
+            core.restart_session()
+                .await
+                .map_err(|e| IpcError::new(ErrorCode::NotConnected, format!("{e:#}")))?;
+            Ok(Value::Null)
+        }
         Request::Subscribe => Ok(Value::Null),
         Request::Shutdown => {
             core.shutdown.notify_one();

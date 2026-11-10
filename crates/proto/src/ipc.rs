@@ -187,6 +187,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "is_false")]
         auto_stop: bool,
     },
+    /// Drop the connection to the server and log in again. Result: `null`.
+    Reconnect,
     /// Start receiving [`Event`]s on this connection. Result: `null`.
     Subscribe,
     /// Stop the daemon. Result: `null`.

@@ -3,6 +3,7 @@
 //! This crate is deliberately light (no XMPP, no SQLite) so the GUI can
 //! depend on it without pulling in the daemon.
 
+pub mod address;
 pub mod client;
 pub mod instructions;
 pub mod ipc;

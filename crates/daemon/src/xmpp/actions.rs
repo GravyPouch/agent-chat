@@ -119,7 +119,19 @@ fn internal(e: impl std::fmt::Display) -> IpcError {
 }
 
 pub async fn add_contact(handle: &SessionHandle, jid: &str, name: Option<String>) -> Result<(), IpcError> {
-    let bare = parse_bare(jid)?;
+    use agent_chat_proto::address::{ChatTarget, parse_chat_target};
+    // "bob" on our own server, or a pasted xmpp: link.
+    let jid = match parse_chat_target(jid, Some(handle.own.domain().as_str())) {
+        Some(ChatTarget::Contact(j)) => j,
+        Some(ChatTarget::Room(r)) => {
+            return Err(IpcError::new(
+                ErrorCode::BadRequest,
+                format!("{r} is a group chat; join it with `agent-chat rooms join {r}`"),
+            ));
+        }
+        None => jid.to_owned(),
+    };
+    let bare = parse_bare(&jid)?;
     let item = RosterItem {
         jid: bare.clone(),
         name,

@@ -25,6 +25,7 @@ use gpui_kit::component::message::{
     Message as MessageView, MessageAlignment, MessageAvatar, MessageContent, MessageFooter, MessageHeader,
 };
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -81,6 +82,13 @@ struct ChatEntry {
 pub struct ChatApp {
     client: Arc<IpcClient>,
     profile: String,
+    /// The profile's directory (the window size is kept there).
+    profile_dir: std::path::PathBuf,
+    /// Saves the window size a moment after resizing stops.
+    save_size: Option<Task<()>>,
+    /// Unread messages over all conversations, and what the title and the
+    /// Dock badge show now.
+    unread_shown: Option<u64>,
     status: Option<StatusInfo>,
     contacts: Vec<Contact>,
     pending: Vec<SubscriptionRequest>,
@@ -115,6 +123,8 @@ pub struct ChatApp {
     room_jid: Entity<InputState>,
     room_nick: Entity<InputState>,
     room_private: bool,
+    /// Cmd+K: filter for the conversation switcher.
+    switch_query: Entity<InputState>,
     /// "New group chat" dialog.
     new_room_name: Entity<InputState>,
     new_room_private: bool,
@@ -176,7 +186,13 @@ fn day_label(date: NaiveDate) -> String {
 }
 
 impl ChatApp {
-    pub fn new(client: Arc<IpcClient>, profile: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        client: Arc<IpcClient>,
+        profile: String,
+        profile_dir: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -190,7 +206,8 @@ impl ChatApp {
         let account_jid = input("you@example.org", window, cx);
         let account_password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Password"));
         let account_host = input("Server host (optional, e.g. 127.0.0.1)", window, cx);
-        let contact_jid = input("friend@example.org", window, cx);
+        let contact_jid = input("Username, address or xmpp: link", window, cx);
+        let switch_query = input("Go to a conversation…", window, cx);
         let contact_name = input("Name (optional)", window, cx);
         let room_jid = input("Room name, or room@conference.example.org", window, cx);
         let new_room_name = input("Name", window, cx);
@@ -208,7 +225,7 @@ impl ChatApp {
                 },
             )];
         // Enter in a dialog field submits the dialog.
-        let submit_on_enter: [(&Entity<InputState>, Submit); 9] = [
+        let submit_on_enter: [(&Entity<InputState>, Submit); 10] = [
             (&account_jid, Self::submit_account_dialog),
             (&account_password, Self::submit_account_dialog),
             (&account_host, Self::submit_account_dialog),
@@ -217,6 +234,7 @@ impl ChatApp {
             (&room_jid, Self::submit_join_room),
             (&room_nick, Self::submit_join_room),
             (&new_room_name, Self::submit_new_room),
+            (&switch_query, Self::submit_switch),
             (&invite_jid, Self::submit_invite),
         ];
         for (input, submit) in submit_on_enter {
@@ -228,16 +246,23 @@ impl ChatApp {
                 }),
             );
         }
-        // The new group chat's address follows its name as you type.
-        subscriptions.push(cx.subscribe(&new_room_name, |_, _, event: &InputEvent, cx| {
-            if let InputEvent::Change = event {
-                cx.notify();
-            }
-        }));
+        subscriptions.push(cx.observe_window_bounds(window, |this, window, cx| this.on_window_resized(window, cx)));
+        // The new group chat's address follows its name as you type, and the
+        // switcher's list its filter.
+        for input in [&new_room_name, &switch_query] {
+            subscriptions.push(cx.subscribe(input, |_, _, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    cx.notify();
+                }
+            }));
+        }
 
         let mut app = Self {
             client,
             profile,
+            profile_dir,
+            save_size: None,
+            unread_shown: None,
             status: None,
             contacts: vec![],
             pending: vec![],
@@ -267,6 +292,7 @@ impl ChatApp {
             room_jid,
             room_nick,
             room_private: true,
+            switch_query,
             new_room_name,
             new_room_private: true,
             new_room_invites: BTreeSet::new(),
@@ -521,6 +547,7 @@ impl ChatApp {
     fn on_event(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             Event::Message(m) => {
+                self.notify_if_away(&m, window, cx);
                 // A message ends its sender's typing.
                 if !m.own
                     && let Some(who) = self.typing.get_mut(&m.conversation.to_lowercase())
@@ -600,6 +627,142 @@ impl ChatApp {
             }
         }
         cx.notify();
+    }
+
+    /// A macOS notification for a new message while the window isn't in
+    /// front (needs the app bundle; a plain binary can't post them).
+    fn notify_if_away(&mut self, m: &Message, window: &mut Window, cx: &mut Context<Self>) {
+        if m.own || m.delayed || m.source == MessageSource::Mam || window.is_window_active() {
+            return;
+        }
+        let who = match (&m.nick, m.kind) {
+            (Some(nick), MessageKind::Groupchat) => {
+                let room = self
+                    .rooms
+                    .iter()
+                    .find(|r| r.jid.eq_ignore_ascii_case(&m.conversation))
+                    .and_then(|r| r.name.clone())
+                    .unwrap_or_else(|| local_part(&m.conversation));
+                format!("{nick} in {room}")
+            }
+            _ => self
+                .contacts
+                .iter()
+                .find(|c| c.jid.eq_ignore_ascii_case(&m.conversation))
+                .and_then(|c| c.name.clone())
+                .unwrap_or_else(|| m.conversation.clone()),
+        };
+        let body: String = m.body.replace('\n', " ").chars().take(240).collect();
+        let this = cx.entity().downgrade();
+        let conversation = m.conversation.clone();
+        window.push_notification(
+            Notification::new()
+                .id1::<ChatApp>(SharedString::from(m.conversation.clone()))
+                .title(who)
+                .message(body)
+                .system()
+                .on_click(move |_, window, cx| {
+                    window.activate_window();
+                    let jid = conversation.clone();
+                    let _ = this.update(cx, |a, cx| a.select(jid, window, cx));
+                }),
+            cx,
+        );
+    }
+
+    /// Remember the window size for next time (after resizing settles).
+    fn on_window_resized(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let WindowBounds::Windowed(_) = window.window_bounds() else {
+            return; // keep the size from before full screen / zoom
+        };
+        // The content size: what a new window is opened with (the frame
+        // adds the title bar).
+        let size = window.viewport_size();
+        let (w, h) = (f32::from(size.width).round(), f32::from(size.height).round());
+        let dir = self.profile_dir.clone();
+        self.save_size = Some(cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(Duration::from_millis(600)).await;
+            crate::desktop::save_window_size(&dir, w, h);
+        }));
+    }
+
+    /// Unread count in the window title and on the Dock icon.
+    fn show_unread(&mut self, window: &mut Window) {
+        let total: u64 = self.conversations.iter().map(|c| c.unread).sum();
+        if self.unread_shown == Some(total) {
+            return;
+        }
+        self.unread_shown = Some(total);
+        let title = if total > 0 {
+            format!("agent-chat — {} ({total})", self.profile)
+        } else {
+            format!("agent-chat — {}", self.profile)
+        };
+        window.set_window_title(&title);
+        crate::desktop::set_dock_badge(total);
+    }
+
+    fn reconnect(&mut self, cx: &mut Context<Self>) {
+        self.call::<serde_json::Value>(Request::Reconnect, cx, |a, r, cx| {
+            if let Err(e) = r {
+                a.error = Some(format!("Couldn't reconnect: {e}"));
+                cx.notify();
+            }
+        });
+    }
+
+    /// Why we're not online, and what's going on, above the conversation.
+    fn render_connection_banner(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let status = self.status.as_ref()?;
+        let theme = cx.theme().clone();
+        let server = status
+            .account
+            .as_deref()
+            .and_then(|a| a.split_once('@'))
+            .map(|(_, d)| d.to_owned())
+            .unwrap_or_else(|| "the server".to_owned());
+        let (text, color, retry) = match status.state {
+            ConnectionState::Online | ConnectionState::NoAccount => return None,
+            ConnectionState::Connecting => (format!("Connecting to {server}…"), theme.yellow, false),
+            ConnectionState::Reconnecting => (
+                format!("Connection to {server} lost. Reconnecting… Messages you send now go out when it's back."),
+                theme.yellow,
+                false,
+            ),
+            ConnectionState::Disconnected => (
+                format!(
+                    "Not connected to {server}{}. New messages will arrive when you're back online.",
+                    status
+                        .last_error
+                        .as_deref()
+                        .filter(|e| !e.is_empty())
+                        .map(|e| format!(": {e}"))
+                        .unwrap_or_default()
+                ),
+                theme.red,
+                true,
+            ),
+        };
+        Some(
+            h_flex()
+                .id("connection-banner")
+                .px_4()
+                .py_2()
+                .gap_2()
+                .bg(color.opacity(0.12))
+                .text_sm()
+                .child(div().flex_none().size(px(8.)).rounded_full().bg(color))
+                .child(div().flex_1().min_w_0().child(text))
+                .when(retry, |el| {
+                    el.child(
+                        Button::new("reconnect")
+                            .xsmall()
+                            .label("Reconnect")
+                            .on_click(cx.listener(|this, _, _, cx| this.reconnect(cx))),
+                    )
+                })
+                .into_any_element(),
+        )
     }
 
     fn mark_read(&mut self, conversation: String, up_to_id: i64, cx: &mut Context<Self>) {
@@ -834,46 +997,96 @@ impl ChatApp {
         let this = cx.entity();
         let (jid, name) = (self.contact_jid.clone(), self.contact_name.clone());
         let first = jid.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let this = this.clone();
+            let domain = this.read(cx).own_domain();
+            let hint = match &domain {
+                Some(d) => format!("A name on {d} (like “bob”), a full address, or a pasted xmpp: link."),
+                None => "An address like bob@example.org, or a pasted xmpp: link.".to_owned(),
+            };
             dialog
-                .title("Add a contact")
-                .child(v_flex().gap_3().child(Input::new(&jid)).child(Input::new(&name)))
+                .title("New chat")
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(Input::new(&jid))
+                        .child(div().text_xs().text_color(cx.theme().muted_foreground).child(hint))
+                        .child(Input::new(&name)),
+                )
                 .footer(
                     DialogFooter::new()
                         .child(DialogClose::new().trigger(|b| b.label("Cancel")))
-                        .child(
-                            Button::new("add-contact")
-                                .primary()
-                                .label("Add")
-                                .on_click(move |_, window, cx| {
-                                    this.update(cx, |a, cx| a.submit_add_contact(window, cx));
-                                }),
-                        ),
+                        .child(Button::new("add-contact").primary().label("Start chat").on_click(
+                            move |_, window, cx| {
+                                this.update(cx, |a, cx| a.submit_add_contact(window, cx));
+                            },
+                        )),
                 )
         });
         first.update(cx, |s, cx| s.focus(window, cx));
     }
 
+    /// The domain of our account, for names typed without one.
+    fn own_domain(&self) -> Option<String> {
+        let account = self.status.as_ref()?.account.as_ref()?;
+        account.split_once('@').map(|(_, d)| d.to_owned())
+    }
+
     fn submit_add_contact(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let jid = self.contact_jid.read(cx).value().trim().to_string();
+        use agent_chat_proto::address::{ChatTarget, parse_chat_target};
+        let input = self.contact_jid.read(cx).value().trim().to_string();
         let name = self.contact_name.read(cx).value().trim().to_string();
-        if jid.is_empty() {
-            return;
+        let target = match parse_chat_target(&input, self.own_domain().as_deref()) {
+            Some(t) => t,
+            None if input.is_empty() => return,
+            None => {
+                self.error = Some(format!("“{input}” isn't an address. Try bob@example.org."));
+                cx.notify();
+                return;
+            }
+        };
+        match target {
+            // An xmpp:…?join link: join the group chat instead.
+            ChatTarget::Room(room) => {
+                self.call::<Room>(
+                    Request::RoomJoin {
+                        jid: room,
+                        nick: None,
+                        password: None,
+                        private: false,
+                    },
+                    cx,
+                    |a, r, cx| match r {
+                        Ok(room) => {
+                            a.reload_rooms(cx);
+                            a.pending_select = Some(room.jid);
+                            a.pending_select_room = true;
+                        }
+                        Err(e) => a.error = Some(format!("Couldn't join: {e}")),
+                    },
+                );
+            }
+            ChatTarget::Contact(jid) => {
+                let open = jid.clone();
+                self.call::<serde_json::Value>(
+                    Request::ContactAdd {
+                        jid,
+                        name: (!name.is_empty()).then_some(name),
+                    },
+                    cx,
+                    move |a, r, cx| {
+                        match r {
+                            Err(e) => a.error = Some(format!("Couldn't add contact: {e}")),
+                            Ok(_) => {
+                                a.selected = None;
+                                a.pending_select = Some(open);
+                            }
+                        }
+                        a.reload_contacts(cx);
+                    },
+                );
+            }
         }
-        self.call::<serde_json::Value>(
-            Request::ContactAdd {
-                jid,
-                name: (!name.is_empty()).then_some(name),
-            },
-            cx,
-            |a, r, cx| {
-                if let Err(e) = r {
-                    a.error = Some(format!("Couldn't add contact: {e}"));
-                }
-                a.reload_contacts(cx);
-            },
-        );
         self.contact_jid.update(cx, |s, cx| s.set_value("", window, cx));
         self.contact_name.update(cx, |s, cx| s.set_value("", window, cx));
         window.close_dialog(cx);
@@ -1053,6 +1266,96 @@ impl ChatApp {
     pub fn new_group_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !window.has_active_dialog(cx) {
             self.open_new_room(window, cx);
+        }
+    }
+
+    /// File › Switch Conversation (Cmd+K): type to filter, Enter opens the
+    /// first match.
+    pub fn switch_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        self.switch_query.update(cx, |s, cx| s.set_value("", window, cx));
+        let this = cx.entity();
+        let query = self.switch_query.clone();
+        let first = query.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let app = this.read(cx);
+            let theme = cx.theme().clone();
+            let matches = app.switch_matches(&query.read(cx).value());
+            dialog.title("Go to a conversation").width(px(480.)).child(
+                v_flex().gap_2().child(Input::new(&query)).child(
+                    v_flex()
+                        .id("switch-results")
+                        .max_h(px(320.))
+                        .overflow_y_scroll()
+                        .when(matches.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .p_2()
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground)
+                                    .child("No conversation matches."),
+                            )
+                        })
+                        .children(matches.into_iter().enumerate().map(|(i, (jid, title))| {
+                            let this = this.clone();
+                            let first_match = i == 0;
+                            h_flex()
+                                .id(("switch", i))
+                                .gap_2()
+                                .px_2()
+                                .py_1p5()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .when(first_match, |el| el.bg(theme.accent))
+                                .hover(|s| s.bg(theme.accent))
+                                .child(div().text_sm().truncate().child(title))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .truncate()
+                                        .child(jid.clone()),
+                                )
+                                .when(first_match, |el| {
+                                    el.child(div().text_xs().text_color(theme.muted_foreground).child("↩"))
+                                })
+                                .on_click(move |_, window, cx| {
+                                    let jid = jid.clone();
+                                    window.close_dialog(cx);
+                                    this.update(cx, |a, cx| a.select(jid, window, cx));
+                                })
+                        })),
+                ),
+            )
+        });
+        first.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    /// Conversations (chats, then rooms) whose name or address contains `query`.
+    fn switch_matches(&self, query: &str) -> Vec<(String, String)> {
+        let q = query.trim().to_lowercase();
+        let rooms = self
+            .rooms
+            .iter()
+            .map(|r| (r.jid.clone(), r.name.clone().unwrap_or_else(|| local_part(&r.jid))));
+        self.chat_entries()
+            .into_iter()
+            .map(|e| (e.jid, e.title))
+            .chain(rooms)
+            .filter(|(jid, title)| q.is_empty() || jid.to_lowercase().contains(&q) || title.to_lowercase().contains(&q))
+            .take(30)
+            .collect()
+    }
+
+    fn submit_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.switch_query.read(cx).value().to_string();
+        if let Some((jid, _)) = self.switch_matches(&query).into_iter().next() {
+            window.close_dialog(cx);
+            self.select(jid, window, cx);
         }
     }
 
@@ -1965,7 +2268,7 @@ impl ChatApp {
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::Plus)
-                                    .tooltip("Add a contact")
+                                    .tooltip("New chat (Cmd+N)")
                                     .on_click(cx.listener(|this, _, window, cx| this.open_add_contact(window, cx))),
                             ),
                     )
@@ -2282,10 +2585,25 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
             m.body.clone(),
         ));
 
+    let links = crate::desktop::find_links(&m.body);
+    let link_row = (!links.is_empty()).then(|| {
+        h_flex()
+            .gap_1()
+            .flex_wrap()
+            .children(links.into_iter().take(3).enumerate().map(|(i, url)| {
+                Button::new(SharedString::from(format!("link-{}-{i}", m.id)))
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::ExternalLink)
+                    .label(crate::desktop::short_link(&url, 48))
+                    .tooltip(url.clone())
+                    .on_click(move |_, _, cx| cx.open_url(&url))
+            }))
+    });
     let mut view = MessageView::new()
         .id(ElementId::NamedInteger("msg".into(), m.id as u64))
         .alignment(align)
-        .content(MessageContent::new().bubble(bubble))
+        .content(MessageContent::new().bubble(bubble).children(link_row))
         .footer(
             MessageFooter::new().child(
                 h_flex()
@@ -2376,9 +2694,11 @@ impl Render for ChatApp {
             }
         }
 
+        self.show_unread(window);
         let theme = cx.theme().clone();
         let selected = self.selected.clone();
         let error = self.error.clone();
+        let banner = self.render_connection_banner(cx);
         h_flex()
             .size_full()
             .bg(theme.background)
@@ -2390,6 +2710,7 @@ impl Render for ChatApp {
                     .flex_1()
                     .h_full()
                     .min_w_0()
+                    .children(banner)
                     .when_some(error, |el, e| {
                         el.child(
                             h_flex()
@@ -2417,7 +2738,7 @@ impl Render for ChatApp {
                             .gap_2()
                             .text_color(theme.muted_foreground)
                             .child(Icon::new(LucideIcon::MessageSquare).large())
-                            .child("Select a chat, or add a contact with +")
+                            .child("Select a chat, or start one with Cmd+N")
                             .into_any_element(),
                     }),
             )
