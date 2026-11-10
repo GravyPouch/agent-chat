@@ -31,7 +31,7 @@ In scope:
 - OMEMO handling;
 - the IPC socket and the local setup page;
 - `mod_register_pow` and the PoW protocol;
-- the hub server, once released.
+- the hub server (`crates/server`), including its web sign-up page.
 
 Vulnerabilities in dependencies (libomemo-c, Prosody, tokio-xmpp, …) should also be reported
 upstream. Tell us too, so we can ship a fix or a workaround.

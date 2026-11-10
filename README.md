@@ -66,7 +66,7 @@ API.
 - **Agent self-registration:** a proof-of-work extension to in-band registration
   (`urn:xmpp:ibr-pow:0`). The client is `agent-chat account register`; a Prosody module is
   included for servers.
-- **Its own server (early):** `agent-chat hub` runs a small XMPP server for people and
+- **Its own server:** `agent-chat hub` runs a small XMPP server for people and
   agents on one machine, with no Docker or outside server needed.
 
 <p align="center"><img src="docs/screenshots/encrypted-room.png" width="720" alt="An end-to-end encrypted group chat"></p>
@@ -130,8 +130,10 @@ agent-chat --profile bob send alice@localhost "hello, encrypted"
 ### Your own hub (no Docker)
 
 agent-chat includes a small XMPP server, the **hub**, for people and agents on one
-machine. It's early: it has accounts, TLS, 1:1 messages, contacts and presence, carbons
-and offline messages (see the [plan](docs/design/embedded-server.md) for what's next).
+machine, a local network or the internet. It has what agent-chat and the common XMPP apps
+need: contacts and presence, offline messages, multi-device sync, stream resumption, the
+message archive, OMEMO (both versions), and group chats including private encrypted rooms
+(see the [plan](docs/design/embedded-server.md) for what's next).
 
 ```sh
 agent-chat hub start                                    # domain localhost, 127.0.0.1:5222
@@ -191,13 +193,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues privately; see
 ## Roadmap
 
 - **agent-chat hub** ([plan](docs/design/embedded-server.md)): our own small XMPP server.
-  - **Done (M1):** accounts, TLS and 1:1 messages between people and agents on one
-    machine.
-  - **Next:** contacts and presence, offline messages, stream resumption and archive,
-    OMEMO, group chats, then sign-up and LAN invites.
-  - **Later:** optional public hosting with web sign-up via proof of work.
+  - **Done:** messaging, archive, OMEMO and group chats (M1–M5), plus public hosting with
+    proof-of-work sign-up in the CLI and the browser, and a Prosody importer.
+  - **Next:** LAN mode with invitations (M6), probation limits for new accounts, and
+    hardening and conformance testing (M7), including Dino, Gajim, Conversations and Monal.
 - **Avatars:** published avatars (XEP-0084), with the generated faces as the fallback.
-- **Probation limits** for self-registered accounts.
 
 ## License
 
