@@ -1,0 +1,14 @@
+# Local XMPP server for development and integration tests.
+# Usage: dev/prosody/setup.sh
+services:
+  prosody:
+    image: ${PROSODY_IMAGE:-prosodyim/prosody:13.0}
+    container_name: agent-chat-prosody
+    ports:
+      - "127.0.0.1:5222:5222"
+    volumes:
+      - ./prosody.cfg.lua:/etc/prosody/prosody.cfg.lua:ro
+      - ./modules:/etc/prosody/custom-modules:ro
+      - prosody-data:/var/lib/prosody
+volumes:
+  prosody-data:

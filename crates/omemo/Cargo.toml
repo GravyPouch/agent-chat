@@ -1,0 +1,21 @@
+[package]
+name = "omemo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Safe OMEMO (XEP-0384) layer over libomemo-c: legacy and OMEMO:2"
+
+[dependencies]
+omemo-sys = { path = "../omemo-sys" }
+thiserror.workspace = true
+getrandom = "0.3"
+curve25519-dalek = "4"
+sha2 = "0.10"
+hmac = "0.12"
+hkdf = "0.12"
+aes = "0.8"
+cbc = { version = "0.1", features = ["std"] }
+ctr = "0.9"
+aes-gcm = "0.10"
+zeroize = "1"
+subtle = "2"

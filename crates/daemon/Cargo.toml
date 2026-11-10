@@ -1,0 +1,31 @@
+[package]
+name = "agent-chat-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "XMPP session, message store and IPC server for agent-chat"
+
+[features]
+integration = []
+
+[dependencies]
+agent-chat-proto.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+futures.workspace = true
+tokio-xmpp = { version = "6.0", default-features = false, features = ["starttls", "aws_lc_rs", "rustls-native-certs", "insecure-tcp"] }
+xmpp-parsers = "0.23"
+omemo = { path = "../omemo" }
+base64 = "0.22"
+rusqlite = { version = "0.41", features = ["bundled"] }
+keyring = "4"
+toml = "1"
+
+[dev-dependencies]
+tempfile = "3"

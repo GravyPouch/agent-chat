@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = ["crates/proto", "crates/omemo-sys", "crates/omemo", "crates/daemon", "crates/cli", "crates/gui"]
+default-members = ["crates/proto", "crates/omemo-sys", "crates/omemo", "crates/daemon", "crates/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+agent-chat-proto = { path = "crates/proto" }
+agent-chat-daemon = { path = "crates/daemon" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+directories = "6"
+futures = "0.3"
+
+# GPUI-based crates are slow in debug builds; optimize them even in dev.
+[profile.dev.package.gpui-pre]
+opt-level = 3
+[profile.dev.package.gpui-component]
+opt-level = 3
+[profile.dev.package.gpui-kit]
+opt-level = 3
+[profile.dev.package.gpui-kit-assets]
+opt-level = 3
+[profile.dev.package.gpui-pre-platform]
+opt-level = 3
+[profile.dev.package.rustybuzz]
+opt-level = 3
+[profile.dev.package.taffy]
+opt-level = 3
+[profile.dev.package.ttf-parser]
+opt-level = 3

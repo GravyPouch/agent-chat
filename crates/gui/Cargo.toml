@@ -1,0 +1,19 @@
+[package]
+name = "agent-chat-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop GUI for agent-chat (GPUI Kit)"
+
+[[bin]]
+name = "agent-chat-gui"
+path = "src/main.rs"
+
+[dependencies]
+agent-chat-proto.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+gpui-kit = "0.9.1"
