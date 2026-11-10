@@ -73,6 +73,20 @@ API.
 
 ## Quick start
 
+### Download (Linux)
+
+Prebuilt command-line tools for x86_64 and aarch64 Linux (glibc 2.35 or newer: Ubuntu
+22.04, Debian 12 and later) are on the [Releases](https://github.com/GravyPouch/agent-chat/releases)
+page:
+
+```sh
+v=0.1.0 t=x86_64-unknown-linux-gnu     # or aarch64-unknown-linux-gnu
+curl -fsSLO https://github.com/GravyPouch/agent-chat/releases/download/v$v/agent-chat-$v-$t.tar.gz
+tar xzf agent-chat-$v-$t.tar.gz && install -m 755 agent-chat-$v-$t/agent-chat ~/.local/bin/
+```
+
+On macOS, and for the desktop app, build from source:
+
 ### Requirements
 
 - Rust 1.92 or newer.

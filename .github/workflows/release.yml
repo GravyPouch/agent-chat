@@ -1,14 +1,20 @@
-# DRAFT release pipeline. Inert until a tag matching v* is pushed: it has no branch,
+# Release pipeline. Inert until a tag matching v* is pushed: it has no branch,
 # pull-request or schedule trigger.
+#
+# Optional parts are off until their repository variables (Settings → Secrets and
+# variables → Actions → Variables) are set to "true":
+#   RELEASE_MACOS_APP   build the signed, notarized macOS app (needs the Apple secrets)
+#   RELEASE_HOMEBREW    open the pull request on the Homebrew tap (needs the tap and token)
+# Without them a tag publishes the Linux CLI only.
 #
 # On `git push origin vX.Y.Z` it:
 #   1. checks that the tag matches the workspace version and that CHANGELOG.md has a
 #      "## [X.Y.Z]" section (the release notes);
-#   2. builds agent-chat.app (GUI + bundled CLI) for Apple Silicon, signs it with the
+#   2. if RELEASE_MACOS_APP: builds agent-chat.app (GUI + bundled CLI) for Apple Silicon, signs it with the
 #      Developer ID certificate, notarizes and staples it, and makes a .zip and a .dmg;
 #   3. builds Linux CLI tarballs (x86_64, aarch64);
 #   4. publishes a GitHub Release with every artifact and a SHA256SUMS file;
-#   5. for non-prerelease tags, opens a pull request on GravyPouch/homebrew-tap that
+#   5. if RELEASE_HOMEBREW, for non-prerelease tags, opens a pull request on GravyPouch/homebrew-tap that
 #      bumps Formula/agent-chat.rb and Casks/agent-chat.rb. The tap's own brew test-bot
 #      workflow then builds bottles; merge it with `brew pr-pull`.
 #
@@ -91,6 +97,7 @@ jobs:
   macos-app:
     name: macOS app (build, sign, notarize)
     needs: meta
+    if: vars.RELEASE_MACOS_APP == 'true'
     runs-on: macos-26
     environment: release
     env:
@@ -171,10 +178,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The oldest supported Ubuntu: the binary needs this glibc (2.35) or newer.
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
+            os: ubuntu-22.04-arm
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.meta.outputs.version }}
@@ -200,6 +208,14 @@ jobs:
         run: |
           bin="target/$TARGET/release/agent-chat"
           test "$("$bin" --version)" = "agent-chat $VERSION"
+          # Smoke test: the daemon starts, answers and stops (no account, no network).
+          export AGENT_CHAT_HOME="$RUNNER_TEMP/smoke"
+          mkdir -p "$AGENT_CHAT_HOME/profiles/default"
+          printf '[settings]\nhttp_port = 0\n' > "$AGENT_CHAT_HOME/profiles/default/config.toml"
+          status="$("$bin" status)"
+          echo "$status"
+          grep -q '"state":"no_account"' <<<"$status"
+          "$bin" daemon stop
           name="agent-chat-$VERSION-$TARGET"
           mkdir -p "stage/$name" dist
           cp "$bin" LICENSE README.md THIRD_PARTY_NOTICES.md "stage/$name/"
@@ -214,6 +230,10 @@ jobs:
   release:
     name: Publish the GitHub Release
     needs: [meta, macos-app, linux-cli]
+    # Runs when the macOS app was built or deliberately skipped.
+    if: >-
+      !cancelled() && needs.meta.result == 'success' && needs.linux-cli.result == 'success'
+      && (needs.macos-app.result == 'success' || needs.macos-app.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -244,8 +264,10 @@ jobs:
 
   bump-tap:
     name: Open a pull request on the Homebrew tap
-    needs: [meta, release]
-    if: needs.meta.outputs.prerelease == 'false'
+    needs: [meta, macos-app, release]
+    if: >-
+      vars.RELEASE_HOMEBREW == 'true' && needs.meta.outputs.prerelease == 'false'
+      && needs.macos-app.result == 'success' && needs.release.result == 'success'
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.meta.outputs.version }}
