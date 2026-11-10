@@ -13,6 +13,7 @@ pub const CAPS_NODE: &str = "urn:x-agent-chat:client";
 
 pub const FEATURES: &[&str] = &[
     "http://jabber.org/protocol/caps",
+    "http://jabber.org/protocol/chatstates",
     "http://jabber.org/protocol/disco#info",
     "http://jabber.org/protocol/muc",
     "urn:xmpp:ping",

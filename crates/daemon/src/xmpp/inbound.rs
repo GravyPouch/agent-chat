@@ -8,10 +8,11 @@
 use std::sync::Arc;
 
 use agent_chat_proto::ipc::Event;
-use agent_chat_proto::model::{MessageKind, MessageSource, PresenceInfo, Show, SubscriptionRequest};
+use agent_chat_proto::model::{ChatState, MessageKind, MessageSource, PresenceInfo, Show, SubscriptionRequest};
 use chrono::{DateTime, Utc};
 use tokio_xmpp::minidom::Element;
 use xmpp_parsers::carbons;
+use xmpp_parsers::chatstates::ChatState as XChatState;
 use xmpp_parsers::delay::Delay;
 use xmpp_parsers::disco::DiscoInfoQuery;
 use xmpp_parsers::iq::Iq;
@@ -63,6 +64,11 @@ pub enum Classified {
     RoomSubject {
         room: String,
         subject: String,
+    },
+    /// XEP-0085 chat state from a contact in a 1:1 chat (bare JID).
+    ChatState {
+        jid: String,
+        state: ChatState,
     },
     Ignore(&'static str),
 }
@@ -224,6 +230,9 @@ fn classify_inner(
     }
 
     if !has_body && !encrypted {
+        if let Some(c) = chat_state(ctx, &m, source, sent_carbon) {
+            return c;
+        }
         return Classified::Ignore("no body");
     }
 
@@ -296,6 +305,27 @@ fn classify_inner(
         delayed,
         message: m,
     }))
+}
+
+/// XEP-0085: a body-less chat state from a contact, live or through a received
+/// carbon. Archived states are stale, our own (sent carbons) aren't news, and
+/// rooms and their private messages are left out.
+fn chat_state(ctx: &Ctx<'_>, m: &Message, source: MessageSource, sent_carbon: bool) -> Option<Classified> {
+    if source == MessageSource::Mam || sent_carbon {
+        return None;
+    }
+    let state = match find_payload::<XChatState>(m)? {
+        XChatState::Active => ChatState::Active,
+        XChatState::Composing => ChatState::Composing,
+        XChatState::Paused => ChatState::Paused,
+        XChatState::Inactive => ChatState::Inactive,
+        XChatState::Gone => ChatState::Gone,
+    };
+    let from = m.from.as_ref()?.to_bare().to_string();
+    if same_bare(&from, &ctx.own.to_string()) || (ctx.room_nick)(&from).is_some() {
+        return None;
+    }
+    Some(Classified::ChatState { jid: from, state })
 }
 
 /// A group chat invitation: XEP-0045 mediated (`muc#user` from the room) or
@@ -375,6 +405,7 @@ pub async fn on_message(core: &Arc<Core>, handle: &SessionHandle, m: Message) {
             }
             core.emit(Event::RoomSubject { room, subject });
         }
+        Classified::ChatState { jid, state } => core.emit(Event::ChatState { jid, state }),
         Classified::Store(p) => {
             if let Err(e) = store_parsed(core, handle, *p).await {
                 tracing::warn!("failed to store message: {e:#}");
@@ -847,12 +878,50 @@ mod tests {
     }
 
     #[test]
-    fn chat_states_without_body_are_ignored() {
+    fn chat_states_without_body() {
+        let state = |xml: &str, room: Option<(&str, &str)>| match run(xml, None, room) {
+            Classified::ChatState { jid, state } => Some((jid, state)),
+            Classified::Ignore("no body") => None,
+            other => panic!("unexpected {other:?}"),
+        };
+        for (name, want) in [
+            ("composing", ChatState::Composing),
+            ("paused", ChatState::Paused),
+            ("active", ChatState::Active),
+            ("inactive", ChatState::Inactive),
+            ("gone", ChatState::Gone),
+        ] {
+            let xml = format!(
+                "<message xmlns='jabber:client' type='chat' from='Bob@example.org/phone'><{name} xmlns='http://jabber.org/protocol/chatstates'/></message>"
+            );
+            assert_eq!(state(&xml, None), Some(("bob@example.org".to_owned(), want)), "{name}");
+        }
+        // Through a received carbon: still the contact typing.
+        let carbon = r#"<message xmlns='jabber:client' from='alice@example.org' to='alice@example.org/ac'>
+                 <received xmlns='urn:xmpp:carbons:2'><forwarded xmlns='urn:xmpp:forward:0'>
+                   <message xmlns='jabber:client' type='chat' from='bob@example.org/phone' to='alice@example.org/phone'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>
+                 </forwarded></received></message>"#;
+        assert_eq!(state(carbon, None), Some(("bob@example.org".to_owned(), ChatState::Composing)));
+        // Our own other device typing (sent carbon): not news.
+        let sent = carbon.replace("received", "sent").replace("from='bob@example.org/phone' to='alice@example.org/phone'", "from='alice@example.org/phone' to='bob@example.org'");
+        assert_eq!(state(&sent, None), None);
+        // Room private messages and plain body-less messages carry no state.
+        let pm = "<message xmlns='jabber:client' type='chat' from='room@conf.example.org/bob'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>";
+        assert_eq!(state(pm, Some(("room@conf.example.org", "alice"))), None);
+        assert_eq!(state("<message xmlns='jabber:client' type='chat' from='bob@example.org/phone'/>", None), None);
+        // In a room, chat states are never reported.
         let c = run(
-            r#"<message xmlns='jabber:client' type='chat' from='bob@example.org/phone'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>"#,
+            "<message xmlns='jabber:client' type='groupchat' from='room@conf.example.org/bob'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>",
             None,
-            None,
+            Some(("room@conf.example.org", "alice")),
         );
-        assert!(matches!(c, Classified::Ignore("no body")));
+        assert!(matches!(c, Classified::Ignore("groupchat without body")), "{c:?}");
+        // A message with a body is stored as usual.
+        let p = stored(run(
+            "<message xmlns='jabber:client' type='chat' from='bob@example.org/phone'><body>hi</body><active xmlns='http://jabber.org/protocol/chatstates'/></message>",
+            None,
+            None,
+        ));
+        assert_eq!(p.conversation, "bob@example.org");
     }
 }

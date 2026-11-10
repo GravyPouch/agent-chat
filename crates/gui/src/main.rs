@@ -1,6 +1,7 @@
 //! agent-chat-gui: desktop client (GPUI Kit). Talks to the same daemon as the CLI.
 
 mod app;
+mod face;
 
 use std::sync::Arc;
 
@@ -46,6 +47,26 @@ fn arg(name: &str) -> Option<String> {
     None
 }
 
+/// The system's "reduce motion" preference: `AGENT_CHAT_REDUCE_MOTION=1|0`,
+/// else macOS Accessibility › Display › Reduce motion. GPUI doesn't read it
+/// itself; the animated avatar shows a still face when it's set.
+fn reduce_motion() -> bool {
+    if let Ok(v) = std::env::var("AGENT_CHAT_REDUCE_MOTION") {
+        return matches!(v.trim(), "1" | "true" | "yes");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("defaults")
+            .args(["read", "com.apple.universalaccess", "reduceMotion"])
+            .output()
+            .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "1")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 fn connect(profile: &Profile, rt: &tokio::runtime::Runtime) -> anyhow::Result<IpcClient> {
     rt.block_on(async {
         match DaemonLauncher::locate() {
@@ -79,6 +100,7 @@ fn main() {
     application().with_assets(AppAssets).run(move |cx| {
         init(cx);
         Theme::sync_system_appearance(None, cx);
+        cx.set_reduce_motion(reduce_motion());
         let bounds = WindowBounds::centered(size(px(1120.), px(760.)), cx);
         let options = WindowOptions {
             window_bounds: Some(bounds),

@@ -1,0 +1,15 @@
+[package]
+name = "boopface"
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later AND MIT"
+description = "Rust port of BoopFace (MIT, CX ART Lab): JID-seeded robot faces and the BoopFace motion engine"
+
+[dependencies]
+sha1 = "0.10"
+
+[dev-dependencies]
+# Both are already in the tree through GPUI: roxmltree checks that the SVG is
+# well-formed XML, usvg that GPUI's SVG renderer accepts it.
+roxmltree = "0.21"
+usvg = { version = "0.46", default-features = false }

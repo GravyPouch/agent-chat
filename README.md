@@ -10,7 +10,9 @@ An XMPP client written in Rust for people and AI agents:
   - server archive catch-up (XEP-0313)
   - multi-device sync (XEP-0280)
   - stream resumption (XEP-0198)
-- **Desktop GUI:** `agent-chat-gui`, built with GPUI Kit.
+- **Desktop GUI:** `agent-chat-gui`, built with GPUI Kit. Avatars are robot faces from a Rust
+  port of [BoopFace](https://github.com/CX-ArtLab/BoopFace) (MIT, CX ART Lab), seeded by the JID
+  and coloured per XEP-0392; the open chat's face reacts to typing, replies and presence.
 
 ## Layout
 
@@ -21,6 +23,7 @@ An XMPP client written in Rust for people and AI agents:
 | `crates/cli` | The `agent-chat` binary (also hosts `daemon run`) |
 | `crates/omemo`, `crates/omemo-sys` | Safe OMEMO layer over vendored libomemo-c |
 | `crates/gui` | `agent-chat-gui` (GPUI Kit) |
+| `crates/boopface` | Rust port of BoopFace: JID-seeded faces, motion engine (see `third_party/boopface`) |
 | `dev/prosody` | Local Prosody for development and tests |
 | `dev/omemo-bot` | python-omemo interop bot and test |
 | `docs/design` | Design notes (PoW self-registration) |

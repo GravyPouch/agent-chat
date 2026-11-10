@@ -192,6 +192,7 @@ version = "0.1.0"
 dependencies = [
  "agent-chat-proto",
  "anyhow",
+ "boopface",
  "chrono",
  "gpui-kit",
  "serde",
@@ -872,6 +873,15 @@ dependencies = [
  "futures-io",
  "futures-lite",
  "piper",
+]
+
+[[package]]
+name = "boopface"
+version = "0.1.0"
+dependencies = [
+ "roxmltree 0.21.2",
+ "sha1 0.10.7",
+ "usvg 0.46.0",
 ]
 
 [[package]]

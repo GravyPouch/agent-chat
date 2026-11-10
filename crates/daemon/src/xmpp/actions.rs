@@ -623,3 +623,30 @@ pub async fn send_message(
     handle.send(msg).map_err(|e| IpcError::new(ErrorCode::NotConnected, e.to_string()))?;
     Ok(stored)
 }
+
+/// XEP-0085: tell a contact we're typing (or stopped). 1:1 chats only, and
+/// never stored (XEP-0334 `no-store`).
+pub fn send_chat_state(
+    core: &Core,
+    handle: &SessionHandle,
+    to: &str,
+    state: agent_chat_proto::model::ChatState,
+) -> Result<(), IpcError> {
+    use agent_chat_proto::model::ChatState;
+    use xmpp_parsers::chatstates::ChatState as XChatState;
+
+    let to_jid = BareJid::new(to).map_err(|e| IpcError::new(ErrorCode::BadRequest, format!("invalid bare JID {to:?}: {e}")))?;
+    if core.room_nick(&to_jid.to_string()).is_some() {
+        return Err(IpcError::new(ErrorCode::BadRequest, "chat states are only sent in 1:1 chats"));
+    }
+    let payload = match state {
+        ChatState::Active => XChatState::Active,
+        ChatState::Composing => XChatState::Composing,
+        ChatState::Paused => XChatState::Paused,
+        ChatState::Inactive => XChatState::Inactive,
+        ChatState::Gone => XChatState::Gone,
+    };
+    let mut msg = XMessage::chat(Some(to_jid.into())).with_payload(payload);
+    msg.payloads.push(Element::builder("no-store", "urn:xmpp:hints").build());
+    handle.send(msg).map_err(|e| IpcError::new(ErrorCode::NotConnected, e.to_string()))
+}

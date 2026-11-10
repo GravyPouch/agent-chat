@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/proto", "crates/omemo-sys", "crates/omemo", "crates/daemon", "crates/cli", "crates/gui"]
-default-members = ["crates/proto", "crates/omemo-sys", "crates/omemo", "crates/daemon", "crates/cli"]
+members = ["crates/proto", "crates/omemo-sys", "crates/omemo", "crates/daemon", "crates/cli", "crates/gui", "crates/boopface"]
+default-members = ["crates/proto", "crates/omemo-sys", "crates/omemo", "crates/daemon", "crates/cli", "crates/boopface"]
 
 [workspace.package]
 version = "0.1.0"

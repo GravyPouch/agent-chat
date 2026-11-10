@@ -8,8 +8,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    Contact, Delivery, EncryptionProtocol, Filter, Message, PresenceInfo, RoomInvite, Show,
-    StatusInfo, SubscriptionRequest,
+    ChatState, Contact, Delivery, EncryptionProtocol, Filter, Message, PresenceInfo, RoomInvite,
+    Show, StatusInfo, SubscriptionRequest,
 };
 
 /// How `send` should treat end-to-end encryption.
@@ -142,6 +142,9 @@ pub enum Request {
         /// `true` = verified, `false` = untrusted.
         trusted: bool,
     },
+    /// Send an XEP-0085 chat state (e.g. "composing") in a 1:1 chat; refused
+    /// for rooms. Result: `null`.
+    SendChatState { to: String, state: ChatState },
     /// Start receiving [`Event`]s on this connection. Result: `null`.
     Subscribe,
     /// Stop the daemon. Result: `null`.
@@ -202,6 +205,8 @@ pub enum Event {
         jid: String,
         protocol: EncryptionProtocol,
     },
+    /// XEP-0085: a contact's chat state in a 1:1 chat (bare JID), e.g. typing.
+    ChatState { jid: String, state: ChatState },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,6 +293,24 @@ mod tests {
     }
 
     #[test]
+    fn chat_state_wire_format() {
+        let json = serde_json::to_string(&Event::ChatState {
+            jid: "bob@example.org".into(),
+            state: ChatState::Paused,
+        })
+        .unwrap();
+        assert_eq!(json, r#"{"type":"chat_state","data":{"jid":"bob@example.org","state":"paused"}}"#);
+        let f: ClientFrame = serde_json::from_str(
+            r#"{"id":4,"method":"send_chat_state","params":{"to":"bob@example.org","state":"composing"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            f.request,
+            Request::SendChatState { to: "bob@example.org".into(), state: ChatState::Composing }
+        );
+    }
+
+    #[test]
     fn unit_request_round_trip() {
         let frame = ClientFrame {
             id: 1,
@@ -336,6 +359,12 @@ mod tests {
             },
             ServerFrame::Event {
                 event: Event::ContactsChanged,
+            },
+            ServerFrame::Event {
+                event: Event::ChatState {
+                    jid: "bob@example.org".into(),
+                    state: ChatState::Composing,
+                },
             },
         ];
         for f in frames {

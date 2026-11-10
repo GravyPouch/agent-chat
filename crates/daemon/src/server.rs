@@ -235,6 +235,10 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             fingerprint,
             trusted,
         } => json(crate::omemo::xmpp::set_trust(core, &jid, &fingerprint, trusted).await?),
+        Request::SendChatState { to, state } => {
+            actions::send_chat_state(core, &core.session()?, &to, state)?;
+            Ok(Value::Null)
+        }
         Request::Subscribe => Ok(Value::Null),
         Request::Shutdown => {
             core.shutdown.notify_one();

@@ -2,15 +2,16 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use agent_chat_proto::ipc::{AccountParams, ContactList, EncryptionMode, Event, PasswordStorage, Request};
 use agent_chat_proto::model::{
-    ConnectionState, Contact, ConversationSummary, DeviceInfo, Message, MessageKind, Room,
-    RoomInvite, Show, StatusInfo, SubscriptionRequest, Trust,
+    ChatState, ConnectionState, Contact, ConversationSummary, DeviceInfo, Message, MessageKind,
+    MessageSource, Room, RoomInvite, Show, StatusInfo, SubscriptionRequest, Trust,
 };
 use agent_chat_proto::{CallError, IpcClient};
+use boopface::Signal;
 use chrono::{Local, NaiveDate};
-use gpui_kit::component::avatar::Avatar;
 use gpui_kit::component::bubble::{Bubble, BubbleVariant};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
@@ -24,6 +25,8 @@ use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, WindowExt, h_fle
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use serde::de::DeserializeOwned;
+
+use crate::face::{self, AnimatedFace};
 
 type LucideIcon = gpui_kit::assets::IconName;
 
@@ -90,8 +93,20 @@ pub struct ChatApp {
     room_nick: Entity<InputState>,
     room_private: bool,
     invite_jid: Entity<InputState>,
+    /// The animated face of the open 1:1 chat.
+    face: Option<Entity<AnimatedFace>>,
+    /// We told this contact we're typing (XEP-0085 "composing").
+    composing_to: Option<String>,
+    /// Sends "paused" when typing stops for a while.
+    paused_timer: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// Static avatar sizes (GPUI Kit's small and medium avatar sizes).
+const FACE_SMALL: u32 = 24;
+const FACE_MEDIUM: u32 = 48;
+/// Send "paused" after this long without typing.
+const PAUSED_AFTER: Duration = Duration::from_secs(10);
 
 fn show_color(show: Show, cx: &App) -> Hsla {
     let t = cx.theme();
@@ -140,8 +155,10 @@ impl ChatApp {
         let invite_jid = input("friend@example.org", window, cx);
 
         let subscriptions = vec![cx.subscribe_in(&composer, window, |this, _, event: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { .. } = event {
-                this.send(window, cx);
+            match event {
+                InputEvent::PressEnter { .. } => this.send(window, cx),
+                InputEvent::Change => this.on_composer_change(cx),
+                _ => {}
             }
         })];
 
@@ -176,6 +193,9 @@ impl ChatApp {
             room_nick,
             room_private: true,
             invite_jid,
+            face: None,
+            composing_to: None,
+            paused_timer: None,
             _subscriptions: subscriptions,
         };
         app.subscribe_events(window, cx);
@@ -249,9 +269,107 @@ impl ChatApp {
             if let Ok(list) = r {
                 this.contacts = list.contacts;
                 this.pending = list.pending_requests;
+                if let Some(jid) = this.face_jid(cx) {
+                    let online = this.contact_online(&jid);
+                    this.face_signal(&jid, Signal::Online(online), cx);
+                }
                 cx.notify();
             }
         });
+    }
+
+    // ------------------------------------------------------------ the face
+
+    /// A 1:1 chat with a bare JID (not a room, not a room private message).
+    fn is_direct(&self, jid: &str) -> bool {
+        !jid.contains('/') && !self.rooms.iter().any(|r| r.jid.eq_ignore_ascii_case(jid))
+    }
+
+    /// Online unless the roster says otherwise (no roster entry: no presence to go by).
+    fn contact_online(&self, jid: &str) -> bool {
+        self.contacts
+            .iter()
+            .find(|c| c.jid.eq_ignore_ascii_case(jid))
+            .is_none_or(|c| c.presence.show != Show::Unavailable)
+    }
+
+    fn face_jid(&self, cx: &App) -> Option<String> {
+        self.face.as_ref().map(|f| f.read(cx).jid().to_owned())
+    }
+
+    /// Pass a conversation signal to the open chat's face, if it's `jid`'s.
+    fn face_signal(&mut self, jid: &str, signal: Signal, cx: &mut Context<Self>) {
+        if let Some(face) = self.face.clone()
+            && face.read(cx).is_for(jid)
+        {
+            face.update(cx, |f, cx| f.signal(signal, cx));
+        }
+    }
+
+    /// Show the animated face for a 1:1 chat, and none otherwise.
+    fn update_face(&mut self, jid: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_direct(jid) {
+            self.face = None;
+            return;
+        }
+        if self.face.as_ref().is_some_and(|f| f.read(cx).is_for(jid)) {
+            return;
+        }
+        let online = self.contact_online(jid);
+        let jid = jid.to_owned();
+        self.face = Some(cx.new(|cx| AnimatedFace::new(&jid, online, window, cx)));
+    }
+
+    /// The avatar of a conversation or sender: a room occupant (`room/nick`)
+    /// by nickname, anyone else by bare JID.
+    fn face_for(jid: &str, size: u32, cx: &mut App) -> AnyElement {
+        match jid.split_once('/') {
+            Some((_, nick)) if !nick.is_empty() => face::nick_face(nick, size, cx).into_any_element(),
+            _ => face::jid_face(jid, size, cx).into_any_element(),
+        }
+    }
+
+    // ------------------------------------------------- our own chat states
+
+    fn send_chat_state(&mut self, to: String, state: ChatState, cx: &mut Context<Self>) {
+        // Best effort: a lost chat state isn't worth an error banner.
+        self.call::<serde_json::Value>(Request::SendChatState { to, state }, cx, |_, _, _| {});
+    }
+
+    /// XEP-0085 for our side: "composing" when we start typing, "paused"
+    /// after a while without typing, "active" when the text is cleared.
+    fn on_composer_change(&mut self, cx: &mut Context<Self>) {
+        let Some(to) = self.selected.clone().filter(|j| self.is_direct(j)) else {
+            return;
+        };
+        if self.composer.read(cx).value().trim().is_empty() {
+            self.paused_timer = None;
+            if let Some(to) = self.composing_to.take() {
+                self.send_chat_state(to, ChatState::Active, cx);
+            }
+            return;
+        }
+        if self.composing_to.as_deref() != Some(to.as_str()) {
+            self.composing_to = Some(to.clone());
+            self.send_chat_state(to, ChatState::Composing, cx);
+        }
+        self.paused_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(PAUSED_AFTER).await;
+            let _ = this.update(cx, |this, cx| {
+                this.paused_timer = None;
+                if let Some(to) = this.composing_to.take() {
+                    this.send_chat_state(to, ChatState::Paused, cx);
+                }
+            });
+        }));
+    }
+
+    /// We left a chat while typing in it.
+    fn leave_composing(&mut self, cx: &mut Context<Self>) {
+        self.paused_timer = None;
+        if let Some(to) = self.composing_to.take() {
+            self.send_chat_state(to, ChatState::Paused, cx);
+        }
     }
 
     fn reload_rooms(&mut self, cx: &mut Context<Self>) {
@@ -300,6 +418,12 @@ impl ChatApp {
     fn on_event(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             Event::Message(m) => {
+                // Their reply (or a message we couldn't decrypt) for the open chat's face.
+                if !m.own && m.kind == MessageKind::Chat && m.source != MessageSource::Mam {
+                    let failed = m.encryption.as_ref().is_some_and(|e| e.error.is_some());
+                    let signal = if failed { Signal::Failed } else { Signal::Reply };
+                    self.face_signal(&m.conversation.clone(), signal, cx);
+                }
                 if self.selected.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(&m.conversation)) {
                     let id = m.id;
                     let conversation = m.conversation.clone();
@@ -322,9 +446,15 @@ impl ChatApp {
                 }
             }
             Event::Presence { jid, presence } => {
+                let online = presence.show != Show::Unavailable;
                 if let Some(c) = self.contacts.iter_mut().find(|c| c.jid == jid) {
                     c.presence = presence;
                 }
+                self.face_signal(&jid, Signal::Online(online), cx);
+            }
+            Event::ChatState { jid, state } => {
+                let signal = if state == ChatState::Composing { Signal::Typing } else { Signal::StoppedTyping };
+                self.face_signal(&jid, signal, cx);
             }
             Event::ContactsChanged | Event::SubscriptionRequest(_) => self.reload_contacts(cx),
             Event::RoomsChanged | Event::RoomInvite(_) => self.reload_rooms(cx),
@@ -368,6 +498,8 @@ impl ChatApp {
         if self.selected.as_deref() == Some(jid.as_str()) {
             return;
         }
+        self.leave_composing(cx);
+        self.update_face(&jid, window, cx);
         self.selected = Some(jid.clone());
         self.messages = Rc::new(vec![]);
         self.devices = vec![];
@@ -408,12 +540,19 @@ impl ChatApp {
         if body.is_empty() {
             return;
         }
+        // The message itself ends "composing".
+        self.paused_timer = None;
+        self.composing_to = None;
         self.composer.update(cx, |s, cx| s.set_value("", window, cx));
+        self.face_signal(&to, Signal::Sending, cx);
+        let face_jid = to.clone();
         self.call::<Message>(
             Request::Send { to, body: body.clone(), room: None, encryption: EncryptionMode::Auto },
             cx,
-            move |this, r, cx| {
-                if let Err(e) = r {
+            move |this, r, cx| match r {
+                Ok(_) => this.face_signal(&face_jid, Signal::Sent, cx),
+                Err(e) => {
+                    this.face_signal(&face_jid, Signal::Failed, cx);
                     this.error = Some(format!("Not sent: {e}"));
                     cx.notify();
                 }
@@ -827,6 +966,7 @@ impl ChatApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active = self.selected.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(&jid));
+        let room = self.rooms.iter().any(|r| r.jid.eq_ignore_ascii_case(&jid));
         let theme = cx.theme().clone();
         h_flex()
             .id(id)
@@ -841,7 +981,12 @@ impl ChatApp {
             .child(
                 div()
                     .relative()
-                    .child(Avatar::new().name(title.clone()).small())
+                    .flex_none()
+                    .child(if room {
+                        face::room_tile(&jid, FACE_SMALL as f32, LucideIcon::Users).into_any_element()
+                    } else {
+                        Self::face_for(&jid, FACE_SMALL, cx)
+                    })
                     .when_some(presence, |el, show| {
                         el.child(
                             div()
@@ -968,7 +1113,7 @@ impl ChatApp {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Avatar::new().name(avatar_name).small())
+                            .child(face::jid_face(&avatar_name, FACE_SMALL, cx))
                             .child(
                                 v_flex()
                                     .flex_1()
@@ -1125,7 +1270,11 @@ impl ChatApp {
             .gap_3()
             .border_b_1()
             .border_color(theme.border)
-            .child(Avatar::new().name(title.clone()))
+            .child(match (&room, &self.face) {
+                (Some(r), _) => face::room_tile(&r.jid, FACE_MEDIUM as f32, LucideIcon::Users).into_any_element(),
+                (None, Some(f)) if f.read(cx).is_for(jid) => f.clone().into_any_element(),
+                _ => Self::face_for(jid, FACE_MEDIUM, cx),
+            })
             .child(
                 v_flex()
                     .flex_1()
@@ -1251,7 +1400,11 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
             // Keep the column aligned without repeating the avatar.
             view.avatar_slot(MessageAvatar::new().bg(transparent_black()).child(div().size(px(24.))))
         } else {
-            view.avatar(Avatar::new().name(sender.clone()).small())
+            let face = match (&m.nick, is_room) {
+                (Some(nick), true) => face::nick_face(nick, FACE_SMALL, cx).into_any_element(),
+                _ => ChatApp::face_for(&m.from, FACE_SMALL, cx),
+            };
+            view.avatar_slot(MessageAvatar::new().bg(transparent_black()).rounded(px(0.)).child(face))
         };
         if is_room && !same_sender_as_prev {
             view = view.header(MessageHeader::new().child(sender));

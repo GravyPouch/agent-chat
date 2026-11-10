@@ -238,6 +238,29 @@ pub struct PresenceInfo {
     pub status: Option<String>,
 }
 
+/// XEP-0085 chat state notification (1:1 chats only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatState {
+    Active,
+    Composing,
+    Paused,
+    Inactive,
+    Gone,
+}
+
+impl ChatState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChatState::Active => "active",
+            ChatState::Composing => "composing",
+            ChatState::Paused => "paused",
+            ChatState::Inactive => "inactive",
+            ChatState::Gone => "gone",
+        }
+    }
+}
+
 /// A roster entry with its aggregated presence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Contact {
