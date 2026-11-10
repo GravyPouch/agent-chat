@@ -378,7 +378,6 @@ impl RunningHub {
             tracing::info!(%addr, domain = %ctx.domain, "listening for clients");
             ctx.tracker.spawn(accept_loop(ctx.clone(), l));
         }
-        ctx.tracker.spawn(crate::admin::serve(ctx.clone(), admin));
         let mut http = Vec::new();
         for addr in ctx.config.http_addrs()? {
             let l = listener::bind(addr)?;
@@ -404,6 +403,9 @@ impl RunningHub {
             started_at: ctx.started_at,
         };
         write_private(&paths.runtime(), serde_json::to_string_pretty(&info)?.as_bytes())?;
+        // Last: `hub start` and `account add --hub` treat an answering admin
+        // socket as "running" and then read hub.json, so it must exist first.
+        ctx.tracker.spawn(crate::admin::serve(ctx.clone(), admin));
         Ok(Self { ctx, lock: Some(lock) })
     }
 

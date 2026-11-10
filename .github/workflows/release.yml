@@ -50,7 +50,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: The tag must match the workspace version
         id: version
@@ -82,7 +82,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: release-notes.md
@@ -97,7 +97,7 @@ jobs:
       VERSION: ${{ needs.meta.outputs.version }}
       MACOSX_DEPLOYMENT_TARGET: "15.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -148,7 +148,7 @@ jobs:
           fi
           packaging/macos/bundle.sh --version "$VERSION" --target aarch64-apple-darwin --out dist --dmg
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-app
           path: |
@@ -180,7 +180,7 @@ jobs:
       VERSION: ${{ needs.meta.outputs.version }}
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: System dependencies
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev pkg-config
@@ -205,7 +205,7 @@ jobs:
           cp "$bin" LICENSE README.md THIRD_PARTY_NOTICES.md "stage/$name/"
           tar -C stage -czf "dist/$name.tar.gz" "$name"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-cli-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -222,7 +222,7 @@ jobs:
       PRERELEASE: ${{ needs.meta.outputs.prerelease }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -263,7 +263,7 @@ jobs:
             echo "APP_SHA256=$app_sha256"
           } >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: ${{ env.TAP_REPOSITORY }}
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

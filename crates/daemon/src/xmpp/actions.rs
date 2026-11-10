@@ -452,6 +452,7 @@ async fn start_join(
         rt.nick = nick.to_owned();
         rt.password = password.map(str::to_owned);
         rt.joined = false;
+        rt.configured = false;
         rt.error = None;
         rt.create_private = private;
         if let Some(info) = &info {
@@ -550,6 +551,20 @@ pub async fn join_room(
         }
         return Err(err);
     }
+    // If our join created the room, it stays locked (others get
+    // item-not-found) until it's configured: wait for that, so whoever we
+    // tell about the room can join it right away.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let configured = core
+            .state()
+            .rooms
+            .get(&room_s.to_lowercase())
+            .is_none_or(|r| r.configured);
+        if configured || tokio::time::timeout_at(deadline, events.recv()).await.is_err() {
+            break;
+        }
+    }
     core.store()
         .upsert_room(&room_s, &nick, password.as_deref())
         .map_err(internal)?;
@@ -610,10 +625,11 @@ pub async fn configure_new_room(
 pub async fn refresh_room_info(core: &Arc<Core>, handle: &SessionHandle, room: &str) -> Result<()> {
     let room_jid = BareJid::new(room)?;
     let key = room_jid.to_string().to_lowercase();
-    if let Some(info) = room_disco(handle, &room_jid).await
-        && let Some(rt) = core.state().rooms.get_mut(&key)
-    {
-        apply_room_features(rt, &info);
+    let info = room_disco(handle, &room_jid).await;
+    if let Some(rt) = core.state().rooms.get_mut(&key) {
+        if let Some(info) = &info {
+            apply_room_features(rt, info);
+        }
         rt.configured = true;
     }
     if core.room_is_private(room) {

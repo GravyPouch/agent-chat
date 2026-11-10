@@ -20,7 +20,7 @@ jobs:
     name: Formatting and clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System dependencies
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev pkg-config libdbus-1-dev
       - uses: dtolnay/rust-toolchain@stable
@@ -34,7 +34,7 @@ jobs:
     name: Linux (CLI, daemon, libraries)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System dependencies
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev pkg-config libdbus-1-dev
       - uses: dtolnay/rust-toolchain@stable
@@ -46,7 +46,7 @@ jobs:
     name: macOS (whole workspace incl. desktop app)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -59,7 +59,7 @@ jobs:
     name: mod_register_pow test vector
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run the Lua test vector in the Prosody 13 image
         run: >
           docker run --rm -v "$PWD/server/prosody:/m:ro" --entrypoint lua5.4
