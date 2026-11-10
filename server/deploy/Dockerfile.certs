@@ -1,0 +1,5 @@
+FROM python:3.13-slim
+RUN pip install --no-cache-dir certbot==5.9.0
+COPY server/deploy/certificates.py /app/certificates.py
+EXPOSE 8080
+CMD ["python", "-u", "/app/certificates.py"]

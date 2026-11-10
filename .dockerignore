@@ -1,0 +1,5 @@
+.git
+target
+.DS_Store
+*.tmp
+**/__pycache__
