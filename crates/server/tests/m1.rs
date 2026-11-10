@@ -5,7 +5,7 @@ mod common;
 
 use std::collections::BTreeSet;
 
-use common::{DOMAIN, Raw, TestHub, between, next_event, online};
+use common::{DOMAIN, Raw, TestHub, available, between, next_event, online};
 use sasl::common::Credentials;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_xmpp::Stanza;
@@ -331,6 +331,9 @@ async fn messages_and_iqs_route_between_accounts() {
     online(&mut a).await;
     online(&mut b).await;
     assert_eq!(hub.status().await.sessions, 2);
+    // Bare-JID messages go to available resources (RFC 6121 §8.5.2).
+    available(&mut a, 0).await;
+    available(&mut b, 0).await;
 
     // To the bare JID; `from` is stamped with the sender's full JID.
     a.send(chat("bob@hubtest.local", "hi bob")).await;
@@ -450,7 +453,7 @@ async fn the_domain_answers_ping_and_disco() {
         }
         other => panic!("{other:?}"),
     }
-    // A request the account can't answer yet (roster is M2).
+    // The account answers for itself: an empty roster.
     let roster: Element = "<query xmlns='jabber:iq:roster'/>".parse().unwrap();
     a.send(Box::new(
         Iq::Get {
@@ -462,7 +465,7 @@ async fn the_domain_answers_ping_and_disco() {
         .into(),
     ))
     .await;
-    assert!(matches!(next_iq(&mut a).await, Iq::Error { id, .. } if id == "r1"));
+    assert!(matches!(next_iq(&mut a).await, Iq::Result { id, .. } if id == "r1"));
     a.close().await;
     hub.stop().await;
 }
@@ -559,6 +562,8 @@ async fn sessions_are_counted() {
     let mut b = hub.plaintext_client("alice@hubtest.local/two", ALICE_PW);
     online(&mut a).await;
     online(&mut b).await;
+    available(&mut a, 0).await;
+    available(&mut b, 0).await;
     assert_eq!(hub.status().await.sessions, 2);
     a.close().await;
     let mut n = 2;

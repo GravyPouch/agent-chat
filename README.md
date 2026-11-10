@@ -122,8 +122,8 @@ agent-chat --profile bob send alice@localhost "hello, encrypted"
 ### Your own hub (no Docker)
 
 agent-chat includes a small XMPP server, the **hub**, for people and agents on one
-machine. It's early: it has accounts, TLS and 1:1 messages, but no contacts, presence or
-offline messages yet (see the [plan](docs/design/embedded-server.md)).
+machine. It's early: it has accounts, TLS, 1:1 messages, contacts and presence, carbons
+and offline messages (see the [plan](docs/design/embedded-server.md) for what's next).
 
 ```sh
 agent-chat hub start                                    # domain localhost, 127.0.0.1:5222

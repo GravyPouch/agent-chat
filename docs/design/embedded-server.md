@@ -1,6 +1,6 @@
 # Embedded XMPP server ("agent-chat hub"): implementation plan
 
-- **Status:** plan. Nothing here is implemented yet.
+- **Status:** being implemented. Each milestone in §9 has status notes; M1 and M2 are done.
 - **Date:** 2026-11-10
 - **Decision already made by the user:**
   - We build a small XMPP server of our own that `agent-chat` can run itself: a local hub for people and AI agents on one machine or a LAN.
@@ -1455,6 +1455,29 @@ Other tests:
 3. Harness: a message to the bare JID with two resources at priorities 5 and 0 goes only to the priority-5 resource, and as a carbon to the other.
 4. Harness: a message while offline is delivered on initial presence with `<delay/>`.
 5. E2E scenario 3. Interop suite: RFC6120, RFC6121, XEP-0030 and XEP-0199 tests pass, or each failure is documented with a reason.
+
+#### M2 status and implementation notes (2026-11-10)
+
+**Done.** Roster and subscriptions, presence, offline storage, carbons, caps, disco on accounts, plus blocking, vcard-temp, private XML and `jabber:iq:version` (all cheap once the actor existed).
+
+| Test | Where |
+|---|---|
+| 1 | `src/user/roster.rs`: one test per RFC 6121 Appendix A table (A.2.1–A.3.4) |
+| 2 | `tests/m2.rs`: `at2_subscription_round_trip_with_pushes_and_presence`, `at2_probe_is_answered_by_a_local_contact`, `at2_directed_presence_then_unavailable` |
+| 3 | `at3_bare_jid_message_goes_to_highest_priority_and_carbons_to_the_other` (also sent carbons and `<private/>`) |
+| 4 | `at4_offline_message_is_delivered_on_initial_presence_with_delay` (chat states are not stored) |
+| 5 | The existing E2E run passes with the new delivery rules. The interop suite isn't wired into CI yet. |
+
+Also tested: subscription requests wait for an offline contact, blocking (drop inbound, `<blocked/>` error outbound, pushes), the caps disco#info query, vcard-temp and disco on accounts.
+
+**Design as built**
+1. **Outbound processing in the sender's actor.** A session hands every stanza to its own account's actor (`UserMsg::Outbound`). That actor does the outbound work (roster changes for subscriptions, presence broadcast and directed-presence tracking, sent carbons, the block list) and then routes. The recipient's actor does the inbound work (`UserMsg::Deliver`). Both hops are FIFO, so §5.3 rule 3 holds, and the actors only await the store, never each other.
+2. **Pending requests from non-contacts** are roster rows with `hidden = 1`; roster gets and pushes skip them (RFC 6121 §3.1.3).
+3. **Availability.** Bare-JID messages go to resources that sent available presence: `chat` to the highest non-negative priority (all of them on a tie), `normal` and `headline` to every non-negative one. A bound resource without presence gets nothing addressed to the bare JID; messages wait offline until initial presence. Subscription stanzas also reach resources that fetched the roster.
+4. **Probes** carry the new resource's full JID, so only that resource gets the answers.
+5. **Offline storage** keeps up to `archive.max_offline_messages` (1000) per account and drops the oldest. Only `chat`/`normal` messages with a body, OMEMO, a store hint or an invitation are kept; chat states and `<no-store/>` messages are dropped.
+6. **Caps.** An unknown `ver` triggers disco#info from the bare JID. A SHA-1 match is cached in memory and in the `caps` table; a mismatch is used for that resource only.
+7. **Not done in M2:** roster versioning (the server ignores `ver`), the "last unavailable presence" answer to probes, and the XMPP Interop Testing CI job.
 
 ### M3: stream management and MAM (2 weeks)
 

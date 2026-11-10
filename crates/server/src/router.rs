@@ -4,11 +4,11 @@
 //! [`UserActor`](crate::user::UserActor), whether it's addressed to the bare
 //! or a full JID, so stanzas from one session to one entity stay in order.
 //! The registry (`bare JID → mailbox`) is the only shared map; it is never
-//! locked across an `.await`.
+//! locked across an `.await`. The caps cache is shared read-mostly data.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -30,7 +30,7 @@ pub enum Target {
     Domain,
     /// A JID on our domain with a localpart.
     Local(Jid),
-    /// `conference.<domain>` and rooms on it (M5).
+    /// `conference.<domain>` and rooms on it.
     Component(Jid),
     /// Any other domain: no federation in v1.
     Remote(Jid),
@@ -52,6 +52,34 @@ pub fn classify(domain: &str, to: &Jid) -> Target {
     }
 }
 
+/// Settings the actors need, from `hub.toml`.
+#[derive(Debug, Clone)]
+pub struct Settings {
+    pub max_resources: usize,
+    /// Offline messages kept per account (§6.4).
+    pub offline_cap: usize,
+    /// Keep user archives (XEP-0313).
+    pub archive_enabled: bool,
+    /// Largest MAM page (RSM `max` cap).
+    pub mam_max_page: usize,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            max_resources: 10,
+            offline_cap: 1000,
+            archive_enabled: true,
+            mam_max_page: 250,
+        }
+    }
+}
+
+/// Handles stanzas for `conference.<domain>` (M5).
+pub trait Component: Send + Sync {
+    fn deliver(&self, el: Element);
+}
+
 #[derive(Clone)]
 struct ActorHandle {
     id: u64,
@@ -61,24 +89,41 @@ struct ActorHandle {
 pub struct Router {
     domain: String,
     store: Arc<dyn Store>,
-    max_resources: usize,
+    settings: Settings,
     users: Mutex<HashMap<BareJid, ActorHandle>>,
     next_actor: AtomicU64,
+    /// XEP-0115 ver → features.
+    caps: Mutex<HashMap<String, Arc<Vec<String>>>>,
+    component: OnceLock<Arc<dyn Component>>,
 }
 
 impl Router {
-    pub fn new(domain: &str, store: Arc<dyn Store>, max_resources: usize) -> Arc<Self> {
+    pub fn new(domain: &str, store: Arc<dyn Store>, settings: Settings) -> Arc<Self> {
         Arc::new(Self {
             domain: domain.to_owned(),
             store,
-            max_resources,
+            settings,
             users: Mutex::default(),
             next_actor: AtomicU64::new(1),
+            caps: Mutex::default(),
+            component: OnceLock::new(),
         })
     }
 
     pub fn domain(&self) -> &str {
         &self.domain
+    }
+
+    pub fn store(&self) -> &Arc<dyn Store> {
+        &self.store
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    pub fn set_component(&self, c: Arc<dyn Component>) {
+        let _ = self.component.set(c);
     }
 
     pub fn user_actors(&self) -> usize {
@@ -90,6 +135,27 @@ impl Router {
         Jid::new(jid).is_ok_and(|j| classify(&self.domain, &j) != Target::Remote(j.clone()))
     }
 
+    /// Features for a caps `ver`: memory, then the store.
+    pub async fn caps_lookup(&self, ver: &str) -> Option<Arc<Vec<String>>> {
+        if let Some(f) = self.caps.lock().unwrap().get(ver) {
+            return Some(f.clone());
+        }
+        let features = self.store.caps_get(ver).await.ok().flatten()?;
+        let f = Arc::new(features);
+        self.caps.lock().unwrap().insert(ver.to_owned(), f.clone());
+        Some(f)
+    }
+
+    /// Remember verified caps.
+    pub async fn caps_store(&self, ver: &str, features: Vec<String>) -> Arc<Vec<String>> {
+        if let Err(e) = self.store.caps_put(ver, features.clone()).await {
+            tracing::warn!("storing caps failed: {e:#}");
+        }
+        let f = Arc::new(features);
+        self.caps.lock().unwrap().insert(ver.to_owned(), f.clone());
+        f
+    }
+
     /// The running actor for `bare`, or a new one.
     fn actor(self: &Arc<Self>, bare: &BareJid) -> ActorHandle {
         let mut users = self.users.lock().unwrap();
@@ -98,7 +164,7 @@ impl Router {
         }
         let id = self.next_actor.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel(USER_MAILBOX);
-        user::spawn(bare.clone(), id, self.clone(), rx, self.max_resources);
+        user::spawn(bare.clone(), id, self.clone(), rx, self.settings.max_resources);
         let h = ActorHandle { id, tx };
         users.insert(bare.clone(), h.clone());
         h
@@ -118,6 +184,8 @@ impl Router {
 
     /// Send to the actor of a local account that we know exists (it has a
     /// session, or the store said so). Retries once if the actor just retired.
+    // The message comes back on failure so the caller can bounce it; failure is rare.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn send_to_actor(self: &Arc<Self>, bare: &BareJid, msg: UserMsg) -> Result<(), UserMsg> {
         let mut msg = msg;
         for _ in 0..2 {
@@ -134,27 +202,27 @@ impl Router {
         Err(msg)
     }
 
-    /// Route a stanza from a session. `from` has been stamped already and
-    /// `to` (if present) parses.
-    pub async fn route(self: &Arc<Self>, sender: &BareJid, el: Element) {
-        let to = match el.attr("to") {
-            None => None,
-            Some(t) => match Jid::new(t) {
-                Ok(j) => Some(j),
-                Err(_) => {
-                    self.bounce(&el, Condition::JidMalformed, Some(&self.domain.clone()));
-                    return;
-                }
-            },
-        };
-        let Some(to) = to else {
-            // No `to`: addressed to the sender's own account.
-            if Kind::of(&el) == Some(Kind::Presence) {
-                // Broadcast presence needs the roster (M2).
+    /// Whether `bare` is a local account (running actor, or in the store).
+    pub async fn account_exists(&self, bare: &BareJid) -> bool {
+        if self.users.lock().unwrap().contains_key(bare) {
+            return true;
+        }
+        match bare.node() {
+            Some(node) => matches!(self.store.account(&self.domain, node.as_str()).await, Ok(Some(_))),
+            None => false,
+        }
+    }
+
+    /// Route a stanza to its `to` (§5.5). The sender's actor has already
+    /// done the outbound processing, and `from` is set.
+    pub async fn route(self: &Arc<Self>, el: Element) {
+        let Some(to) = el.attr("to") else { return };
+        let to = match Jid::new(to) {
+            Ok(j) => j,
+            Err(_) => {
+                self.bounce(&el, Condition::JidMalformed, Some(&self.domain.clone()));
                 return;
             }
-            self.deliver_local(sender, el);
-            return;
         };
         match classify(&self.domain, &to) {
             Target::Domain => {
@@ -182,14 +250,17 @@ impl Router {
                     }
                 }
             }
-            // Rooms arrive in M5.
-            Target::Component(_) => self.bounce(&el, Condition::ServiceUnavailable, Some(&to.to_string())),
+            Target::Component(_) => match self.component.get() {
+                Some(c) => c.deliver(el),
+                None => self.bounce(&el, Condition::ServiceUnavailable, Some(&to.to_string())),
+            },
             Target::Remote(_) => self.bounce(&el, Condition::RemoteServerNotFound, Some(&to.to_string())),
         }
     }
 
     /// RFC 6121 §8.5.1: messages and IQs to an account that doesn't exist
-    /// get `service-unavailable`; presence is ignored.
+    /// get `service-unavailable`; presence is ignored, except that a
+    /// subscription request is answered with `unsubscribed`.
     fn no_such_account(self: &Arc<Self>, el: &Element, to: &Jid) {
         let bounce = match Kind::of(el) {
             Some(Kind::Message) => !matches!(stanza::stanza_type(el), "headline" | "groupchat"),
@@ -208,20 +279,32 @@ impl Router {
         }
     }
 
-    /// Deliver a server-generated reply or error to a local full JID.
-    /// Never awaits, so actors can call it from their message loop.
+    /// Deliver a server-generated reply or error to a local JID, or to the
+    /// MUC component. Never awaits, so actors can call it from their loop.
     pub fn deliver_reply(self: &Arc<Self>, reply: Element) {
         let Some(to) = reply.attr("to").and_then(|t| Jid::new(t).ok()) else {
             return;
         };
-        let Target::Local(jid) = classify(&self.domain, &to) else {
-            return;
-        };
-        let bare = jid.to_bare();
-        let running = self.users.lock().unwrap().contains_key(&bare);
-        if running {
-            // Errors about errors are never generated, so a full mailbox just drops.
-            let _ = self.send_to_actor(&bare, UserMsg::Deliver(reply));
+        match classify(&self.domain, &to) {
+            Target::Local(jid) => {
+                let bare = jid.to_bare();
+                // Errors about errors are never generated, so a full mailbox just drops.
+                let _ = self.send_to_actor(&bare, UserMsg::Deliver(reply));
+            }
+            Target::Component(_) => {
+                if let Some(c) = self.component.get() {
+                    c.deliver(reply);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Hand a message to a local account's actor without the existence
+    /// check (the caller knows the account exists).
+    pub fn deliver_to_account(self: &Arc<Self>, bare: &BareJid, msg: UserMsg) {
+        if self.send_to_actor(bare, msg).is_err() {
+            tracing::warn!(account = %bare, "account mailbox full; dropping a server message");
         }
     }
 

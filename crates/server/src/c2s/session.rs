@@ -36,6 +36,7 @@ pub async fn run(ctx: &Arc<HubCtx>, b: Bound) {
     } = b;
     let bare = jid.to_bare();
     let full = jid.to_string();
+    let resource = jid.resource().as_str().to_owned();
     Stats::inc(&ctx.stats.sessions);
     tracing::info!(jid = %full, "session bound");
 
@@ -62,7 +63,17 @@ pub async fn run(ctx: &Arc<HubCtx>, b: Bound) {
                     budget.reset();
                     Stats::inc(&ctx.stats.stanzas_in);
                     match inbound(ctx, &jid, el) {
-                        Inbound::Route(el) => ctx.router.route(&bare, el).await,
+                        Inbound::Route(el) => {
+                            let msg = UserMsg::Outbound { resource: resource.clone(), el };
+                            if let Err(UserMsg::Outbound { el, .. }) = ctx.router.send_to_actor(&bare, msg) {
+                                tracing::warn!("own account mailbox full; bouncing");
+                                if let Some(e) = stanza::error_reply(&el, Condition::ResourceConstraint, Some(&ctx.domain))
+                                    && stream.send(&e).await.is_err()
+                                {
+                                    break "write failed";
+                                }
+                            }
+                        }
                         Inbound::Reply(el) => {
                             if stream.send(&el).await.is_err() {
                                 break "write failed";

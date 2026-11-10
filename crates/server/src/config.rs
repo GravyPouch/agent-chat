@@ -39,7 +39,79 @@ pub struct Config {
     #[serde(default)]
     pub limits: Limits,
     #[serde(default)]
+    pub sm: Sm,
+    #[serde(default)]
+    pub archive: Archive,
+    #[serde(default)]
     pub log: Log,
+}
+
+/// XEP-0198 stream management.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Sm {
+    /// How long a dropped session can be resumed.
+    pub resume_timeout: HumanDuration,
+    /// Unacknowledged stanzas kept per session; past that the session closes.
+    pub max_queue: usize,
+}
+
+impl Default for Sm {
+    fn default() -> Self {
+        Self {
+            resume_timeout: HumanDuration(Duration::from_secs(600)),
+            max_queue: 1000,
+        }
+    }
+}
+
+/// XEP-0313 archives and offline storage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Archive {
+    pub enabled: bool,
+    /// Messages older than this are deleted; `"never"` keeps them.
+    pub expire_after: Retention,
+    /// Largest page a MAM query returns (RSM `max` is capped to it).
+    pub max_page: usize,
+    /// Offline messages kept per account; the oldest are dropped.
+    pub max_offline_messages: usize,
+}
+
+impl Default for Archive {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            expire_after: Retention(Some(Duration::from_secs(7 * 86_400))),
+            max_page: 250,
+            max_offline_messages: 1000,
+        }
+    }
+}
+
+/// A retention period, or `"never"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention(pub Option<Duration>);
+
+impl<'de> Deserialize<'de> for Retention {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match IntOrString::deserialize(d)? {
+            IntOrString::Int(n) => Ok(Retention(Some(Duration::from_secs(n)))),
+            IntOrString::Str(s) if s.trim() == "never" => Ok(Retention(None)),
+            IntOrString::Str(s) => parse_duration(&s)
+                .map(|d| Retention(Some(d)))
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+impl Serialize for Retention {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Some(d) => s.serialize_str(&format_duration(d)),
+            None => s.serialize_str("never"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +257,8 @@ impl Config {
             tls: Tls::default(),
             auth: Auth::default(),
             limits: Limits::default(),
+            sm: Sm::default(),
+            archive: Archive::default(),
             log: Log::default(),
         }
     }

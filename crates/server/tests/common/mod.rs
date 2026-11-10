@@ -157,6 +157,22 @@ pub async fn online(s: &mut StanzaStream) -> Jid {
     .await
 }
 
+/// Send initial presence (optionally with a priority) and wait for the
+/// server to reflect it (RFC 6121 §4.2.2), so bare-JID messages reach us.
+pub async fn available(s: &mut StanzaStream, priority: i8) {
+    let p: tokio_xmpp::minidom::Element =
+        format!("<presence xmlns='jabber:client'><priority>{priority}</priority></presence>")
+            .parse()
+            .unwrap();
+    let p = xmpp_parsers::presence::Presence::try_from(p).unwrap();
+    s.send(Box::new(p.into())).await;
+    next_event(s, |ev| match ev {
+        Event::Stanza(tokio_xmpp::Stanza::Presence(p)) if p.type_ == xmpp_parsers::presence::Type::None => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
 /// Raw TCP client speaking literal XML, for byte-level checks.
 pub struct Raw {
     pub stream: TcpStream,

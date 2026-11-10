@@ -87,36 +87,57 @@ pub fn iq_result(request: &Element, from: Option<&str>, payload: Option<Element>
     iq
 }
 
-/// Stanza error conditions we use.
+/// Stanza error conditions we use (RFC 6120 §8.3.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Condition {
     BadRequest,
+    Conflict,
     FeatureNotImplemented,
+    Forbidden,
+    InternalServerError,
+    ItemNotFound,
     JidMalformed,
+    NotAcceptable,
     NotAllowed,
+    NotAuthorized,
+    PolicyViolation,
+    RegistrationRequired,
     RemoteServerNotFound,
     ResourceConstraint,
     ServiceUnavailable,
+    UnexpectedRequest,
 }
 
 impl Condition {
     pub fn name(self) -> &'static str {
         match self {
             Condition::BadRequest => "bad-request",
+            Condition::Conflict => "conflict",
             Condition::FeatureNotImplemented => "feature-not-implemented",
+            Condition::Forbidden => "forbidden",
+            Condition::InternalServerError => "internal-server-error",
+            Condition::ItemNotFound => "item-not-found",
             Condition::JidMalformed => "jid-malformed",
+            Condition::NotAcceptable => "not-acceptable",
             Condition::NotAllowed => "not-allowed",
+            Condition::NotAuthorized => "not-authorized",
+            Condition::PolicyViolation => "policy-violation",
+            Condition::RegistrationRequired => "registration-required",
             Condition::RemoteServerNotFound => "remote-server-not-found",
             Condition::ResourceConstraint => "resource-constraint",
             Condition::ServiceUnavailable => "service-unavailable",
+            Condition::UnexpectedRequest => "unexpected-request",
         }
     }
 
     /// RFC 6120 §8.3.2 error types.
     pub fn error_type(self) -> &'static str {
         match self {
-            Condition::BadRequest | Condition::JidMalformed => "modify",
-            Condition::ResourceConstraint => "wait",
+            Condition::BadRequest | Condition::JidMalformed | Condition::NotAcceptable | Condition::PolicyViolation => {
+                "modify"
+            }
+            Condition::NotAuthorized | Condition::Forbidden | Condition::RegistrationRequired => "auth",
+            Condition::ResourceConstraint | Condition::UnexpectedRequest | Condition::InternalServerError => "wait",
             _ => "cancel",
         }
     }
@@ -133,6 +154,17 @@ pub fn may_bounce(el: &Element) -> bool {
 /// `from` overrides the error's sender (default: the original `to`).
 /// `None` if the original must not be answered.
 pub fn error_reply(original: &Element, cond: Condition, from: Option<&str>) -> Option<Element> {
+    error_reply_with(original, cond, from, None, None)
+}
+
+/// [`error_reply`] with optional text and an application-specific condition.
+pub fn error_reply_with(
+    original: &Element,
+    cond: Condition,
+    from: Option<&str>,
+    text: Option<&str>,
+    app: Option<Element>,
+) -> Option<Element> {
     if !may_bounce(original) {
         return None;
     }
@@ -148,6 +180,14 @@ pub fn error_reply(original: &Element, cond: Condition, from: Option<&str>) -> O
     }
     let mut error = element("error", NS_CLIENT, &[("type", cond.error_type())]);
     error.append_child(Element::bare(cond.name(), ns::XMPP_STANZAS));
+    if let Some(t) = text {
+        let mut te = Element::bare("text", ns::XMPP_STANZAS);
+        te.append_text(t);
+        error.append_child(te);
+    }
+    if let Some(a) = app {
+        error.append_child(a);
+    }
     reply.append_child(error);
     Some(reply)
 }

@@ -7,7 +7,28 @@ use xmpp_parsers::ns;
 use crate::stanza::{self, Condition, Kind, NS_SESSION};
 
 /// Features the domain advertises. Grows with each milestone.
-pub const DOMAIN_FEATURES: &[&str] = &[ns::DISCO_INFO, ns::DISCO_ITEMS, ns::PING];
+pub const DOMAIN_FEATURES: &[&str] = &[
+    ns::DISCO_INFO,
+    ns::DISCO_ITEMS,
+    ns::PING,
+    "jabber:iq:version",
+    "urn:xmpp:carbons:2",
+    "urn:xmpp:blocking",
+    "msgoffline",
+    "vcard-temp",
+    "jabber:iq:private",
+    "urn:xmpp:sid:0",
+];
+
+/// Features of an account's bare JID (disco#info to `user@domain`).
+pub fn account_features(archive: bool) -> Vec<&'static str> {
+    let mut f = vec![ns::DISCO_INFO, ns::DISCO_ITEMS];
+    if archive {
+        f.extend(["urn:xmpp:mam:2", "urn:xmpp:mam:2#extended", "urn:xmpp:sid:0"]);
+    }
+    f.extend(crate::user::pep::FEATURES);
+    f
+}
 
 /// The reply to a stanza addressed to the domain, if any.
 pub fn handle_domain_stanza(domain: &str, el: &Element) -> Option<Element> {
@@ -23,6 +44,15 @@ pub fn handle_domain_stanza(domain: &str, el: &Element) -> Option<Element> {
     let reply = match (ty, payload) {
         ("get", Some(p)) if p.is("ping", ns::PING) => stanza::iq_result(el, Some(domain), None),
         ("set", Some(p)) if p.is("session", NS_SESSION) => stanza::iq_result(el, Some(domain), None),
+        ("get", Some(p)) if p.is("query", "jabber:iq:version") => {
+            let mut q = Element::bare("query", "jabber:iq:version");
+            for (name, value) in [("name", "agent-chat hub"), ("version", crate::hub::VERSION)] {
+                let mut e = Element::bare(name, "jabber:iq:version");
+                e.append_text(value);
+                q.append_child(e);
+            }
+            stanza::iq_result(el, Some(domain), Some(q))
+        }
         ("get", Some(p)) if p.is("query", ns::DISCO_INFO) => {
             if p.attr("node").is_some() {
                 return stanza::error_reply(el, Condition::ServiceUnavailable, Some(domain));
@@ -94,7 +124,7 @@ mod tests {
 
     #[test]
     fn unknown_requests_get_service_unavailable() {
-        let r = handle_domain_stanza("hub.local", &iq("<query xmlns='jabber:iq:version'/>", "get")).unwrap();
+        let r = handle_domain_stanza("hub.local", &iq("<query xmlns='jabber:iq:last'/>", "get")).unwrap();
         assert_eq!(r.attr("type"), Some("error"));
         assert!(
             r.get_child("error", "jabber:client")

@@ -259,7 +259,16 @@ impl RunningHub {
 
         let limits = &config.limits;
         let ctx = Arc::new(HubCtx {
-            router: Router::new(&domain, store.clone(), limits.max_resources_per_account),
+            router: Router::new(
+                &domain,
+                store.clone(),
+                crate::router::Settings {
+                    max_resources: limits.max_resources_per_account,
+                    offline_cap: config.archive.max_offline_messages,
+                    archive_enabled: config.archive.enabled,
+                    mam_max_page: config.archive.max_page,
+                },
+            ),
             throttle: AuthThrottle::new(config.auth.max_failures_per_10min),
             admission: Admission::new(limits.max_connections_per_ip, limits.max_new_connections_per_ip_per_min),
             stats: Stats::default(),
