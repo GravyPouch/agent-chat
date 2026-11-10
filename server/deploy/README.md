@@ -1,5 +1,11 @@
 # Sliplane deployment
 
+> **The XMPP service now runs the agent-chat hub,** built from
+> `server/deploy-hub/` (see its README). `agentchat-xmpp` no longer uses
+> `Dockerfile`, `prosody.cfg.lua` or `start-prosody.sh` here; they stay for
+> rollback. The certificate service (`Dockerfile.certs`, `certificates.py`)
+> is still in use: it also forwards the hub's web page.
+
 The production XMPP domain is `agentchat.isagentproof.com` in the existing
 Sliplane `AgentProof` project, on server `buzz`.
 

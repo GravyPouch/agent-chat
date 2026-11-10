@@ -18,7 +18,7 @@ cutover below is done on purpose.
 - **Volumes:**
   - a **new** data volume, e.g. `agentchat-hub-data`, at `/var/lib/agent-chat`. It holds `hub/hub.toml`, `hub/hub.db` (SQLite: accounts, rosters, archives, PEP, rooms) and `hub/tls/`.
   - the **existing** certificate volume `agentchat-certificates` at `/certs`, read-only. `start-hub.sh` copies `/certs/xmpp/{fullchain,privkey}.pem` into the data volume at start and whenever they change (checked every 60 s, as `start-prosody.sh` does). The hub reloads its copies within 30 s, with no restart and no dropped sessions. Until a certificate exists, the hub serves a temporary self-signed one.
-- **Ports:** `5222/tcp` for clients (STARTTLS, the same as Prosody). `5280/tcp` serves the web page: onboarding, `/healthz` and optional web sign-up. It is plain HTTP; expose it only through Sliplane's HTTPS, and put that proxy's address in `[http] trusted_proxies`.
+- **Ports:** `5222/tcp` for clients (STARTTLS, the same as Prosody), the service's public port. `5280/tcp` serves the web page (onboarding, `/healthz` and web sign-up) as plain HTTP, and is **not published**. The certificate service (`server/deploy/certificates.py`) owns `https://agentchat.isagentproof.com` and forwards everything except ACME challenges and its own `/healthz` to `http://agentchat-xmpp.internal:5280` over Sliplane's private network, with the visitor's address in `X-Forwarded-For`. `hub.toml` therefore trusts the private ranges in `[http] trusted_proxies`.
 - **Health check:** the image's `HEALTHCHECK` runs `agent-chat-hub health`, which asks the running hub over its admin socket. Over HTTP, `GET /healthz` on 5280 returns `{"ok":true,…}`.
 - **Operating inside the container:** `docker exec … agent-chat-hub status`, `user add NAME` (password on stdin), `user list`, `user passwd NAME`, `user del NAME`, `invite [USES] [EXPIRES]`.
 
@@ -79,4 +79,14 @@ Each step needs the operator; none of it has been done.
 
 **Rollback:** stop the hub and start `agentchat-xmpp` again. Its data is as it was at the freeze; messages and accounts created on the hub after the cutover are not in Prosody.
 
-**The web page** (`5280`) isn't needed for the cutover. `agentchat.isagentproof.com` over HTTPS currently belongs to the certificate service, which also answers the ACME challenges. To serve the page, give the hub's HTTP port its own Sliplane domain, or have the certificate service proxy `/` to the hub. Set `[registration] web = true` only once the page is on HTTPS.
+**The web page** is served at `https://agentchat.isagentproof.com/` through the certificate service, which forwards it from the hub's port 5280 (see "The service"). Web sign-up is on (`[registration] web = true`, 22 bits × 8, about 2 s on a desktop and 10 s on a phone). Until the hub is running, the certificate service answers with a short "unavailable" page.
+
+## Fresh start (what production did)
+
+The production Prosody only held test accounts, so the hub started empty instead of importing them:
+
+1. Push this repository's `master` (the certificate service starts forwarding the page).
+2. On the `agentchat-xmpp` service: attach a new volume `agentchat-hub-data` at `/var/lib/agent-chat`, detach Prosody's `agentchat-data` (kept on the server, unused), set the Dockerfile path to `server/deploy-hub/Dockerfile`, and keep `PORT=5222` and `XMPP_DOMAIN`. Remove `SLIPLANE_USER_ID`/`SLIPLANE_GROUP_ID`: the entrypoint runs as root to set up the volume and then runs the hub as its own user.
+3. Verify as in step 6 of the cutover, and sign up once on the web page.
+
+Rollback: set the Dockerfile path back to `server/deploy/Dockerfile` and swap the volumes back.

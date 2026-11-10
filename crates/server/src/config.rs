@@ -129,6 +129,19 @@ impl Default for Registration {
     }
 }
 
+/// A `trusted_proxies` entry: an address (`10.0.0.5`) or a CIDR range
+/// (`10.0.0.0/8`), as the network address and prefix length.
+pub fn parse_proxy(spec: &str) -> Option<(std::net::IpAddr, u8)> {
+    let spec = spec.trim();
+    let (addr, prefix) = match spec.split_once('/') {
+        Some((a, p)) => (a.parse::<std::net::IpAddr>().ok()?, Some(p.parse::<u8>().ok()?)),
+        None => (spec.parse::<std::net::IpAddr>().ok()?, None),
+    };
+    let max = if addr.is_ipv4() { 32 } else { 128 };
+    let prefix = prefix.unwrap_or(max);
+    (prefix <= max).then_some((addr, prefix))
+}
+
 /// The onboarding page and web sign-up (HTTP, no TLS: put it behind the
 /// operator's HTTPS proxy when public).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -136,8 +149,8 @@ impl Default for Registration {
 pub struct Http {
     /// e.g. `["127.0.0.1:5280"]`; empty disables the page.
     pub listen: Vec<String>,
-    /// Use `X-Forwarded-For` from these proxy addresses (e.g. the HTTPS
-    /// front end) as the client address.
+    /// Use `X-Forwarded-For` from these proxies (e.g. the HTTPS front end) as
+    /// the client address: addresses, or CIDR ranges such as `10.0.0.0/8`.
     pub trusted_proxies: Vec<String>,
     /// The public URL of the page, for links (optional).
     pub public_url: Option<String>,
@@ -466,6 +479,11 @@ impl Config {
         }
         if r.min_password_length == 0 {
             bail!("registration.min_password_length must be at least 1");
+        }
+        for p in &self.http.trusted_proxies {
+            if parse_proxy(p).is_none() {
+                bail!("http.trusted_proxies: {p:?} is not an IP address or CIDR range");
+            }
         }
         self.http_addrs()?;
         if !matches!(self.muc.room_creation.as_str(), "local-users" | "admins") {

@@ -146,6 +146,29 @@ async fn json_response(tcp: &mut TcpStream, status: &str, v: serde_json::Value) 
     respond(tcp, status, "application/json", v.to_string().as_bytes(), &[]).await
 }
 
+/// Whether `ip` is a `trusted_proxies` entry: an address or a CIDR range.
+/// IPv4-mapped IPv6 peers (from a dual-stack listener) compare as IPv4.
+fn proxy_matches(spec: &str, ip: IpAddr) -> bool {
+    let Some((net, prefix)) = crate::config::parse_proxy(spec) else {
+        return false;
+    };
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+        v4 => v4,
+    };
+    match (net, ip) {
+        (IpAddr::V4(net), IpAddr::V4(ip)) => {
+            let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+            u32::from(net) & mask == u32::from(ip) & mask
+        }
+        (IpAddr::V6(net), IpAddr::V6(ip)) => {
+            let mask = u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0);
+            u128::from(net) & mask == u128::from(ip) & mask
+        }
+        _ => false,
+    }
+}
+
 /// The client's address: the socket peer, or `X-Forwarded-For` (rightmost
 /// entry) when the peer is a trusted proxy.
 fn client_ip(ctx: &HubCtx, peer: SocketAddr, req: &HttpRequest) -> IpAddr {
@@ -154,7 +177,7 @@ fn client_ip(ctx: &HubCtx, peer: SocketAddr, req: &HttpRequest) -> IpAddr {
         .http
         .trusted_proxies
         .iter()
-        .any(|p| p.parse::<IpAddr>().is_ok_and(|ip| ip == peer.ip()));
+        .any(|p| proxy_matches(p, peer.ip()));
     if trusted
         && let Some(xff) = req.header("x-forwarded-for")
         && let Some(ip) = xff.rsplit(',').next().and_then(|s| s.trim().parse::<IpAddr>().ok())
@@ -307,6 +330,23 @@ async fn handle(ctx: &Arc<HubCtx>, mut tcp: TcpStream, peer: SocketAddr) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trusted_proxy_ranges() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert!(proxy_matches("10.0.0.5", ip("10.0.0.5")));
+        assert!(!proxy_matches("10.0.0.5", ip("10.0.0.6")));
+        assert!(proxy_matches("10.0.0.0/8", ip("10.200.3.4")));
+        assert!(!proxy_matches("10.0.0.0/8", ip("11.0.0.1")));
+        assert!(proxy_matches("172.16.0.0/12", ip("172.31.255.1")));
+        assert!(!proxy_matches("172.16.0.0/12", ip("172.32.0.1")));
+        assert!(proxy_matches("0.0.0.0/0", ip("8.8.8.8")));
+        assert!(proxy_matches("10.0.0.0/8", ip("::ffff:10.1.2.3")));
+        assert!(proxy_matches("fd00::/8", ip("fd12::1")));
+        assert!(!proxy_matches("fd00::/8", ip("fe80::1")));
+        assert!(!proxy_matches("10.0.0.0/33", ip("10.0.0.1")));
+        assert!(!proxy_matches("not an address", ip("10.0.0.1")));
+    }
 
     #[test]
     fn escaping_and_text() {

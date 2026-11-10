@@ -1,4 +1,5 @@
-"""Serve HTTP-01 challenges and renew the shared XMPP certificate."""
+"""Serve HTTP-01 challenges, renew the shared XMPP certificate, and forward
+everything else to the hub's web page (onboarding and sign-up)."""
 
 import functools
 import http.server
@@ -8,27 +9,95 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 
 DOMAIN = os.environ.get("XMPP_DOMAIN", "agentchat.isagentproof.com")
 WEBROOT = Path("/certs/webroot")
 WEBROOT.mkdir(parents=True, exist_ok=True)
+# The hub's HTTP port on Sliplane's private network (not published).
+HUB_URL = os.environ.get("HUB_URL", "http://agentchat-xmpp.internal:5280").rstrip("/")
+MAX_BODY = 64 * 1024
+REQUEST_HEADERS = ("Content-Type", "Accept", "Accept-Language", "User-Agent")
+RESPONSE_HEADERS = (
+    "Content-Type",
+    "Cache-Control",
+    "Content-Security-Policy",
+    "Cross-Origin-Opener-Policy",
+    "Cross-Origin-Resource-Policy",
+    "Permissions-Policy",
+    "Referrer-Policy",
+    "X-Content-Type-Options",
+    "X-Frame-Options",
+)
+UNAVAILABLE = b"agent-chat XMPP server\n\nThe web page is unavailable right now.\n"
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ("/", "/healthz"):
-            body = b'agent-chat XMPP server\n'
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+        if self.path == "/healthz":
+            self.reply(200, b"ok\n")
         elif self.path.startswith("/.well-known/acme-challenge/"):
             super().do_GET()
         else:
-            self.send_error(404)
+            self.forward()
+
+    def do_HEAD(self):
+        if self.path.startswith("/.well-known/acme-challenge/"):
+            super().do_HEAD()
+        else:
+            self.forward()
+
+    def do_POST(self):
+        self.forward()
+
+    def reply(self, status, body, content_type="text/plain; charset=utf-8"):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def client_address_for_hub(self):
+        # Sliplane's HTTPS proxy appends the visitor's address; the hub limits
+        # sign-ups per address, so pass on that one, not ours.
+        forwarded = self.headers.get("X-Forwarded-For", "").rsplit(",", 1)[-1].strip()
+        return forwarded or self.client_address[0]
+
+    def forward(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self.reply(400, b"bad request\n")
+        if length < 0 or length > MAX_BODY:
+            return self.reply(413, b"request too large\n")
+        body = self.rfile.read(length) if length else None
+        request = urllib.request.Request(HUB_URL + self.path, data=body, method=self.command)
+        for name in REQUEST_HEADERS:
+            if self.headers.get(name):
+                request.add_header(name, self.headers[name])
+        request.add_header("X-Forwarded-For", self.client_address_for_hub())
+        request.add_header("X-Forwarded-Proto", "https")
+        try:
+            response = urllib.request.urlopen(request, timeout=30)
+        except urllib.error.HTTPError as error:
+            response = error
+        except Exception as error:
+            print(f"Hub web page unavailable: {error}", flush=True)
+            return self.reply(502, UNAVAILABLE)
+        with response:
+            data = response.read()
+            self.send_response(response.status)
+            for name in RESPONSE_HEADERS:
+                value = response.headers.get(name)
+                if value:
+                    self.send_header(name, value)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(data)
 
     def list_directory(self, path):
         self.send_error(404)
