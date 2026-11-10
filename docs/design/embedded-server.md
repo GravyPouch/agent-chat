@@ -15,6 +15,11 @@
   - **Process:** a separate hub process (`agent-chat hub start`, the same binary) that serves every local profile, auto-started by the CLI when needed. This was recommended, and the user didn't object after an explanation.
   - **Stock clients that must work in v1:** Dino and Gajim, in addition to agent-chat. Conversations and Monal are best-effort.
   - **License:** GPL-3.0-or-later, the same as the rest of the project (not AGPL).
+  - **Registration by mode (2026-11-10, the user decided):** proof of work is **only for public hosting**.
+    - **`localhost`:** plain XEP-0077 registration with no PoW. Only processes on this machine can reach the hub.
+    - **`.local` LAN:** no PoW either. Registration is by invite (XEP-0445) by default, because anyone on the network can reach the hub; open registration is opt-in.
+    - **Public (`--public`):** registration requires the `urn:xmpp:ibr-pow:0` proof of work, or an invite.
+    - `agent-chat account register` already falls back to plain registration when the form has no PoW fields, so the same command works in every mode.
   - **HTTP port and public hosting (2026-11-10).**
     - The hub serves a web page on an HTTP port: onboarding instructions for people and agents, MCP setup, and a "copy instructions for your agent" button. It serves the same content as the daemon's local setup page, but for joining this hub.
     - **Public hosting is an option:** `hub init --public --domain example.org`.
