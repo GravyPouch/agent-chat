@@ -11,8 +11,8 @@ use agent_chat_proto::ipc::{
     AccountParams, ContactList, EncryptionMode, ErrorCode, PasswordStorage, Request,
 };
 use agent_chat_proto::model::{
-    ConversationSummary, Delivery, DeviceInfo, Filter, Message, MessageKind, Room, Show,
-    StatusInfo,
+    ConversationSummary, Delivery, DeviceInfo, Filter, Message, MessageKind, Room, RoomInvite,
+    Show, StatusInfo,
 };
 use agent_chat_proto::{CallError, DaemonLauncher, IpcClient, Profile};
 use anyhow::{Context, Result, anyhow};
@@ -220,9 +220,26 @@ enum RoomsCmd {
         nick: Option<String>,
         #[arg(long)]
         password: Option<String>,
+        /// If the room is new, make it private (members-only, real JIDs
+        /// visible) so messages are end-to-end encrypted.
+        #[arg(long)]
+        private: bool,
     },
     Leave {
         jid: String,
+    },
+    /// Invite someone to a room (makes them a member when you're an owner/admin).
+    Invite {
+        room: String,
+        jid: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// List pending invitations.
+    Invites,
+    /// Ignore a pending invitation.
+    Decline {
+        room: String,
     },
 }
 
@@ -516,24 +533,62 @@ async fn run(cli: Cli) -> Result<()> {
                     Format::Text => {
                         for r in rooms {
                             println!(
-                                "{:<40} as {:<16} {} {}",
+                                "{:<40} as {:<16} {:<10} {:<9} {}",
                                 r.jid,
                                 r.nick,
                                 if r.joined { "joined" } else { "not joined" },
+                                if r.private { "encrypted" } else { "" },
                                 r.subject.unwrap_or_default()
                             );
                         }
                     }
                 }
             }
-            RoomsCmd::Join { jid, nick, password } => {
-                let room: Room = client.call(Request::RoomJoin { jid, nick, password }).await?;
+            RoomsCmd::Join {
+                jid,
+                nick,
+                password,
+                private,
+            } => {
+                let room: Room = client
+                    .call(Request::RoomJoin {
+                        jid,
+                        nick,
+                        password,
+                        private,
+                    })
+                    .await?;
                 match fmt {
                     Format::Json => print_json(&room),
-                    Format::Text => println!("joined {} as {}", room.jid, room.nick),
+                    Format::Text => println!(
+                        "joined {} as {}{}",
+                        room.jid,
+                        room.nick,
+                        if room.private { " (private, encrypted)" } else { "" }
+                    ),
                 }
             }
             RoomsCmd::Leave { jid } => ok(client.call_value(Request::RoomLeave { jid }).await?),
+            RoomsCmd::Invite { room, jid, reason } => {
+                ok(client.call_value(Request::RoomInvite { room, jid, reason }).await?)
+            }
+            RoomsCmd::Invites => {
+                let invites: Vec<RoomInvite> = client.call(Request::RoomInvites).await?;
+                match fmt {
+                    Format::Json => print_json(&invites),
+                    Format::Text => {
+                        for i in invites {
+                            println!(
+                                "{:<40} from {:<30} {}",
+                                i.room,
+                                i.from.unwrap_or_default(),
+                                i.reason.unwrap_or_default()
+                            );
+                        }
+                    }
+                }
+            }
+            RoomsCmd::Decline { room } => ok(client.call_value(Request::RoomInviteDecline { room }).await?),
         },
         Cmd::Presence { show, status } => {
             let show = Show::parse(&show)

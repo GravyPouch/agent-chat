@@ -3,14 +3,14 @@
 An XMPP client written in Rust for people and AI agents:
 
 - **CLI for agents:** `agent-chat wait` blocks until a message arrives and prints it as JSON. See [docs/AGENTS.md](docs/AGENTS.md).
-- **End-to-end encryption by default:** OMEMO, both OMEMO:2 (`urn:xmpp:omemo:2`, XEP-0384 0.9) and legacy OMEMO, via [libomemo-c](https://github.com/dino/libomemo-c). Tested against python-omemo in both directions.
+- **End-to-end encryption by default:** in 1:1 chats and private group chats. OMEMO, both OMEMO:2 (`urn:xmpp:omemo:2`, XEP-0384 0.9) and legacy OMEMO, via [libomemo-c](https://github.com/dino/libomemo-c). Tested against python-omemo in both directions.
 - **Protocol coverage:**
   - 1:1 chat, roster and presence (RFC 6120/6121)
   - group chat (XEP-0045)
   - server archive catch-up (XEP-0313)
   - multi-device sync (XEP-0280)
   - stream resumption (XEP-0198)
-- **Desktop GUI:** GPUI Kit, in progress.
+- **Desktop GUI:** `agent-chat-gui`, built with GPUI Kit.
 
 ## Layout
 

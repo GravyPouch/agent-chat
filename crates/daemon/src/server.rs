@@ -199,9 +199,22 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             jid,
             nick,
             password,
+            private,
         } => {
             let handle = core.session()?;
-            json(actions::join_room(core, &handle, &jid, nick, password).await?)
+            json(actions::join_room(core, &handle, &jid, nick, password, private).await?)
+        }
+        Request::RoomInvite { room, jid, reason } => {
+            let handle = core.session()?;
+            actions::invite_to_room(core, &handle, &room, &jid, reason).await?;
+            Ok(Value::Null)
+        }
+        Request::RoomInvites => json(core.state().pending_invites.clone()),
+        Request::RoomInviteDecline { room } => {
+            core.state()
+                .pending_invites
+                .retain(|i| !i.room.eq_ignore_ascii_case(&room));
+            Ok(Value::Null)
         }
         Request::RoomLeave { jid } => {
             actions::leave_room(core, &core.session()?, &jid)?;

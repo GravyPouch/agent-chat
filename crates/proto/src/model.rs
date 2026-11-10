@@ -269,6 +269,22 @@ pub struct Room {
     pub subject: Option<String>,
     #[serde(default)]
     pub occupants: Vec<String>,
+    /// Members-only and non-anonymous: messages are OMEMO-encrypted.
+    #[serde(default)]
+    pub private: bool,
+}
+
+/// An invitation to a group chat, waiting for us to join or ignore it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoomInvite {
+    pub room: String,
+    /// Who invited us (bare JID), if known.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub password: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

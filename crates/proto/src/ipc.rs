@@ -8,8 +8,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    Contact, Delivery, EncryptionProtocol, Filter, Message, PresenceInfo, Show, StatusInfo,
-    SubscriptionRequest,
+    Contact, Delivery, EncryptionProtocol, Filter, Message, PresenceInfo, RoomInvite, Show,
+    StatusInfo, SubscriptionRequest,
 };
 
 /// How `send` should treat end-to-end encryption.
@@ -106,7 +106,22 @@ pub enum Request {
         nick: Option<String>,
         #[serde(default)]
         password: Option<String>,
+        /// If the room doesn't exist yet, create it members-only and
+        /// non-anonymous so messages can be end-to-end encrypted.
+        #[serde(default)]
+        private: bool,
     },
+    /// Invite someone to a room (and make them a member). Result: `null`.
+    RoomInvite {
+        room: String,
+        jid: String,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// Pending invitations. Result: `Vec<model::RoomInvite>`.
+    RoomInvites,
+    /// Forget a pending invitation. Result: `null`.
+    RoomInviteDecline { room: String },
     /// Leave a room and forget it. Result: `null`.
     RoomLeave { jid: String },
     /// Change our presence. Result: `null`.
@@ -182,6 +197,7 @@ pub enum Event {
     SubscriptionRequest(SubscriptionRequest),
     RoomsChanged,
     RoomSubject { room: String, subject: String },
+    RoomInvite(RoomInvite),
     DevicesChanged {
         jid: String,
         protocol: EncryptionProtocol,

@@ -258,8 +258,13 @@ fn has_active_devices(mgr: &Manager, v: Version, jid: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Encrypt for the recipient if they publish OMEMO devices.
-/// `Ok(None)`: the recipient has no OMEMO, plaintext is the only option.
+/// Encrypt an outgoing message when possible.
+///
+/// * 1:1 chats: encrypt if the recipient publishes OMEMO devices;
+///   `Ok(None)` means plaintext is the only option.
+/// * Private rooms (members-only, non-anonymous): encrypt for every member;
+///   fails rather than falling back to plaintext.
+/// * Other rooms and MUC private messages: `Ok(None)`.
 pub async fn encrypt_outgoing(
     core: &Arc<Core>,
     handle: &SessionHandle,
@@ -267,45 +272,99 @@ pub async fn encrypt_outgoing(
     to: &str,
     body: &str,
 ) -> Result<Option<(Vec<Element>, EncryptionInfo)>> {
-    // Group chat OMEMO (private rooms) arrives with the MUC milestone.
-    if kind != MessageKind::Chat {
-        return Ok(None);
-    }
     let mgr = manager(core)?;
-    let peer = BareJid::new(to)?;
-    let own = handle.own.clone();
-    refresh_device_lists(&mgr, handle, &peer).await;
-    refresh_device_lists(&mgr, handle, &own).await;
+    let own = handle.own.to_string();
+    match kind {
+        MessageKind::Chat => {
+            let peer = BareJid::new(to)?.to_string();
+            refresh_lists(&mgr, handle, &[peer.clone(), own]).await;
+            let Some(v) = VERSIONS.into_iter().find(|v| has_active_devices(&mgr, *v, &peer)) else {
+                return Ok(None);
+            };
+            encrypt_for(&mgr, handle, v, &[peer], None, body).await.map(Some)
+        }
+        MessageKind::Groupchat if core.room_is_private(to) => {
+            let room = BareJid::new(to)?.to_string();
+            let members: Vec<String> = core
+                .room_members(&room)
+                .into_iter()
+                .filter(|m| !m.eq_ignore_ascii_case(&own))
+                .collect();
+            if members.is_empty() {
+                bail!("nobody else is in {room} yet; invite someone first (or send with --plaintext)");
+            }
+            let mut all = members.clone();
+            all.push(own);
+            refresh_lists(&mgr, handle, &all).await;
+            // One message, one version: pick one every member supports.
+            let Some(v) = VERSIONS
+                .into_iter()
+                .find(|v| members.iter().all(|m| has_active_devices(&mgr, *v, m)))
+            else {
+                let missing: Vec<&String> = members
+                    .iter()
+                    .filter(|m| !VERSIONS.iter().any(|v| has_active_devices(&mgr, *v, m)))
+                    .collect();
+                if missing.is_empty() {
+                    bail!("the members of {room} don't share an OMEMO version");
+                }
+                bail!("these members of {room} have no OMEMO devices: {missing:?}");
+            };
+            encrypt_for(&mgr, handle, v, &members, Some(&room), body).await.map(Some)
+        }
+        _ => Ok(None),
+    }
+}
 
-    let peer_s = peer.to_string();
-    let own_s = own.to_string();
-    let Some(v) = VERSIONS.into_iter().find(|v| has_active_devices(&mgr, *v, &peer_s)) else {
-        return Ok(None);
-    };
+async fn refresh_lists(mgr: &Manager, handle: &SessionHandle, jids: &[String]) {
+    for j in jids {
+        if let Ok(bare) = BareJid::new(j) {
+            refresh_device_lists(mgr, handle, &bare).await;
+        }
+    }
+}
+
+/// Encrypt `body` for every trusted device of `peers` and our other devices.
+/// Each peer must have at least one reachable, trusted device.
+async fn encrypt_for(
+    mgr: &Manager,
+    handle: &SessionHandle,
+    v: Version,
+    peers: &[String],
+    room: Option<&str>,
+    body: &str,
+) -> Result<(Vec<Element>, EncryptionInfo)> {
+    let own_s = handle.own.to_string();
     let our_id = mgr.device_id(v);
 
     // Establish sessions, then re-check trust (a fetched bundle may have
     // revealed a changed identity key, which resets trust).
     let mut targets: Vec<(String, u32)> = Vec::new();
-    for (jid, exclude) in [(&peer_s, None), (&own_s, Some(our_id))] {
-        for dev in trusted_devices(&mgr, v, jid, exclude)? {
-            match ensure_session(&mgr, handle, v, jid, dev).await {
+    let recipients = peers.iter().map(|p| (p.clone(), None)).chain([(own_s.clone(), Some(our_id))]);
+    for (jid, exclude) in recipients {
+        for dev in trusted_devices(mgr, v, &jid, exclude)? {
+            match ensure_session(mgr, handle, v, &jid, dev).await {
                 Ok(()) => targets.push((jid.clone(), dev)),
                 Err(e) => tracing::warn!("skipping {jid}/{dev}: {e:#}"),
             }
         }
     }
-    let trusted_peer = trusted_devices(&mgr, v, &peer_s, None)?;
-    let trusted_own = trusted_devices(&mgr, v, &own_s, Some(our_id))?;
-    targets.retain(|(jid, dev)| {
-        if *jid == peer_s { trusted_peer.contains(dev) } else { trusted_own.contains(dev) }
-    });
-    if !targets.iter().any(|(jid, _)| *jid == peer_s) {
-        bail!("no trusted OMEMO device of {peer_s} is reachable (see `agent-chat omemo devices {peer_s}`)");
+    let mut still_trusted = Vec::new();
+    for (jid, dev) in targets {
+        let exclude = (jid == own_s).then_some(our_id);
+        if trusted_devices(mgr, v, &jid, exclude)?.contains(&dev) {
+            still_trusted.push((jid, dev));
+        }
+    }
+    let targets = still_trusted;
+    for peer in peers {
+        if !targets.iter().any(|(jid, _)| jid == peer) {
+            bail!("no trusted OMEMO device of {peer} is reachable (see `agent-chat omemo devices {peer}`)");
+        }
     }
 
     let sealed = match v {
-        Version::Omemo2 => payload::omemo2::seal(&xml::envelope(body, &own_s, None)),
+        Version::Omemo2 => payload::omemo2::seal(&xml::envelope(body, &own_s, room)),
         Version::Legacy => payload::legacy::seal(body.as_bytes()),
     };
     let mut keys = Vec::with_capacity(targets.len());
@@ -329,7 +388,7 @@ pub async fn encrypt_outgoing(
             payload: Some(sealed.ciphertext.clone()),
         },
     );
-    Ok(Some((
+    Ok((
         vec![encrypted, xml::eme(v)],
         EncryptionInfo {
             protocol: protocol_of(v),
@@ -337,7 +396,7 @@ pub async fn encrypt_outgoing(
             trust: Trust::Trusted,
             error: None,
         },
-    )))
+    ))
 }
 
 /// Empty OMEMO message (§5.5.3) to one device: completes a session after a
@@ -401,16 +460,32 @@ pub async fn decrypt_message(core: &Arc<Core>, handle: &SessionHandle, p: &Parse
         }
     }
     let (first_v, first_sid) = candidates.first().map(|(v, e)| (*v, e.sid))?;
-    if p.kind != MessageKind::Chat {
-        return decrypt_error(first_v, first_sid, "OMEMO in group chats is not supported yet");
-    }
     let mgr = match manager(core) {
         Ok(m) => m,
         Err(e) => return decrypt_error(first_v, first_sid, format!("{e:#}")),
     };
     let own = handle.own.to_string();
-    // Session name: who sent it (ourselves, for messages from our other devices).
-    let sender = if p.own { own.clone() } else { p.sender.clone() };
+    // Session name: the sender's real bare JID (ourselves, for messages from
+    // our other devices; the occupant's real JID in rooms).
+    let room = (p.kind == MessageKind::Groupchat).then(|| p.conversation.clone());
+    let sender = match p.kind {
+        MessageKind::Chat if p.own => own.clone(),
+        MessageKind::Chat => p.sender.clone(),
+        MessageKind::Groupchat => {
+            let real = p
+                .nick
+                .as_deref()
+                .and_then(|nick| core.room_real_jid(&p.conversation, nick))
+                .or_else(|| real_jid_in_message(&p.message));
+            match real {
+                Some(j) => j,
+                None => return decrypt_error(first_v, first_sid, "can't tell who sent this (anonymous room?)"),
+            }
+        }
+        MessageKind::MucPrivate => {
+            return decrypt_error(first_v, first_sid, "OMEMO in private room messages isn't supported");
+        }
+    };
     let chosen = candidates.iter().find_map(|(v, enc)| {
         let our_id = mgr.device_id(*v);
         enc.keys
@@ -433,6 +508,14 @@ pub async fn decrypt_message(core: &Arc<Core>, handle: &SessionHandle, p: &Parse
 
     let decrypted = match mgr.with(v, |e| e.ctx.decrypt(&sender, enc.sid, &key.data, key.kex)) {
         Ok(d) => d,
+        // Already processed (e.g. an empty session message replayed from the
+        // archive after a restart): any content was stored the first time.
+        Err(omemo::Error::DuplicateMessage) => return None,
+        // Nothing to show for a failed empty (session-management) message.
+        Err(e) if enc.payload.is_none() => {
+            tracing::debug!("ignoring undecryptable empty OMEMO message from {sender}/{}: {e}", enc.sid);
+            return None;
+        }
         // XEP-0384 §8: never rebuild sessions automatically on errors.
         Err(e) => return decrypt_error(v, enc.sid, e.to_string()),
     };
@@ -468,11 +551,17 @@ pub async fn decrypt_message(core: &Arc<Core>, handle: &SessionHandle, p: &Parse
             let Some(env) = xml::parse_envelope(&plain) else {
                 return decrypt_error(v, enc.sid, "invalid SCE envelope");
             };
-            // The envelope's <from/> must match the stanza's sender.
+            // The envelope's <from/> must match the stanza's sender, and a
+            // group message's <to/> must name this room (XEP-0384 §5.5.1).
             if let Some(from) = &env.from
                 && !from.eq_ignore_ascii_case(&sender)
             {
                 return decrypt_error(v, enc.sid, format!("envelope from {from} doesn't match sender {sender}"));
+            }
+            if let Some(room) = &room
+                && !env.to.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(room))
+            {
+                return decrypt_error(v, enc.sid, "envelope isn't addressed to this room");
             }
             env.body.unwrap_or_default()
         }
@@ -503,6 +592,18 @@ pub async fn decrypt_message(core: &Arc<Core>, handle: &SessionHandle, p: &Parse
             error: None,
         }),
     ))
+}
+
+/// Real JID from a `<x xmlns='muc#user'><item jid/></x>` in an (archived)
+/// group message, as non-anonymous rooms may include.
+fn real_jid_in_message(m: &Message) -> Option<String> {
+    m.payloads
+        .iter()
+        .filter(|el| el.is("x", "http://jabber.org/protocol/muc#user"))
+        .find_map(|x| x.get_child("item", "http://jabber.org/protocol/muc#user"))
+        .and_then(|item| item.attr("jid"))
+        .and_then(|j| Jid::new(j).ok())
+        .map(|j| j.to_bare().to_string())
 }
 
 // ------------------------------------------------------- devices and trust

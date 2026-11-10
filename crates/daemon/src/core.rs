@@ -38,6 +38,21 @@ pub struct RoomRuntime {
     pub mam: bool,
     /// Why the last join attempt failed.
     pub error: Option<String>,
+    /// Room features (XEP-0045 disco): real JIDs visible to everyone.
+    pub nonanonymous: bool,
+    /// Room features: only members may enter.
+    pub membersonly: bool,
+    /// Bare JIDs with an affiliation (owner/admin/member), when we may list them.
+    pub members: BTreeSet<String>,
+    /// If our join creates the room, configure it private (encrypted).
+    pub create_private: bool,
+}
+
+impl RoomRuntime {
+    /// Members-only and non-anonymous: the XEP-0384 prerequisite for OMEMO.
+    pub fn is_private(&self) -> bool {
+        self.nonanonymous && self.membersonly
+    }
 }
 
 #[derive(Debug)]
@@ -47,6 +62,7 @@ pub struct State {
     /// bare JID → resource → presence
     pub presence: HashMap<String, HashMap<String, PresenceInfo>>,
     pub pending_requests: BTreeSet<String>,
+    pub pending_invites: Vec<agent_chat_proto::model::RoomInvite>,
     /// lower-cased room JID → runtime state
     pub rooms: HashMap<String, RoomRuntime>,
     /// MAM query id → archive JID that must answer it
@@ -91,6 +107,7 @@ impl Core {
                 roster: BTreeMap::new(),
                 presence: HashMap::new(),
                 pending_requests: BTreeSet::new(),
+                pending_invites: Vec::new(),
                 rooms: HashMap::new(),
                 mam_queries: HashMap::new(),
             }),
@@ -266,6 +283,7 @@ impl Core {
                     occupants: rt
                         .map(|r| r.occupants.iter().cloned().collect())
                         .unwrap_or_default(),
+                    private: rt.is_some_and(|r| r.is_private()),
                     jid,
                 }
             })
@@ -284,6 +302,31 @@ impl Core {
             .get(&bare.to_lowercase())
             .filter(|r| r.joined)
             .map(|r| r.nick.clone())
+    }
+
+    /// Everyone whose devices a private-room message must be encrypted for:
+    /// present occupants' real JIDs plus the affiliation list.
+    pub fn room_members(&self, bare: &str) -> Vec<String> {
+        let st = self.state();
+        let Some(rt) = st.rooms.get(&bare.to_lowercase()) else { return vec![] };
+        let mut all: BTreeSet<String> = rt.members.clone();
+        all.extend(rt.occupant_jids.values().cloned());
+        all.into_iter().collect()
+    }
+
+    /// Real bare JID behind a nick, in rooms that expose it.
+    pub fn room_real_jid(&self, room: &str, nick: &str) -> Option<String> {
+        self.state()
+            .rooms
+            .get(&room.to_lowercase())
+            .and_then(|r| r.occupant_jids.get(nick).cloned())
+    }
+
+    pub fn room_is_private(&self, bare: &str) -> bool {
+        self.state()
+            .rooms
+            .get(&bare.to_lowercase())
+            .is_some_and(|r| r.is_private())
     }
 
     pub fn room_nick(&self, bare: &str) -> Option<String> {

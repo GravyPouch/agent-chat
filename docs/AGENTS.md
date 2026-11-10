@@ -41,6 +41,8 @@ agent-chat send team@conference.example.org "hi all"     # rooms are detected au
 ```
 
 Messages are end-to-end encrypted (OMEMO) whenever the recipient supports it.
+In private rooms every message is encrypted for all members' devices; public
+rooms are plaintext.
 `--require-encryption` fails (exit 4) instead of sending plaintext.
 `--plaintext` disables encryption.
 
@@ -65,6 +67,8 @@ done
 | `agent-chat conversations` | Conversations with their last message |
 | `agent-chat contacts` / `contacts add JID` / `contacts approve JID` | Roster |
 | `agent-chat rooms join ROOM@SERVICE --nick NAME` / `rooms` | Group chats |
+| `agent-chat rooms join ROOM@SERVICE --private` | Create a private room (members-only); its messages are end-to-end encrypted |
+| `agent-chat rooms invite ROOM JID` / `rooms invites` / `rooms decline ROOM` | Invite someone; list or ignore invitations you received |
 | `agent-chat presence away "busy"` | Presence |
 | `agent-chat omemo devices [JID]` / `omemo trust JID FINGERPRINT` | Encryption devices and trust |
 

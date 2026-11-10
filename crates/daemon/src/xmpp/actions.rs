@@ -1,5 +1,6 @@
 //! Outbound operations: login setup, roster, presence, archives, rooms, sending.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,7 +49,7 @@ pub async fn after_login(core: &Arc<Core>, handle: &SessionHandle) -> Result<()>
     let rooms = core.store().rooms()?;
     for (jid, nick, password, autojoin) in rooms {
         if autojoin
-            && let Err(e) = start_join(core, handle, &jid, &nick, password.as_deref()).await
+            && let Err(e) = start_join(core, handle, &jid, &nick, password.as_deref(), false).await
         {
             tracing::warn!("rejoining {jid} failed: {e:#}");
         }
@@ -285,20 +286,31 @@ pub async fn sync_archive(core: &Arc<Core>, handle: &SessionHandle, room: Option
 // -------------------------------------------------------------------- rooms
 
 /// Begin joining a room; completion is signalled by our self-presence.
+async fn room_disco(handle: &SessionHandle, room: &BareJid) -> Option<DiscoInfoResult> {
+    handle
+        .iq_get(Some(room.clone().into()), DiscoInfoQuery { node: None })
+        .await
+        .ok()
+        .flatten()
+        .and_then(|el| DiscoInfoResult::try_from(el).ok())
+}
+
+fn apply_room_features(rt: &mut RoomRuntime, info: &DiscoInfoResult) {
+    rt.mam = info.features.contains(xmpp_parsers::ns::MAM);
+    rt.nonanonymous = info.features.contains("muc_nonanonymous");
+    rt.membersonly = info.features.contains("muc_membersonly");
+}
+
 async fn start_join(
     core: &Arc<Core>,
     handle: &SessionHandle,
     room: &str,
     nick: &str,
     password: Option<&str>,
+    private: bool,
 ) -> Result<()> {
     let room_jid = BareJid::new(room)?;
-    let info: Option<DiscoInfoResult> = handle
-        .iq_get(Some(room_jid.clone().into()), DiscoInfoQuery { node: None })
-        .await
-        .ok()
-        .flatten()
-        .and_then(|el| DiscoInfoResult::try_from(el).ok());
+    let info = room_disco(handle, &room_jid).await;
     let mam = info
         .as_ref()
         .is_some_and(|i| i.features.contains(xmpp_parsers::ns::MAM));
@@ -309,7 +321,10 @@ async fn start_join(
         rt.password = password.map(str::to_owned);
         rt.joined = false;
         rt.error = None;
-        rt.mam = mam;
+        rt.create_private = private;
+        if let Some(info) = &info {
+            apply_room_features(rt, info);
+        }
     }
     let mut muc = Muc::new();
     if let Some(pw) = password {
@@ -332,6 +347,7 @@ pub async fn join_room(
     room: &str,
     nick: Option<String>,
     password: Option<String>,
+    private: bool,
 ) -> Result<Room, IpcError> {
     let room_jid = parse_bare(room)?;
     if room_jid.node().is_none() {
@@ -341,9 +357,16 @@ pub async fn join_room(
         .or_else(|| core.config.lock().unwrap().settings.default_nick.clone())
         .unwrap_or_else(|| handle.own.node().map(|n| n.to_string()).unwrap_or_else(|| "agent".into()));
     let room_s = room_jid.to_string();
+    // Accepting an invitation: use its password and forget it.
+    let invite = {
+        let mut st = core.state();
+        let pos = st.pending_invites.iter().position(|i| i.room.eq_ignore_ascii_case(&room_s));
+        pos.map(|p| st.pending_invites.remove(p))
+    };
+    let password = password.or_else(|| invite.and_then(|i| i.password));
     let mut events = core.events.subscribe();
     let already_saved = core.store().room(&room_s).map_err(internal)?.is_some();
-    start_join(core, handle, &room_s, &nick, password.as_deref())
+    start_join(core, handle, &room_s, &nick, password.as_deref(), private)
         .await
         .map_err(internal)?;
 
@@ -379,6 +402,100 @@ pub async fn join_room(
         .into_iter()
         .find(|r| r.jid.eq_ignore_ascii_case(&room_s))
         .ok_or_else(|| internal("room vanished"))
+}
+
+/// Configure a room we just created: private (members-only, non-anonymous,
+/// persistent, hidden) for encrypted rooms, otherwise the default "instant
+/// room" (XEP-0045 §10.1.2). Unlocks the room either way.
+pub async fn configure_new_room(core: &Arc<Core>, handle: &SessionHandle, room: &str, private: bool) -> Result<()> {
+    let form = if private {
+        "<x xmlns='jabber:x:data' type='submit'>\
+         <field var='FORM_TYPE'><value>http://jabber.org/protocol/muc#roomconfig</value></field>\
+         <field var='muc#roomconfig_membersonly'><value>1</value></field>\
+         <field var='muc#roomconfig_whois'><value>anyone</value></field>\
+         <field var='muc#roomconfig_persistentroom'><value>1</value></field>\
+         <field var='muc#roomconfig_publicroom'><value>0</value></field>\
+         </x>"
+    } else {
+        "<x xmlns='jabber:x:data' type='submit'/>"
+    };
+    let query: Element = format!("<query xmlns='http://jabber.org/protocol/muc#owner'>{form}</query>").parse()?;
+    handle.iq_set(Some(Jid::new(room)?), query).await?;
+    refresh_room_info(core, handle, room).await
+}
+
+/// Re-read a room's features and (for private rooms) its member list.
+pub async fn refresh_room_info(core: &Arc<Core>, handle: &SessionHandle, room: &str) -> Result<()> {
+    let room_jid = BareJid::new(room)?;
+    let key = room_jid.to_string().to_lowercase();
+    if let Some(info) = room_disco(handle, &room_jid).await
+        && let Some(rt) = core.state().rooms.get_mut(&key)
+    {
+        apply_room_features(rt, &info);
+    }
+    if core.room_is_private(room) {
+        let mut members = BTreeSet::new();
+        for affiliation in ["owner", "admin", "member"] {
+            let query: Element = format!(
+                "<query xmlns='http://jabber.org/protocol/muc#admin'><item affiliation='{affiliation}'/></query>"
+            )
+            .parse()?;
+            // Ordinary members may not be allowed to list affiliations; then
+            // we rely on the occupants' real JIDs.
+            if let Ok(Some(result)) = handle.iq_get(Some(room_jid.clone().into()), query).await {
+                for item in result.children().filter(|c| c.name() == "item") {
+                    if let Some(jid) = item.attr("jid").and_then(|j| BareJid::new(j).ok()) {
+                        members.insert(jid.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(rt) = core.state().rooms.get_mut(&key) {
+            rt.members.extend(members);
+        }
+    }
+    core.emit(Event::RoomsChanged);
+    Ok(())
+}
+
+/// Make `jid` a member (when we may) and send a mediated invitation.
+pub async fn invite_to_room(
+    core: &Arc<Core>,
+    handle: &SessionHandle,
+    room: &str,
+    jid: &str,
+    reason: Option<String>,
+) -> Result<(), IpcError> {
+    let room_jid = parse_bare(room)?;
+    let invitee = parse_bare(jid)?;
+    let key = room_jid.to_string().to_lowercase();
+    if !core.state().rooms.get(&key).is_some_and(|r| r.joined) {
+        return Err(IpcError::new(ErrorCode::BadRequest, format!("join {room_jid} first")));
+    }
+    let item = format!(
+        "<query xmlns='http://jabber.org/protocol/muc#admin'><item affiliation='member' jid='{}'/></query>",
+        crate::omemo::xml::escape(&invitee.to_string())
+    );
+    if let Err(e) = handle.iq_set(Some(room_jid.clone().into()), item.parse::<Element>().map_err(internal)?).await {
+        tracing::info!("could not make {invitee} a member of {room_jid} ({e:#}); sending the invitation anyway");
+    } else if let Some(rt) = core.state().rooms.get_mut(&key) {
+        rt.members.insert(invitee.to_string());
+    }
+    let reason = reason
+        .map(|r| format!("<reason>{}</reason>", crate::omemo::xml::escape(&r)))
+        .unwrap_or_default();
+    let invite: Element = format!(
+        "<x xmlns='http://jabber.org/protocol/muc#user'><invite to='{}'>{reason}</invite></x>",
+        crate::omemo::xml::escape(&invitee.to_string())
+    )
+    .parse()
+    .map_err(internal)?;
+    // XEP-0045 §7.8.2: mediated invitations are type "normal" (chat is rejected).
+    let mut msg = XMessage::normal(Some(room_jid.into()));
+    msg.payloads.push(invite);
+    handle.send(msg).map_err(internal)?;
+    core.emit(Event::RoomsChanged);
+    Ok(())
 }
 
 pub fn leave_room(core: &Core, handle: &SessionHandle, room: &str) -> Result<(), IpcError> {

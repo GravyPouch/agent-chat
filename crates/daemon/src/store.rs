@@ -445,6 +445,7 @@ impl Store {
                         joined: false,
                         subject: None,
                         occupants: vec![],
+                        private: false,
                     })
                 },
             )

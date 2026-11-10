@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use agent_chat_proto::ipc::{AccountParams, ContactList, EncryptionMode, Event, PasswordStorage, Request};
 use agent_chat_proto::model::{
-    ConnectionState, Contact, ConversationSummary, DeviceInfo, Message, MessageKind, Room, Show,
-    StatusInfo, SubscriptionRequest, Trust,
+    ConnectionState, Contact, ConversationSummary, DeviceInfo, Message, MessageKind, Room,
+    RoomInvite, Show, StatusInfo, SubscriptionRequest, Trust,
 };
 use agent_chat_proto::{CallError, IpcClient};
 use chrono::{Local, NaiveDate};
@@ -62,6 +62,7 @@ pub struct ChatApp {
     status: Option<StatusInfo>,
     contacts: Vec<Contact>,
     pending: Vec<SubscriptionRequest>,
+    invites: Vec<RoomInvite>,
     rooms: Vec<Room>,
     conversations: Vec<ConversationSummary>,
     selected: Option<String>,
@@ -87,6 +88,8 @@ pub struct ChatApp {
     contact_name: Entity<InputState>,
     room_jid: Entity<InputState>,
     room_nick: Entity<InputState>,
+    room_private: bool,
+    invite_jid: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -134,6 +137,7 @@ impl ChatApp {
         let contact_name = input("Name (optional)", window, cx);
         let room_jid = input("room@conference.example.org", window, cx);
         let room_nick = input("Nickname (optional)", window, cx);
+        let invite_jid = input("friend@example.org", window, cx);
 
         let subscriptions = vec![cx.subscribe_in(&composer, window, |this, _, event: &InputEvent, window, cx| {
             if let InputEvent::PressEnter { .. } = event {
@@ -147,6 +151,7 @@ impl ChatApp {
             status: None,
             contacts: vec![],
             pending: vec![],
+            invites: vec![],
             rooms: vec![],
             conversations: vec![],
             selected: None,
@@ -169,6 +174,8 @@ impl ChatApp {
             contact_name,
             room_jid,
             room_nick,
+            room_private: true,
+            invite_jid,
             _subscriptions: subscriptions,
         };
         app.subscribe_events(window, cx);
@@ -254,6 +261,31 @@ impl ChatApp {
                 cx.notify();
             }
         });
+        self.call::<Vec<RoomInvite>>(Request::RoomInvites, cx, |this, r, cx| {
+            if let Ok(invites) = r {
+                this.invites = invites;
+                cx.notify();
+            }
+        });
+    }
+
+    fn accept_invite(&mut self, room: String, cx: &mut Context<Self>) {
+        let target = room.clone();
+        self.call::<Room>(
+            Request::RoomJoin { jid: room, nick: None, password: None, private: false },
+            cx,
+            move |a, r, cx| match r {
+                Ok(_) => {
+                    a.pending_select = Some(target);
+                    a.reload_rooms(cx);
+                }
+                Err(e) => a.error = Some(format!("Couldn't join: {e}")),
+            },
+        );
+    }
+
+    fn decline_invite(&mut self, room: String, cx: &mut Context<Self>) {
+        self.call::<serde_json::Value>(Request::RoomInviteDecline { room }, cx, |a, _, cx| a.reload_rooms(cx));
     }
 
     fn reload_conversations(&mut self, cx: &mut Context<Self>) {
@@ -295,7 +327,7 @@ impl ChatApp {
                 }
             }
             Event::ContactsChanged | Event::SubscriptionRequest(_) => self.reload_contacts(cx),
-            Event::RoomsChanged => self.reload_rooms(cx),
+            Event::RoomsChanged | Event::RoomInvite(_) => self.reload_rooms(cx),
             Event::RoomSubject { room, subject } => {
                 if let Some(r) = self.rooms.iter_mut().find(|r| r.jid.eq_ignore_ascii_case(&room)) {
                     r.subject = Some(subject);
@@ -542,11 +574,28 @@ impl ChatApp {
         let this = cx.entity();
         let (jid, nick) = (self.room_jid.clone(), self.room_nick.clone());
         jid.update(cx, |s, cx| s.focus(window, cx));
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let (this, jid2, nick2) = (this.clone(), jid.clone(), nick.clone());
             dialog
-                .title("Join a group chat")
-                .child(v_flex().gap_3().child(Input::new(&jid)).child(Input::new(&nick)))
+                .title("Join or create a group chat")
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(Input::new(&jid))
+                        .child(Input::new(&nick))
+                        .child({
+                            let toggle = this.clone();
+                            Checkbox::new("room-private")
+                                .label("If this is a new room, make it private and end-to-end encrypted")
+                                .checked(this.read(cx).room_private)
+                                .on_click(move |checked, _, cx| {
+                                    toggle.update(cx, |a, cx| {
+                                        a.room_private = *checked;
+                                        cx.notify();
+                                    });
+                                })
+                        }),
+                )
                 .footer(
                     DialogFooter::new()
                         .child(DialogClose::new().trigger(|b| b.label("Cancel")))
@@ -558,8 +607,9 @@ impl ChatApp {
                             }
                             this.update(cx, |a, cx| {
                                 let room = jid.clone();
+                                let private = a.room_private;
                                 a.call::<Room>(
-                                    Request::RoomJoin { jid, nick: (!nick.is_empty()).then_some(nick), password: None },
+                                    Request::RoomJoin { jid, nick: (!nick.is_empty()).then_some(nick), password: None, private },
                                     cx,
                                     move |a, r, cx| match r {
                                         Ok(_) => {
@@ -573,6 +623,50 @@ impl ChatApp {
                             });
                             jid2.update(cx, |s, cx| s.set_value("", window, cx));
                             nick2.update(cx, |s, cx| s.set_value("", window, cx));
+                            window.close_dialog(cx);
+                        })),
+                )
+        });
+    }
+
+    fn open_invite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(room) = self.selected.clone() else { return };
+        let this = cx.entity();
+        let jid = self.invite_jid.clone();
+        jid.update(cx, |s, cx| s.focus(window, cx));
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let (this, jid2, room2) = (this.clone(), jid.clone(), room.clone());
+            let private = this.read(cx).rooms.iter().any(|r| r.jid == room && r.private);
+            dialog
+                .title(format!("Invite to {}", local_part(&room)))
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .when(private, |el| {
+                            el.child(div().text_sm().text_color(cx.theme().muted_foreground).child(
+                                "They become a member of this private room, so encrypted messages include their devices.",
+                            ))
+                        })
+                        .child(Input::new(&jid)),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|b| b.label("Cancel")))
+                        .child(Button::new("send-invite").primary().label("Invite").on_click(move |_, window, cx| {
+                            let jid = jid2.read(cx).value().trim().to_string();
+                            if jid.is_empty() {
+                                return;
+                            }
+                            let room = room2.clone();
+                            this.update(cx, |a, cx| {
+                                a.call::<serde_json::Value>(Request::RoomInvite { room, jid, reason: None }, cx, |a, r, cx| {
+                                    if let Err(e) = r {
+                                        a.error = Some(format!("Couldn't invite: {e}"));
+                                    }
+                                    a.reload_rooms(cx);
+                                });
+                            });
+                            jid2.update(cx, |s, cx| s.set_value("", window, cx));
                             window.close_dialog(cx);
                         })),
                 )
@@ -816,6 +910,7 @@ impl ChatApp {
         };
 
         let pending = self.pending.clone();
+        let invites = self.invites.clone();
         let _ = window;
         let mut chat_rows = Vec::new();
         for (i, e) in self.chat_entries().into_iter().enumerate() {
@@ -835,7 +930,8 @@ impl ChatApp {
         let mut room_rows = Vec::new();
         for (i, r) in self.rooms.clone().into_iter().enumerate() {
             let subtitle = Some(if r.joined {
-                r.subject.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| format!("{} here", r.occupants.len()))
+                let base = r.subject.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| format!("{} here", r.occupants.len()));
+                if r.private { format!("Encrypted · {base}") } else { base }
             } else {
                 "not joined".to_string()
             });
@@ -924,6 +1020,33 @@ impl ChatApp {
                                     ))
                             }))
                     })
+                    // Group chat invitations
+                    .when(!invites.is_empty(), |el| {
+                        el.child(div().px_2().pt_1().text_xs().text_color(theme.muted_foreground).child("INVITATIONS"))
+                            .children(invites.into_iter().map(|i| {
+                                let (a, d) = (i.room.clone(), i.room.clone());
+                                v_flex()
+                                    .px_2()
+                                    .py_1()
+                                    .gap_1()
+                                    .child(div().text_sm().truncate().child(local_part(&i.room)))
+                                    .child(div().text_xs().text_color(theme.muted_foreground).truncate().child(format!(
+                                        "{}{}",
+                                        i.from.clone().map(|f| format!("from {f}")).unwrap_or_default(),
+                                        i.reason.clone().map(|r| format!(" — {r}")).unwrap_or_default()
+                                    )))
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .child(Button::new(SharedString::from(format!("accept-{}", i.room))).xsmall().primary().label("Join").on_click(
+                                                cx.listener(move |this, _, _, cx| this.accept_invite(a.clone(), cx)),
+                                            ))
+                                            .child(Button::new(SharedString::from(format!("decline-{}", i.room))).xsmall().ghost().label("Ignore").on_click(
+                                                cx.listener(move |this, _, _, cx| this.decline_invite(d.clone(), cx)),
+                                            )),
+                                    )
+                            }))
+                    })
                     // Chats
                     .child(
                         h_flex()
@@ -985,6 +1108,7 @@ impl ChatApp {
             ),
             _ => jid.to_owned(),
         };
+        let room_private = room.as_ref().is_some_and(|r| r.private);
         let encrypted = room.is_none() && !self.devices.is_empty();
         let protocol = if self
             .devices
@@ -1009,6 +1133,31 @@ impl ChatApp {
                     .child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(title))
                     .child(div().text_xs().text_color(theme.muted_foreground).truncate().child(subtitle)),
             )
+            .when(room.is_some(), |el| {
+                el.child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .px_2()
+                                .text_sm()
+                                .text_color(theme.muted_foreground)
+                                .child(Icon::new(if room_private { LucideIcon::Lock } else { LucideIcon::LockOpen }).small())
+                                .child(if room_private { "Encrypted" } else { "Not encrypted (public room)" }),
+                        )
+                        .child(
+                            Button::new("invite")
+                                .small()
+                                .ghost()
+                                .icon(Icon::new(LucideIcon::UserPlus))
+                                .label("Invite")
+                                .on_click(cx.listener(|this, _, window, cx| this.open_invite(window, cx))),
+                        ),
+                )
+            })
             .when(room.is_none(), |el| {
                 el.child(
                     Button::new("devices")

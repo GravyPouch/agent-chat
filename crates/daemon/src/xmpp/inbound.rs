@@ -298,7 +298,59 @@ fn classify_inner(
     }))
 }
 
+/// A group chat invitation: XEP-0045 mediated (`muc#user` from the room) or
+/// XEP-0249 direct (`jabber:x:conference` from the inviter).
+pub fn parse_invite(m: &Message) -> Option<agent_chat_proto::model::RoomInvite> {
+    let from = m.from.as_ref().map(|f| f.to_bare().to_string());
+    for el in &m.payloads {
+        if el.is("x", "jabber:x:conference") {
+            let room = BareJid::new(el.attr("jid")?).ok()?.to_string();
+            return Some(agent_chat_proto::model::RoomInvite {
+                room,
+                from,
+                reason: el.attr("reason").map(str::to_owned),
+                password: el.attr("password").map(str::to_owned),
+            });
+        }
+        if el.is("x", "http://jabber.org/protocol/muc#user")
+            && let Some(invite) = el.get_child("invite", "http://jabber.org/protocol/muc#user")
+        {
+            return Some(agent_chat_proto::model::RoomInvite {
+                room: from.clone()?,
+                from: invite
+                    .attr("from")
+                    .and_then(|f| BareJid::new(f).ok().or_else(|| Jid::new(f).ok().map(|j| j.to_bare())))
+                    .map(|j| j.to_string()),
+                reason: invite
+                    .get_child("reason", "http://jabber.org/protocol/muc#user")
+                    .map(|r| r.text())
+                    .filter(|r| !r.is_empty()),
+                password: el
+                    .get_child("password", "http://jabber.org/protocol/muc#user")
+                    .map(|p| p.text()),
+            });
+        }
+    }
+    None
+}
+
 pub async fn on_message(core: &Arc<Core>, handle: &SessionHandle, m: Message) {
+    if m.type_ != MessageType::Groupchat
+        && m.type_ != MessageType::Error
+        && let Some(invite) = parse_invite(&m)
+    {
+        if core.is_room(&invite.room) {
+            return; // already there
+        }
+        {
+            let mut st = core.state();
+            st.pending_invites.retain(|i| !i.room.eq_ignore_ascii_case(&invite.room));
+            st.pending_invites.push(invite.clone());
+        }
+        tracing::info!("invited to {} by {:?}", invite.room, invite.from);
+        core.emit(Event::RoomInvite(invite));
+        return;
+    }
     // PEP notifications (OMEMO device lists) are handled separately.
     if crate::omemo::xmpp::is_pep_event(&m) {
         crate::omemo::xmpp::on_pep_event(core, handle, &m);
@@ -471,6 +523,7 @@ fn on_room_presence(core: &Arc<Core>, handle: &SessionHandle, room: &str, from: 
         .map(|j| j.to_bare().to_string());
 
     let mut start_sync = false;
+    let mut just_joined = false;
     let mut failed = false;
     {
         let mut st = core.state();
@@ -504,6 +557,7 @@ fn on_room_presence(core: &Arc<Core>, handle: &SessionHandle, room: &str, from: 
                     if !rt.joined && rt.mam {
                         start_sync = true;
                     }
+                    just_joined = !rt.joined;
                     rt.joined = true;
                     // The service may have changed our nick.
                     rt.nick = nick.clone();
@@ -521,19 +575,23 @@ fn on_room_presence(core: &Arc<Core>, handle: &SessionHandle, room: &str, from: 
         tracing::warn!("could not join {room}: {why}");
     }
     core.emit(Event::RoomsChanged);
-    if created {
+    if created || just_joined {
+        let core = core.clone();
         let handle = handle.clone();
         let room = room.to_owned();
+        let private = core
+            .state()
+            .rooms
+            .get(&room.to_lowercase())
+            .is_some_and(|r| r.create_private);
         tokio::spawn(async move {
-            let instant: Element = "<query xmlns='http://jabber.org/protocol/muc#owner'><x xmlns='jabber:x:data' type='submit'/></query>"
-                .parse()
-                .expect("static XML");
-            let to = match Jid::new(&room) {
-                Ok(j) => j,
-                Err(_) => return,
+            let result = if created {
+                crate::xmpp::actions::configure_new_room(&core, &handle, &room, private).await
+            } else {
+                crate::xmpp::actions::refresh_room_info(&core, &handle, &room).await
             };
-            if let Err(e) = handle.iq_set(Some(to), instant).await {
-                tracing::warn!("could not unlock new room {room}: {e:#}");
+            if let Err(e) = result {
+                tracing::warn!("setting up room {room} failed: {e:#}");
             }
         });
     }
@@ -762,6 +820,30 @@ mod tests {
         ));
         assert_eq!(p.kind, MessageKind::MucPrivate);
         assert_eq!(p.conversation, "room@conf.example.org/bob");
+    }
+
+    #[test]
+    fn parses_mediated_and_direct_invites() {
+        let mediated = parse(
+            r#"<message xmlns='jabber:client' from='team@conf.example.org' to='alice@example.org'>
+                 <x xmlns='http://jabber.org/protocol/muc#user'>
+                   <invite from='bob@example.org/laptop'><reason>join us</reason></invite>
+                   <password>pw</password>
+                 </x><body>bob invites you</body></message>"#,
+        );
+        let i = parse_invite(&mediated).unwrap();
+        assert_eq!(i.room, "team@conf.example.org");
+        assert_eq!(i.from.as_deref(), Some("bob@example.org"));
+        assert_eq!(i.reason.as_deref(), Some("join us"));
+        assert_eq!(i.password.as_deref(), Some("pw"));
+
+        let direct = parse(
+            r#"<message xmlns='jabber:client' from='bob@example.org/phone' to='alice@example.org'>
+                 <x xmlns='jabber:x:conference' jid='team@conf.example.org' reason='hi'/></message>"#,
+        );
+        let i = parse_invite(&direct).unwrap();
+        assert_eq!((i.room.as_str(), i.from.as_deref()), ("team@conf.example.org", Some("bob@example.org")));
+        assert!(parse_invite(&parse("<message xmlns='jabber:client' from='bob@x'><body>hi</body></message>")).is_none());
     }
 
     #[test]
