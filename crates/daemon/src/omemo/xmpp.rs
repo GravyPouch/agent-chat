@@ -20,6 +20,10 @@ use crate::xmpp::session::SessionHandle;
 
 /// Refetch a contact's device lists when sending if older than this.
 const DEVICE_LIST_MAX_AGE_SECS: i64 = 600;
+/// "No devices" is often only "not published yet" (a client that just signed
+/// in is still generating keys), and we may never get a notification for it
+/// (room members who aren't contacts): ask again soon.
+const EMPTY_DEVICE_LIST_MAX_AGE_SECS: i64 = 10;
 
 pub fn protocol_of(v: Version) -> EncryptionProtocol {
     match v {
@@ -210,6 +214,12 @@ async fn refresh_device_lists(mgr: &Manager, handle: &SessionHandle, jid: &BareJ
     let key = jid.to_string();
     let now = chrono::Utc::now().timestamp();
     for v in VERSIONS {
+        // Before taking the connection: has_active_devices takes it too.
+        let max_age = if has_active_devices(mgr, v, &key) {
+            DEVICE_LIST_MAX_AGE_SECS
+        } else {
+            EMPTY_DEVICE_LIST_MAX_AGE_SECS
+        };
         let stale = {
             let c = mgr.db.conn();
             c.query_row(
@@ -217,7 +227,7 @@ async fn refresh_device_lists(mgr: &Manager, handle: &SessionHandle, jid: &BareJ
                 rusqlite::params![super::store::vkey(v), key],
                 |r| r.get::<_, i64>(0),
             )
-            .map(|t| now - t > DEVICE_LIST_MAX_AGE_SECS)
+            .map(|t| now - t > max_age)
             .unwrap_or(true)
         };
         if !stale {
