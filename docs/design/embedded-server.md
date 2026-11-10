@@ -1,6 +1,6 @@
 # Embedded XMPP server ("agent-chat hub"): implementation plan
 
-- **Status:** being implemented. Each milestone in §9 has status notes; M1 and M2 are done.
+- **Status:** being implemented. Each milestone in §9 has status notes; M1–M3 are done.
 - **Date:** 2026-11-10
 - **Decision already made by the user:**
   - We build a small XMPP server of our own that `agent-chat` can run itself: a local hub for people and AI agents on one machine or a LAN.
@@ -1498,6 +1498,31 @@ Also tested: subscription requests wait for an offline contact, blocking (drop i
 3. Harness: the offline-delivered copy and the MAM copy carry the same `stanza-id`.
 4. Harness: a client-supplied `<stanza-id by='alice@localhost'>` is stripped.
 5. Interop suite: XEP-0198 and XEP-0313.
+
+#### M3 status and implementation notes (2026-11-10)
+
+**Done.** XEP-0198 with resumption and hibernation, XEP-0313 user archives with RSM, XEP-0359 stanza-ids, retention.
+
+| Test | Where |
+|---|---|
+| 1 | `crates/cli/tests/hub_e2e.rs::offline_daemon_catches_up_exactly_once`: alice's daemon is stopped, bob sends 120 messages, alice's restarted daemon has each exactly once (offline delivery plus its MAM catch-up). Scenario 8 runs in the harness instead: `tests/m3.rs::sm_resumes_after_a_network_drop_and_replays_what_was_missed` cuts a TCP proxy under tokio-xmpp's `StanzaStream` (the daemon's own stream) and checks `Resumed` and the replay. |
+| 2 | `at2_last_page_then_empty_complete_page`, plus forward paging over everything, `max=0`, an unknown id (`item-not-found`), `flip-page` and `with`. The store-level paging cases are in `store::im_contract_tests`. |
+| 3 | `at3_offline_and_archive_copies_share_the_stanza_id` |
+| 4 | `at4_client_supplied_stanza_ids_are_stripped` |
+| 5 | The interop suite isn't wired into CI yet. |
+
+Also tested: unacknowledged messages go offline when resumption times out, `<resume/>` with an unknown id fails and a fresh bind still works, `<r/>`/`<a/>` counting, and the counter arithmetic (including wrap-around) as unit tests.
+
+**Design as built and deviations**
+1. **Hibernation.** A resumable session keeps its task, outbox and presence when its connection breaks (EOF, reset, `InvalidEof` from rxml, write failure). The task queues what the actor sends and waits `sm.resume_timeout` (default 10 min) for a `<resume/>`. A clean `</stream:stream>`, a stream error, a kick or shutdown end the session without hibernating.
+2. **Resumption hand-off.** The negotiator looks up `previd` in a registry of resumable sessions (`c2s::sm::Registry`) and hands the authenticated connection to the hibernating task over a channel. If the old connection is still open (the client noticed first), it is dropped in favour of the new one.
+3. **End of a session.** Unacknowledged messages go back to the account's actor (`UserMsg::Requeue`). They are stored offline only if no other non-negative resource is available, because that resource got the message or a carbon, and the archive has it either way. Unacknowledged IQ requests get `service-unavailable`.
+4. **`<failed/>` always carries `h`** (0 when the session is unknown): tokio-xmpp 6 rejects `<failed/>` without it, and our client would otherwise reconnect in a loop instead of binding afresh.
+5. **Acks.** The hub asks for an ack after 5 unacknowledged stanzas or 30 s, and sends `<r/>` instead of a ping on read silence once SM is on. More than `sm.max_queue` (1000) unacknowledged stanzas closes the stream with `resource-constraint`. SM state does not survive a hub restart (§10.8).
+6. **Archive.** Ids are UUIDv7 strings, ordered by a per-store sequence. Incoming archivable messages get `<stanza-id by=account>`; the offline copy is the same stanza, so ids match. Outgoing messages are archived in the sender's archive with their own id. That id goes into the sent carbons (so the sender's other devices can match MAM later) but not into the copy routed to the recipient.
+7. **Queries.** Default page 50, capped at `archive.max_page` (250, as in production). `#extended` (`before-id`, `after-id`, `ids`), `<metadata/>` and `<prefs/>` are supported; prefs are answered `default='always'` and a set is accepted but not applied. RSM `<index/>` gets `feature-not-implemented`.
+8. **Retention.** `archive.expire_after` defaults to **1 week**, matching production (the plan said 1 year); `"never"` keeps everything. An hourly task deletes expired archive and offline rows.
+9. **CSI** (`urn:xmpp:csi:0`) is advertised and accepted, but nothing is held back yet.
 
 ### M4: PEP and OMEMO (1.5 weeks)
 

@@ -20,6 +20,7 @@ use crate::stats::Stats;
 pub mod negotiate;
 pub mod sasl;
 pub mod session;
+pub mod sm;
 
 pub type Io = ConnIo<Transport<TcpStream>>;
 pub type Stream = XmlStream<Io, Element>;
@@ -42,8 +43,8 @@ pub async fn serve(ctx: Arc<HubCtx>, tcp: TcpStream, peer: SocketAddr, guard: Ad
         let _ = tcp.set_nodelay(true);
         let deadline = ctx.config.limits.negotiation_timeout.0;
         let negotiated = tokio::select! {
-            r = tokio::time::timeout(deadline, negotiate::negotiate(&ctx, tcp, peer.ip(), conn_id)) => match r {
-                Ok(Ok(bound)) => bound,
+            r = tokio::time::timeout(deadline, negotiate::negotiate(&ctx, tcp, peer.ip(), conn_id, guard)) => match r {
+                Ok(Ok(n)) => n,
                 Ok(Err(e)) => {
                     tracing::debug!("connection ended during negotiation: {e:#}");
                     None
@@ -56,12 +57,15 @@ pub async fn serve(ctx: Arc<HubCtx>, tcp: TcpStream, peer: SocketAddr, guard: Ad
             },
             _ = ctx.shutdown.cancelled() => None,
         };
-        if let Some(bound) = negotiated {
-            tracing::Span::current().record("jid", tracing::field::display(&bound.jid));
-            session::run(&ctx, bound).await;
+        match negotiated {
+            Some(negotiate::Negotiated::Bound(bound)) => {
+                tracing::Span::current().record("jid", tracing::field::display(&bound.jid));
+                session::run(&ctx, bound).await;
+            }
+            // The connection now belongs to the resumed session.
+            Some(negotiate::Negotiated::Resumed) | None => {}
         }
         Stats::dec(&ctx.stats.connections);
-        drop(guard);
     }
     .instrument(span)
     .await

@@ -208,6 +208,97 @@ fn two_agents_chat_through_the_hub_and_survive_a_restart() {
     assert_eq!(env.json(&["hub", "status"])["sessions"], 2);
 }
 
+/// A started hub on a free port with plaintext-loopback profiles for `users`.
+fn hub_with_profiles(env: &Env, users: &[(&str, &str)]) -> u16 {
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    env.json(&["hub", "init", "--domain", "hubtest.local", "--listen", &listen]);
+    env.json(&["hub", "start"]);
+    for (user, pw) in users {
+        ok_json(
+            env.run_with_stdin(&["hub", "user", "add", user, "--password-stdin"], pw),
+            &["user add"],
+        );
+        let jid = format!("{user}@hubtest.local");
+        let port = port.to_string();
+        let status = ok_json(
+            env.run_with_stdin(
+                &[
+                    "--profile",
+                    user,
+                    "account",
+                    "add",
+                    &jid,
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    &port,
+                    "--insecure-plaintext",
+                    "--store",
+                    "config",
+                    "--password-stdin",
+                ],
+                pw,
+            ),
+            &["account add"],
+        );
+        assert_eq!(status["state"], "online", "{status}");
+    }
+    port
+}
+
+/// M3 demo and acceptance test 1 (§8.3 scenario 2 with 120 messages): a
+/// daemon that was offline gets everything exactly once, from offline
+/// storage and MAM (which share stanza-ids).
+#[test]
+fn offline_daemon_catches_up_exactly_once() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    hub_with_profiles(&env, &[("alice", "alice-password-123"), ("bob", "bob-password-4567")]);
+    env.json(&["--profile", "alice", "daemon", "stop"]);
+    for i in 0..120 {
+        env.json(&[
+            "--profile",
+            "bob",
+            "send",
+            "alice@hubtest.local",
+            &format!("catch-up {i}"),
+        ]);
+    }
+    env.json(&["--profile", "alice", "daemon", "start"]);
+    wait_for_state(&env, "alice", "online", Duration::from_secs(30));
+    let start = Instant::now();
+    let mut seen = std::collections::BTreeMap::<String, usize>::new();
+    while start.elapsed() < Duration::from_secs(30) {
+        let inbox = env.json(&["--profile", "alice", "inbox"]);
+        for m in inbox.as_array().unwrap() {
+            *seen
+                .entry(m["body"].as_str().unwrap_or_default().to_owned())
+                .or_default() += 1;
+        }
+        if seen.len() >= 120 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert_eq!(
+        seen.len(),
+        120,
+        "missing messages: {:?}",
+        seen.keys().collect::<Vec<_>>()
+    );
+    let dups: Vec<_> = seen.iter().filter(|(_, n)| **n > 1).collect();
+    assert!(dups.is_empty(), "duplicates: {dups:?}");
+    // Nothing more arrives later (e.g. a second copy from MAM).
+    std::thread::sleep(Duration::from_secs(2));
+    let late = env.json(&["--profile", "alice", "inbox"]);
+    assert_eq!(late.as_array().unwrap().len(), 0, "{late}");
+}
+
 #[test]
 fn account_add_hub_creates_and_configures_an_account() {
     if !hub_server_selected() {

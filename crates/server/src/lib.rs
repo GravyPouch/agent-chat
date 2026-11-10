@@ -13,6 +13,7 @@ pub mod c2s;
 pub mod config;
 pub mod disco;
 pub mod hub;
+pub mod mam;
 pub mod net;
 pub mod paths;
 pub mod router;

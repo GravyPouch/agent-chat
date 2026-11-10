@@ -213,7 +213,7 @@ impl UserActor {
                 }
             }
             (_, "query", NS_PRIVATE) if owner => self.private_xml(&el, &payload).await,
-            (_, "query", super::mam::NS_MAM) => self.mam_query(&el, &payload, owner).await,
+            (_, "query" | "prefs" | "metadata", crate::mam::NS_MAM) => self.mam_query(&el, &payload, owner).await,
             (_, "pubsub", super::pep::NS_PUBSUB) | (_, "pubsub", super::pep::NS_PUBSUB_OWNER) => {
                 self.pubsub_iq(&el, &payload, owner).await;
             }

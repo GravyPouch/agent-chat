@@ -122,6 +122,11 @@ pub struct HubStatus {
     pub connections: u64,
     /// Bound client sessions.
     pub sessions: u64,
+    /// Sessions waiting for their client to resume (XEP-0198).
+    #[serde(default)]
+    pub hibernating: u64,
+    #[serde(default)]
+    pub sm_resumes: u64,
     pub accounts: u64,
     pub user_actors: usize,
     pub connections_total: u64,
@@ -311,6 +316,8 @@ pub async fn status(ctx: &HubCtx) -> Result<HubStatus, AdminError> {
         pin: ctx.tls.as_ref().map(|t| t.pin.clone()),
         connections: Stats::get(&s.connections),
         sessions: Stats::get(&s.sessions),
+        hibernating: Stats::get(&s.hibernating),
+        sm_resumes: Stats::get(&s.sm_resumes),
         accounts: ctx.store.count_accounts(&ctx.domain).await.map_err(internal)?,
         user_actors: ctx.router.user_actors(),
         connections_total: Stats::get(&s.connections_total),

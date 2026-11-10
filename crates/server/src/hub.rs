@@ -36,6 +36,8 @@ pub struct HubCtx {
     pub stats: Stats,
     pub throttle: AuthThrottle,
     pub admission: Arc<Admission>,
+    /// Resumable sessions (XEP-0198).
+    pub sm: crate::c2s::sm::Registry,
     /// Key for fake SCRAM salts (`meta.scram_mock_key`).
     pub mock_key: Vec<u8>,
     pub shutdown: CancellationToken,
@@ -272,6 +274,7 @@ impl RunningHub {
             throttle: AuthThrottle::new(config.auth.max_failures_per_10min),
             admission: Admission::new(limits.max_connections_per_ip, limits.max_new_connections_per_ip_per_min),
             stats: Stats::default(),
+            sm: Default::default(),
             mock_key,
             shutdown: CancellationToken::new(),
             tracker: TaskTracker::new(),
@@ -292,6 +295,9 @@ impl RunningHub {
             ctx.tracker.spawn(accept_loop(ctx.clone(), l));
         }
         ctx.tracker.spawn(crate::admin::serve(ctx.clone(), admin));
+        if let (true, Some(keep)) = (ctx.config.archive.enabled, ctx.config.archive.expire_after.0) {
+            ctx.tracker.spawn(expire_archives(ctx.clone(), keep));
+        }
 
         let info = RuntimeInfo {
             pid: std::process::id(),
@@ -336,6 +342,23 @@ impl RunningHub {
     pub async fn shutdown(self) {
         self.ctx.shutdown.cancel();
         self.wait().await;
+    }
+}
+
+/// Delete archived and offline messages older than `keep`, at start and
+/// then hourly (§5.7 "Preferences and retention").
+async fn expire_archives(ctx: Arc<HubCtx>, keep: Duration) {
+    loop {
+        let before = crate::util::now_ms() - keep.as_millis() as i64;
+        match ctx.store.archive_expire(before).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(deleted = n, "expired archived messages"),
+            Err(e) => tracing::warn!("expiring archives failed: {e:#}"),
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(3600)) => {}
+            _ = ctx.shutdown.cancelled() => return,
+        }
     }
 }
 

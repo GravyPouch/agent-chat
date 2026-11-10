@@ -5,13 +5,9 @@
 
 mod common;
 
-use common::{TestHub, available, next_event, online};
-use tokio_xmpp::Stanza;
+use common::{TestHub, available, body, next_el, online, st};
 use tokio_xmpp::minidom::Element;
-use tokio_xmpp::stanzastream::{Event, StanzaStream};
-use xmpp_parsers::iq::Iq;
-use xmpp_parsers::message::Message;
-use xmpp_parsers::presence::Presence;
+use tokio_xmpp::stanzastream::StanzaStream;
 
 const ALICE_PW: &str = "alice-password-123";
 const BOB_PW: &str = "bob-password-4567";
@@ -25,34 +21,8 @@ async fn hub_with_users() -> TestHub {
     hub
 }
 
-/// Parse literal XML into a stanza to send.
-fn st(xml: &str) -> Box<Stanza> {
-    let el: Element = xml.parse().unwrap();
-    Box::new(match el.name() {
-        "message" => Message::try_from(el).unwrap().into(),
-        "presence" => Presence::try_from(el).unwrap().into(),
-        _ => Iq::try_from(el).unwrap().into(),
-    })
-}
-
-/// The next stanza as an element, whatever its kind.
-async fn next_el(s: &mut StanzaStream, mut f: impl FnMut(&Element) -> bool) -> Element {
-    next_event(s, |ev| match ev {
-        Event::Stanza(stanza) => {
-            let el: Element = stanza.into();
-            f(&el).then_some(el)
-        }
-        _ => None,
-    })
-    .await
-}
-
 fn is(el: &Element, name: &str, ty: &str) -> bool {
     el.name() == name && el.attr("type").unwrap_or(if name == "message" { "normal" } else { "" }) == ty
-}
-
-fn body(el: &Element) -> Option<String> {
-    el.get_child("body", "jabber:client").map(|b| b.text())
 }
 
 async fn client(hub: &TestHub, jid: &str, pw: &str) -> StanzaStream {
@@ -439,6 +409,8 @@ async fn blocking_drops_stanzas_and_errors_outbound() {
         "<message xmlns='jabber:client' type='chat' to='alice@hubtest.local'><body>blocked?</body></message>",
     ))
     .await;
+    // Routed to alice's actor before bob's ping is answered.
+    common::sync(&mut b).await;
     a.send(st(
         "<message xmlns='jabber:client' type='chat' to='bob@hubtest.local'><body>hi</body></message>",
     ))

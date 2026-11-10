@@ -20,16 +20,19 @@ use xmpp_parsers::jid::{BareJid, FullJid, Jid, ResourcePart};
 use xmpp_parsers::ns;
 use xmpp_parsers::sasl::{Challenge, Success};
 use xmpp_parsers::sasl_cb::{SaslChannelBinding, Type as CbType};
+use xmpp_parsers::sm::StreamManagement;
 use xmpp_parsers::starttls::{Proceed, StartTls};
 use xmpp_parsers::stream_error::{DefinedCondition as StreamCondition, StreamError};
 use xmpp_parsers::stream_features::StreamFeatures;
 
 use super::sasl::scram::{self, CbFlag, Exchange, ScramError};
 use super::sasl::{self, Channel, Failure, Mechanism, plain};
+use super::sm::{self, Conn, NS_CSI, NS_SM, ResumeRequest};
 use super::{Io, Stream, close, close_with_error, timeouts};
 use crate::accounts::normalize_username;
 use crate::hub::HubCtx;
 use crate::net::io::{Budget, ConnIo, RateLimit, Transport};
+use crate::net::listener::AdmissionGuard;
 use crate::net::tls;
 use crate::stanza::{self, Condition, Kind, NS_CLIENT, NS_SESSION};
 use crate::stats::Stats;
@@ -45,12 +48,19 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A connection that finished negotiation and bound a resource.
 pub struct Bound {
-    pub stream: Stream,
-    pub budget: Arc<Budget>,
+    pub conn: Conn,
     pub jid: FullJid,
     pub conn_id: u64,
     pub outbox: mpsc::Receiver<Element>,
     pub kick: Arc<Kick>,
+}
+
+/// How negotiation ended.
+pub enum Negotiated {
+    /// A new session.
+    Bound(Box<Bound>),
+    /// The connection was handed to a hibernating session (XEP-0198).
+    Resumed,
 }
 
 struct Authenticated {
@@ -111,7 +121,13 @@ async fn next(stream: &mut Stream, budget: &Budget, ctx: &HubCtx) -> Next {
 }
 
 /// Run stages A–C. `Ok(None)` means the connection ended (already handled).
-pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id: u64) -> Result<Option<Bound>> {
+pub async fn negotiate(
+    ctx: &Arc<HubCtx>,
+    tcp: TcpStream,
+    peer: IpAddr,
+    conn_id: u64,
+    guard: AdmissionGuard,
+) -> Result<Option<Negotiated>> {
     let loopback = is_loopback(peer);
     let limits = &ctx.config.limits;
     let budget = Budget::new(limits.unauth_stanza_bytes.0 as usize);
@@ -226,8 +242,10 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
         // Stage C: authenticated, before bind.
         let mut features = StreamFeatures {
             bind: Some(BindFeature { required: false }),
+            stream_management: Some(StreamManagement { optional: false }),
             ..Default::default()
         };
+        features.others.push(Element::bare("csi", NS_CSI));
         let mut session = Element::bare("session", NS_SESSION);
         session.append_child(Element::bare("optional", NS_SESSION));
         features.others.push(session);
@@ -238,6 +256,29 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
             let Next::El(el) = next(&mut stream, &budget, ctx).await else {
                 return Ok(None);
             };
+            if el.is("resume", NS_SM) {
+                // XEP-0198 §5: continue a hibernating session instead of binding.
+                let h = el.attr("h").and_then(|h| h.parse::<u32>().ok());
+                let handle = el
+                    .attr("previd")
+                    .and_then(|id| ctx.sm.get(id))
+                    .filter(|hd| hd.bare == bare);
+                if let (Some(h), Some(hd)) = (h, handle) {
+                    let conn = Conn { stream, budget, guard };
+                    // If the session ended in between, the connection just closes.
+                    let _ = hd.tx.try_send(ResumeRequest { conn, h });
+                    return Ok(Some(Negotiated::Resumed));
+                }
+                stream.send(&sm::failed("item-not-found", 0)).await?;
+                continue;
+            }
+            if el.is("enable", NS_SM) {
+                stream.send(&sm::failed("unexpected-request", 0)).await?;
+                continue;
+            }
+            if el.ns() == NS_CSI {
+                continue;
+            }
             if Kind::of(&el) != Some(Kind::Iq) {
                 close_with_error(&mut stream, StreamCondition::NotAuthorized, "Bind a resource first").await;
                 return Ok(None);
@@ -278,14 +319,13 @@ pub async fn negotiate(ctx: &Arc<HubCtx>, tcp: TcpStream, peer: IpAddr, conn_id:
                     let mut result = stanza::iq_result(&el, Some(&ctx.domain), Some(response));
                     stanza::remove_attr(&mut result, "to");
                     stream.send(&result).await?;
-                    return Ok(Some(Bound {
-                        stream,
-                        budget,
+                    return Ok(Some(Negotiated::Bound(Box::new(Bound {
+                        conn: Conn { stream, budget, guard },
                         jid,
                         conn_id,
                         outbox,
                         kick,
-                    }));
+                    }))));
                 }
                 Err(cond) => {
                     tracing::info!(account = %bare, "bind refused: {}", cond.name());

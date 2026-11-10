@@ -2,7 +2,7 @@
 //! (§5.5 of the plan), carbons (XEP-0280) and offline storage.
 
 use tokio_xmpp::minidom::Element;
-use xmpp_parsers::jid::Jid;
+
 use xmpp_parsers::ns;
 
 use super::{UserActor, blocked_error, jid_attr};
@@ -129,7 +129,16 @@ impl UserActor {
             }
             return;
         }
-        if carbon_eligible(&el) {
+        // XEP-0280 §7: the private marker is for us, not the recipient.
+        let copy = carbon_eligible(&el);
+        remove_children(&mut el, |c| c.is("private", NS_CARBONS));
+        let archive_id = self.archive_outgoing(&el, &to).await;
+        if copy {
+            // Our other devices get the archive id, to match MAM later.
+            let mut sent = el.clone();
+            if let Some(id) = &archive_id {
+                sent.append_child(crate::mam::stanza_id(&self.bare_str, id));
+            }
             let targets: Vec<(String, String)> = self
                 .sessions
                 .iter()
@@ -137,13 +146,10 @@ impl UserActor {
                 .map(|(r, s)| (r.clone(), s.full.clone()))
                 .collect();
             for (r, full) in targets {
-                let c = carbon("sent", &el, &self.bare_str.clone(), &full);
+                let c = carbon("sent", &sent, &self.bare_str.clone(), &full);
                 self.send(&r, c);
             }
         }
-        // XEP-0280 §7: the private marker is for us, not the recipient.
-        remove_children(&mut el, |c| c.is("private", NS_CARBONS));
-        self.archive_outgoing(&mut el, &to).await;
         self.route(el).await;
     }
 
@@ -294,17 +300,6 @@ impl UserActor {
         {
             tracing::error!(account = %self.bare, "requeueing a message failed: {e:#}");
         }
-    }
-
-    /// Stamp and archive a message delivered to this account; returns the
-    /// archive id (also its stanza-id). Archiving arrives with MAM (M3).
-    async fn archive_incoming(&mut self, el: &mut Element) -> Option<String> {
-        let _ = el;
-        None
-    }
-
-    async fn archive_outgoing(&mut self, el: &mut Element, to: &Jid) {
-        let _ = (el, to);
     }
 }
 
