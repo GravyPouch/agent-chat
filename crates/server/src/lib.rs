@@ -3,7 +3,10 @@
 //!
 //! The library has no dependency on the client daemon or OMEMO.
 
+pub mod accounts;
+pub mod c2s;
 pub mod config;
+pub mod net;
 pub mod paths;
 pub mod store;
 pub mod util;
