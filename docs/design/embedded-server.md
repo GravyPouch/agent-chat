@@ -1723,7 +1723,6 @@ Lonewolf, also written largely with AI agents, reached c2s, roster, carbons and 
 - `dev/omemo-bot/{interop-test.sh, run.sh, bot.py}`
 - `server/prosody/mod_register_pow/{mod_register_pow.lua, pow.lib.lua, test_vector.lua, README.md}`
 - `Cargo.toml` and `Cargo.lock` (locked versions)
-- The original project plan: `~/.claude/plans/can-we-create-a-breezy-starlight.md`
 
 **crates.io API** [V]: versions, licenses and dependency requirements for:
 - tokio-xmpp, xmpp-parsers, jid

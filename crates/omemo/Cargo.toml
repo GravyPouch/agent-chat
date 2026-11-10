@@ -1,6 +1,8 @@
 [package]
 name = "omemo"
 version.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Safe OMEMO (XEP-0384) layer over libomemo-c: legacy and OMEMO:2"

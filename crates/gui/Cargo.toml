@@ -1,6 +1,8 @@
 [package]
 name = "agent-chat-gui"
 version.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Desktop GUI for agent-chat (GPUI Kit)"

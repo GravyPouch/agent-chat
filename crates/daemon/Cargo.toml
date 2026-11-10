@@ -1,6 +1,8 @@
 [package]
 name = "agent-chat-daemon"
 version.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "XMPP session, message store and IPC server for agent-chat"

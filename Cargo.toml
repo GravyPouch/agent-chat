@@ -7,6 +7,8 @@ default-members = ["crates/proto", "crates/omemo-sys", "crates/omemo", "crates/d
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
+repository = "https://github.com/GravyPouch/agent-chat"
+rust-version = "1.92"
 
 [workspace.dependencies]
 agent-chat-proto = { path = "crates/proto" }

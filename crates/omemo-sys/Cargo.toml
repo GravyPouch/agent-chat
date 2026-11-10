@@ -1,6 +1,8 @@
 [package]
 name = "omemo-sys"
 version.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 # libomemo-c (vendored) is GPL-3.0.
 license = "GPL-3.0-only"

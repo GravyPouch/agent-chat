@@ -1,6 +1,8 @@
 [package]
 name = "agent-chat-proto"
 version.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Shared types and IPC client for agent-chat"

@@ -256,7 +256,7 @@ I read all of the following in the Prosody `13.0` branch source [V]. `mod_regist
 
 ### 3.4 Local measurements [M]
 
-These were taken with the throwaway benchmark in the scratchpad: `sha2 0.10.9`, `argon2 0.5.3`, `equix 0.8.1`, and Python's `hashlib.scrypt`.
+These were taken with a throwaway local benchmark: `sha2 0.10.9`, `argon2 0.5.3`, `equix 0.8.1`, and Python's `hashlib.scrypt`.
 
 | Primitive | M2, 1 thread | Notes |
 |---|---|---|
