@@ -24,6 +24,7 @@ use gpui_kit::component::message::{
     Message as MessageView, MessageAlignment, MessageAvatar, MessageContent, MessageFooter, MessageHeader,
 };
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -108,9 +109,10 @@ pub struct ChatApp {
     room_nick: Entity<InputState>,
     room_private: bool,
     invite_jid: Entity<InputState>,
-    /// "Connect an agent" dialog: which copy button was just used, and the
-    /// result of the last install.
-    agent_copied: Option<&'static str>,
+    /// What was just copied to the clipboard (shows "Copied" there briefly).
+    copied: Option<SharedString>,
+    copied_reset: Option<Task<()>>,
+    /// "Connect an agent" dialog: the result of the last install.
     install_result: Option<String>,
     /// The animated face of the open 1:1 chat.
     face: Option<Entity<AnimatedFace>>,
@@ -126,6 +128,8 @@ const FACE_SMALL: u32 = 24;
 const FACE_MEDIUM: u32 = 48;
 /// Send "paused" after this long without typing.
 const PAUSED_AFTER: Duration = Duration::from_secs(10);
+/// How long a "Copied" confirmation stays.
+const COPIED_FOR: Duration = Duration::from_millis(1500);
 
 fn show_color(show: Show, cx: &App) -> Hsla {
     let t = cx.theme();
@@ -235,7 +239,8 @@ impl ChatApp {
             room_nick,
             room_private: true,
             invite_jid,
-            agent_copied: None,
+            copied: None,
+            copied_reset: None,
             install_result: None,
             face: None,
             composing_to: None,
@@ -1020,17 +1025,26 @@ impl ChatApp {
             "install" => format!("{} install", setup.cmd()),
             _ => setup.agent_prompt(),
         };
+        self.copy_text(format!("agent:{what}"), text, cx);
+    }
+
+    /// Put `text` on the clipboard and mark `key` as just copied, so the
+    /// control that did it can say "Copied" for a moment.
+    fn copy_text(&mut self, key: impl Into<SharedString>, text: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-        self.agent_copied = Some(what);
+        self.copied = Some(key.into());
         cx.notify();
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+        self.copied_reset = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPIED_FOR).await;
             let _ = this.update(cx, |a, cx| {
-                a.agent_copied = None;
+                a.copied = None;
                 cx.notify();
             });
-        })
-        .detach();
+        }));
+    }
+
+    fn just_copied(&self, key: &str) -> bool {
+        self.copied.as_deref() == Some(key)
     }
 
     fn run_install(&mut self, cx: &mut Context<Self>) {
@@ -1067,7 +1081,9 @@ impl ChatApp {
         window.open_dialog(cx, move |dialog, _, cx| {
             let app = this.read(cx);
             let setup = app.agent_setup();
-            let copied = app.agent_copied;
+            let copied_prompt = app.just_copied("agent:prompt");
+            let copied_mcp = app.just_copied("agent:mcp");
+            let copied_install = app.just_copied("agent:install");
             let install_result = app.install_result.clone();
             let theme = cx.theme().clone();
             let (t1, t2, t3, t4) = (this.clone(), this.clone(), this.clone(), this.clone());
@@ -1088,7 +1104,7 @@ impl ChatApp {
                                 .child(
                                     Button::new("copy-agent-prompt")
                                         .primary()
-                                        .label(if copied == Some("prompt") {
+                                        .label(if copied_prompt {
                                             "Copied ✓"
                                         } else {
                                             "Copy instructions for your agent"
@@ -1139,7 +1155,7 @@ impl ChatApp {
                                 .child(
                                     Button::new("copy-mcp")
                                         .ghost()
-                                        .label(if copied == Some("mcp") {
+                                        .label(if copied_mcp {
                                             "Copied ✓"
                                         } else {
                                             "Copy MCP setup for Claude Code"
@@ -1149,7 +1165,7 @@ impl ChatApp {
                                 .child(
                                     Button::new("copy-install")
                                         .ghost()
-                                        .label(if copied == Some("install") {
+                                        .label(if copied_install {
                                             "Copied ✓"
                                         } else {
                                             "Copy install command"
@@ -1181,6 +1197,7 @@ impl ChatApp {
             let app = this.read(cx);
             let devices = app.devices.clone();
             let own: Vec<DeviceInfo> = app.own_devices.iter().filter(|d| d.this_device).cloned().collect();
+            let copied = app.copied.clone();
             let theme = cx.theme();
             let row = |d: &DeviceInfo, actions: bool, this: Entity<ChatApp>| {
                 let fp = d.fingerprint.clone().unwrap_or_else(|| "(fingerprint not known yet)".into());
@@ -1216,7 +1233,28 @@ impl ChatApp {
                             )))
                             .child(div().text_xs().text_color(color).child(label)),
                     )
-                    .child(div().text_xs().font_family("Menlo").child(grouped))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().flex_1().text_xs().font_family("Menlo").child(grouped))
+                            .when_some(d.fingerprint.clone(), |el, fp| {
+                                let key = format!("fp:{}:{}", d.jid, d.device_id);
+                                let done = copied.as_deref() == Some(key.as_str());
+                                let this = this.clone();
+                                el.child(
+                                    Button::new(SharedString::from(format!("copy-fp-{}", d.device_id)))
+                                        .xsmall()
+                                        .ghost()
+                                        .icon(if done { IconName::Check } else { IconName::Copy })
+                                        .label(if done { "Copied" } else { "Copy" })
+                                        .tooltip("Copy this fingerprint")
+                                        .on_click(move |_, _, cx| {
+                                            let (key, fp) = (key.clone(), fp.clone());
+                                            this.update(cx, |a, cx| a.copy_text(key, fp, cx));
+                                        }),
+                                )
+                            }),
+                    )
                     .when(actions && d.fingerprint.is_some(), |el| {
                         el.child(
                             h_flex()
@@ -1425,6 +1463,8 @@ impl ChatApp {
             None => ("…", theme.muted_foreground),
         };
         let account_jid = status.as_ref().and_then(|s| s.account.clone());
+        let own_jid = account_jid.clone();
+        let own_copied = self.just_copied("own-address");
         let avatar_name = account_jid.clone().unwrap_or_else(|| self.profile.clone());
         let account = account_jid.unwrap_or_else(|| format!("profile “{}”", self.profile));
 
@@ -1503,7 +1543,23 @@ impl ChatApp {
                     .border_color(theme.sidebar_border)
                     .child(
                         h_flex()
+                            .id("own-address")
                             .gap_2()
+                            .px_1()
+                            .py_0p5()
+                            .rounded_md()
+                            .when_some(own_jid.clone(), |el, jid| {
+                                el.cursor_pointer()
+                                    .role(Role::Button)
+                                    .aria_label(format!("Copy your address {jid}"))
+                                    .hover(|s| s.bg(theme.sidebar_accent.opacity(0.5)))
+                                    .tooltip(|window, cx| Tooltip::new("Copy your address").build(window, cx))
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.copy_text("own-address", jid.clone(), cx)
+                                        }),
+                                    )
+                            })
                             .child(face::jid_face(&avatar_name, FACE_SMALL, cx))
                             .child(
                                 v_flex()
@@ -1516,16 +1572,31 @@ impl ChatApp {
                                             .truncate()
                                             .child(account),
                                     )
-                                    .child(
+                                    .child(if own_copied {
+                                        h_flex()
+                                            .gap_1()
+                                            .items_center()
+                                            .text_xs()
+                                            .text_color(theme.green)
+                                            .child(Icon::new(IconName::Check).xsmall())
+                                            .child("Copied your address")
+                                    } else {
                                         h_flex()
                                             .gap_1()
                                             .items_center()
                                             .child(div().size(px(7.)).rounded_full().bg(state_color))
                                             .child(
                                                 div().text_xs().text_color(theme.muted_foreground).child(state_label),
-                                            ),
-                                    ),
-                            ),
+                                            )
+                                    }),
+                            )
+                            .when(own_jid.is_some(), |el| {
+                                el.child(
+                                    Icon::new(IconName::Copy)
+                                        .xsmall()
+                                        .text_color(theme.muted_foreground.opacity(0.7)),
+                                )
+                            }),
                     )
                     .child(
                         h_flex()
@@ -1695,10 +1766,10 @@ impl ChatApp {
             (_, Some(c)) => c.name.clone().unwrap_or_else(|| c.jid.clone()),
             _ => jid.to_owned(),
         };
-        let subtitle = match (&room, &contact) {
+        let address = room.as_ref().map(|r| r.jid.clone()).unwrap_or_else(|| jid.to_owned());
+        let details = match (&room, &contact) {
             (Some(r), _) => format!(
-                "{} · {} participants{}",
-                r.jid,
+                "{} participants{}",
                 r.occupants.len(),
                 r.subject
                     .clone()
@@ -1707,13 +1778,13 @@ impl ChatApp {
                     .unwrap_or_default()
             ),
             (_, Some(c)) => format!(
-                "{} · {}{}",
-                c.jid,
+                "{}{}",
                 c.presence.show.as_str(),
                 c.presence.status.clone().map(|s| format!(" — {s}")).unwrap_or_default()
             ),
-            _ => jid.to_owned(),
+            _ => String::new(),
         };
+        let address_copied = self.just_copied("peer-address");
         let room_private = room.as_ref().is_some_and(|r| r.private);
         let encrypted = room.is_none() && !self.devices.is_empty();
         let protocol = if self
@@ -1742,11 +1813,40 @@ impl ChatApp {
                     .min_w_0()
                     .child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(title))
                     .child(
-                        div()
+                        h_flex()
+                            .min_w_0()
+                            .gap_1()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .truncate()
-                            .child(subtitle),
+                            .child(
+                                h_flex()
+                                    .id("peer-address")
+                                    .flex_none()
+                                    .gap_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .role(Role::Button)
+                                    .aria_label(format!("Copy the address {address}"))
+                                    .hover(|s| s.text_color(theme.foreground))
+                                    .tooltip(|window, cx| Tooltip::new("Copy address").build(window, cx))
+                                    .on_click({
+                                        let address = address.clone();
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.copy_text("peer-address", address.clone(), cx)
+                                        })
+                                    })
+                                    .when(address_copied, |el| {
+                                        el.text_color(theme.green)
+                                            .child(Icon::new(IconName::Check).xsmall())
+                                            .child("Copied")
+                                    })
+                                    .when(!address_copied, |el| {
+                                        el.child(address.clone()).child(Icon::new(IconName::Copy).xsmall())
+                                    }),
+                            )
+                            .when(!details.is_empty(), |el| {
+                                el.child(div().min_w_0().truncate().child(format!("· {details}")))
+                            }),
                     ),
             )
             .when(room.is_some(), |el| {
