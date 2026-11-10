@@ -62,6 +62,9 @@ pub struct Settings {
     pub archive_enabled: bool,
     /// Largest MAM page (RSM `max` cap).
     pub mam_max_page: usize,
+    pub scram_iterations: u32,
+    /// For XEP-0077 password changes.
+    pub min_password: usize,
 }
 
 impl Default for Settings {
@@ -71,6 +74,8 @@ impl Default for Settings {
             offline_cap: 1000,
             archive_enabled: true,
             mam_max_page: 250,
+            scram_iterations: 10_000,
+            min_password: 8,
         }
     }
 }

@@ -17,7 +17,7 @@ use tokio_util::task::TaskTracker;
 use crate::c2s::sasl::AuthThrottle;
 use crate::config::{self, Config, TlsMode};
 use crate::net::listener::{self, Admission};
-use crate::net::tls::{self, TlsMaterial};
+use crate::net::tls;
 use crate::paths::{HubPaths, write_private};
 use crate::router::Router;
 use crate::stats::Stats;
@@ -31,13 +31,15 @@ pub struct HubCtx {
     pub paths: HubPaths,
     pub domain: String,
     pub store: Arc<dyn Store>,
-    pub tls: Option<TlsMaterial>,
+    pub tls: tls::Reloadable,
     pub router: Arc<Router>,
     pub stats: Stats,
     pub throttle: AuthThrottle,
     pub admission: Arc<Admission>,
     /// Resumable sessions (XEP-0198).
     pub sm: crate::c2s::sm::Registry,
+    /// In-band and web registration.
+    pub registrar: Arc<crate::register::Registrar>,
     /// Key for fake SCRAM salts (`meta.scram_mock_key`).
     pub mock_key: Vec<u8>,
     pub shutdown: CancellationToken,
@@ -66,6 +68,9 @@ pub struct RuntimeInfo {
     /// `sha256/<base64>` of the certificate's public key.
     pub pin: Option<String>,
     pub admin_socket: String,
+    /// The onboarding page's listeners (HTTP).
+    #[serde(default)]
+    pub http: Vec<SocketAddr>,
     pub started_at: DateTime<Utc>,
 }
 
@@ -106,6 +111,15 @@ pub struct InitOptions {
     /// Explicit listeners; overrides the defaults and `lan`.
     pub listen: Vec<String>,
     pub tls_mode: Option<TlsMode>,
+    /// A public hub: all interfaces, certificate files, PoW registration.
+    pub public: bool,
+    /// Certificate and key files (`tls.mode = "files"`).
+    pub cert: Option<std::path::PathBuf>,
+    pub key: Option<std::path::PathBuf>,
+    /// The onboarding page's address (e.g. `0.0.0.0:5280`).
+    pub http: Option<String>,
+    /// Offer sign-up with in-browser proof of work on that page.
+    pub web_signup: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -166,6 +180,32 @@ pub async fn init(paths: &HubPaths, opts: InitOptions) -> Result<InitReport> {
     if let Some(m) = opts.tls_mode {
         cfg.tls.mode = m;
     }
+    if opts.public {
+        if opts.domain.is_none() || domain == config::LOCAL_DOMAIN || domain.ends_with(".local") {
+            bail!("a public hub needs its real domain: hub init --public --domain chat.example.org");
+        }
+        if opts.listen.is_empty() {
+            cfg.listen.c2s = vec![
+                format!("0.0.0.0:{}", config::DEFAULT_PORT),
+                format!("[::]:{}", config::DEFAULT_PORT),
+            ];
+        }
+        cfg.tls.mode = TlsMode::Files;
+        cfg.registration.mode = Some(config::RegistrationMode::Pow);
+        if opts.http.is_none() {
+            cfg.http.listen = vec!["0.0.0.0:5280".into()];
+        }
+    }
+    if let Some(c) = opts.cert {
+        cfg.tls.cert = c;
+    }
+    if let Some(k) = opts.key {
+        cfg.tls.key = k;
+    }
+    if let Some(h) = &opts.http {
+        cfg.http.listen = vec![h.clone()];
+    }
+    cfg.registration.web = opts.web_signup;
     cfg.validate()?;
 
     paths.ensure_dir()?;
@@ -220,14 +260,39 @@ impl RunningHub {
             paths.resolve_file(&config.tls.cert),
             paths.resolve_file(&config.tls.key),
         );
-        if config.tls.mode == TlsMode::SelfSigned {
-            tls::ensure_self_signed(&cert, &key, &config.certificate_names())?;
+        let names = config.certificate_names();
+        let tls = match config.tls.mode {
+            TlsMode::SelfSigned => {
+                tls::ensure_self_signed(&cert, &key, &names)?;
+                tls::Reloadable::open(&cert, &key, None)
+            }
+            // Operator files (e.g. a shared /certs volume): until they exist,
+            // a temporary self-signed certificate, like server/deploy does.
+            _ => tls::Reloadable::open(
+                &cert,
+                &key,
+                Some((
+                    &paths.dir.join("tls/fallback-cert.pem"),
+                    &paths.dir.join("tls/fallback-key.pem"),
+                    &names,
+                )),
+            ),
         }
-        let tls = tls::load(&cert, &key).context("loading the TLS certificate")?;
+        .context("loading the TLS certificate")?;
 
         let store: Arc<dyn Store> = Arc::new(SqliteStore::open(&paths.db())?);
         store.ensure_host(&domain).await?;
         let mock_key = store.secret("scram_mock_key", 32).await?;
+        // Persisted, so challenges survive a restart (§5.8 `meta`).
+        let pow_secret = store.secret("pow_secret", 32).await?;
+        let registrar = Arc::new(crate::register::Registrar::new(
+            &domain,
+            store.clone(),
+            config.registration.clone(),
+            config.registration_mode(),
+            config.auth.scram_iterations,
+            pow_secret,
+        ));
 
         let mut bound = Vec::new();
         for addr in config.c2s_addrs()? {
@@ -269,12 +334,15 @@ impl RunningHub {
                     offline_cap: config.archive.max_offline_messages,
                     archive_enabled: config.archive.enabled,
                     mam_max_page: config.archive.max_page,
+                    scram_iterations: config.auth.scram_iterations,
+                    min_password: config.registration.min_password_length,
                 },
             ),
             throttle: AuthThrottle::new(config.auth.max_failures_per_10min),
             admission: Admission::new(limits.max_connections_per_ip, limits.max_new_connections_per_ip_per_min),
             stats: Stats::default(),
             sm: Default::default(),
+            registrar,
             mock_key,
             shutdown: CancellationToken::new(),
             tracker: TaskTracker::new(),
@@ -282,7 +350,7 @@ impl RunningHub {
             started: Instant::now(),
             listeners: listeners.clone(),
             next_conn: AtomicU64::new(1),
-            tls: Some(tls),
+            tls,
             store,
             domain,
             paths: paths.clone(),
@@ -311,6 +379,15 @@ impl RunningHub {
             ctx.tracker.spawn(accept_loop(ctx.clone(), l));
         }
         ctx.tracker.spawn(crate::admin::serve(ctx.clone(), admin));
+        let mut http = Vec::new();
+        for addr in ctx.config.http_addrs()? {
+            let l = listener::bind(addr)?;
+            let bound = l.local_addr()?;
+            tracing::info!(addr = %bound, "serving the web page");
+            http.push(bound);
+            ctx.tracker.spawn(crate::http::serve(ctx.clone(), l));
+        }
+        ctx.tracker.spawn(watch_certificate(ctx.clone()));
         if let (true, Some(keep)) = (ctx.config.archive.enabled, ctx.config.archive.expire_after.0) {
             ctx.tracker.spawn(expire_archives(ctx.clone(), keep));
         }
@@ -321,8 +398,9 @@ impl RunningHub {
             domain: ctx.domain.clone(),
             c2s: listeners,
             tls_mode: ctx.config.tls.mode,
-            pin: ctx.tls.as_ref().map(|t| t.pin.clone()),
+            pin: Some(ctx.tls.current().pin.clone()),
             admin_socket: socket_path.display().to_string(),
+            http,
             started_at: ctx.started_at,
         };
         write_private(&paths.runtime(), serde_json::to_string_pretty(&info)?.as_bytes())?;
@@ -361,6 +439,36 @@ impl RunningHub {
     }
 }
 
+/// Pick up renewed certificate files: poll every `tls.reload_interval`
+/// (files mode) and reload on SIGHUP.
+async fn watch_certificate(ctx: Arc<HubCtx>) {
+    let interval = ctx.config.tls.reload_interval.0;
+    let poll = ctx.config.tls.mode == TlsMode::Files;
+    #[cfg(unix)]
+    let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
+    loop {
+        #[cfg(unix)]
+        let sighup = async {
+            match hup.as_mut() {
+                Some(s) => {
+                    s.recv().await;
+                }
+                None => std::future::pending().await,
+            }
+        };
+        #[cfg(not(unix))]
+        let sighup = std::future::pending::<()>();
+        tokio::select! {
+            _ = tokio::time::sleep(interval), if poll => {}
+            _ = sighup => tracing::info!("SIGHUP: checking the certificate"),
+            _ = ctx.shutdown.cancelled() => return,
+        }
+        if let Err(e) = ctx.tls.reload_if_changed() {
+            tracing::warn!("the new certificate files can't be used yet: {e:#}");
+        }
+    }
+}
+
 /// Delete archived and offline messages older than `keep`, at start and
 /// then hourly (§5.7 "Preferences and retention").
 async fn expire_archives(ctx: Arc<HubCtx>, keep: Duration) {
@@ -385,6 +493,14 @@ async fn accept_loop(ctx: Arc<HubCtx>, l: tokio::net::TcpListener) {
             _ = ctx.shutdown.cancelled() => return,
         };
         match accepted {
+            Ok((_, peer))
+                if Stats::get(&ctx.stats.connections) >= ctx.config.limits.max_connections
+                    && !crate::util::is_loopback(peer.ip()) =>
+            {
+                Stats::inc(&ctx.stats.connections_refused);
+                Stats::inc(&ctx.stats.limit_hits);
+                tracing::warn!("connection refused: the hub is at limits.max_connections");
+            }
             Ok((tcp, peer)) => match ctx.admission.admit(peer.ip()) {
                 Ok(guard) => {
                     ctx.tracker.spawn(crate::c2s::serve(ctx.clone(), tcp, peer, guard));

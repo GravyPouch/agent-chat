@@ -259,6 +259,20 @@ pub trait Store: Send + Sync + 'static {
     fn private_get<'a>(&'a self, account: &'a str, key: &'a str) -> BoxFut<'a, Option<String>>;
     /// `None` deletes.
     fn private_put<'a>(&'a self, account: &'a str, key: &'a str, xml: Option<String>) -> BoxFut<'a, ()>;
+
+    // ----------------------------------------------------------- invites
+
+    fn invite_put<'a>(
+        &'a self,
+        token_hash: &'a str,
+        expires_ms: i64,
+        uses: u32,
+        note: Option<String>,
+    ) -> BoxFut<'a, ()>;
+    /// Whether the invitation exists, hasn't expired and has uses left.
+    fn invite_valid<'a>(&'a self, token_hash: &'a str, now_ms: i64) -> BoxFut<'a, bool>;
+    /// Use one of its uses; `false` if it isn't valid.
+    fn invite_use<'a>(&'a self, token_hash: &'a str, now_ms: i64) -> BoxFut<'a, bool>;
 }
 
 // ------------------------------------------------------------- data types
@@ -701,4 +715,13 @@ async fn im_contract_tests(store: &dyn Store) {
     );
     store.private_put(a, "vcard", None).await.unwrap();
     assert!(store.private_get(a, "vcard").await.unwrap().is_none());
+
+    // Invitations: uses and expiry.
+    store.invite_put("h1", 2000, 2, None).await.unwrap();
+    assert!(store.invite_valid("h1", 1000).await.unwrap());
+    assert!(!store.invite_valid("h1", 3000).await.unwrap(), "expired");
+    assert!(store.invite_use("h1", 1000).await.unwrap());
+    assert!(store.invite_use("h1", 1000).await.unwrap());
+    assert!(!store.invite_use("h1", 1000).await.unwrap(), "used up");
+    assert!(!store.invite_valid("nope", 1000).await.unwrap());
 }

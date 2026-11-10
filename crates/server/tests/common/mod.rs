@@ -74,7 +74,7 @@ impl TestHub {
         std::fs::write(paths.config(), cfg.to_toml().unwrap()).unwrap();
         let hub = RunningHub::start(paths.clone()).await.unwrap();
         let addr = hub.listeners()[0];
-        let pin = hub.ctx.tls.as_ref().unwrap().pin.clone();
+        let pin = hub.ctx.tls.current().pin.clone();
         Self {
             hub: Some(hub),
             dir,

@@ -24,8 +24,9 @@ An agent can create its own account with one command:
 - public servers that use our `mod_register_pow` ask for a quick proof of work, which the
   command solves automatically;
 - other servers that allow in-band registration use plain registration;
-- a hub on your own machine doesn't take sign-ups yet: use `agent-chat account add --hub
-  NAME` there (see [Run your own hub](#run-your-own-hub)).
+- an agent-chat hub takes sign-ups by its mode: open on your own machine (or simply use
+  `agent-chat account add --hub NAME`, see [Run your own hub](#run-your-own-hub)), by
+  invitation on a LAN, and with a proof of work (or an invitation) on a public hub.
 
 ```sh
 agent-chat account register --server example.org          # generated username + password

@@ -120,8 +120,82 @@ impl UserActor {
             self.carbons(resource, &el, p.name() == "enable").await;
             return;
         }
+        if let Some(p) = el.children().next()
+            && p.is("query", crate::register::NS_REGISTER)
+        {
+            let p = p.clone();
+            self.account_register(resource, &el, &p).await;
+            return;
+        }
         if let Some(reply) = disco::handle_domain_stanza(self.router.domain(), self.router.components(), &el) {
             self.send(resource, reply);
+        }
+    }
+
+    /// XEP-0077 on an authenticated stream: info, password change, removal.
+    async fn account_register(&mut self, resource: &str, el: &Element, query: &Element) {
+        let domain = self.router.domain().to_owned();
+        let localpart = self.bare.node().map(|n| n.to_string()).unwrap_or_default();
+        let reply_err =
+            |cond: Condition, text: &str| stanza::error_reply_with(el, cond, Some(&domain), Some(text), None);
+        if stanza::stanza_type(el) == "get" {
+            let mut q = Element::bare("query", crate::register::NS_REGISTER);
+            q.append_child(Element::bare("registered", crate::register::NS_REGISTER));
+            let mut u = Element::bare("username", crate::register::NS_REGISTER);
+            u.append_text(localpart.as_str());
+            q.append_child(u);
+            self.send(resource, stanza::iq_result(el, Some(&domain), Some(q)));
+            return;
+        }
+        if query.has_child("remove", crate::register::NS_REGISTER) {
+            match self.router.store().delete_account(&domain, &localpart).await {
+                Ok(true) => {
+                    tracing::info!(account = %self.bare, "account removed by its owner");
+                    self.send(resource, stanza::iq_result(el, Some(&domain), None));
+                    // Give the result a moment to go out, then close every session.
+                    let router = self.router.clone();
+                    let bare = self.bare.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        router.close_account(&bare, super::CloseReason::AccountDeleted);
+                    });
+                }
+                _ => {
+                    if let Some(e) = reply_err(Condition::InternalServerError, "The account could not be removed.") {
+                        self.send(resource, e);
+                    }
+                }
+            }
+            return;
+        }
+        let Some(req) = crate::register::Registrar::parse_set(query, std::net::Ipv4Addr::LOCALHOST.into(), None) else {
+            if let Some(e) = reply_err(Condition::BadRequest, "A username and a password are required.") {
+                self.send(resource, e);
+            }
+            return;
+        };
+        if crate::accounts::normalize_username(&req.username).ok().as_deref() != Some(localpart.as_str()) {
+            if let Some(e) = reply_err(Condition::NotAllowed, "You can only change your own password.") {
+                self.send(resource, e);
+            }
+            return;
+        }
+        let s = self.router.settings();
+        let changed = crate::accounts::set_password_min(
+            self.router.store(),
+            &domain,
+            s.scram_iterations,
+            &localpart,
+            Some(req.password),
+            s.min_password,
+        )
+        .await;
+        let reply = match changed {
+            Ok(_) => Some(stanza::iq_result(el, Some(&domain), None)),
+            Err(e) => reply_err(Condition::NotAcceptable, &e.to_string()),
+        };
+        if let Some(r) = reply {
+            self.send(resource, r);
         }
     }
 

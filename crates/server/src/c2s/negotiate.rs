@@ -34,6 +34,7 @@ use crate::hub::HubCtx;
 use crate::net::io::{Budget, ConnIo, RateLimit, Transport};
 use crate::net::listener::AdmissionGuard;
 use crate::net::tls;
+use crate::register::{NS_IBR_TOKEN, NS_PARS, NS_REGISTER, RegError, Registrar};
 use crate::stanza::{self, Condition, Kind, NS_CLIENT, NS_SESSION};
 use crate::stats::Stats;
 use crate::store::{AccountState, ScramKeys};
@@ -69,7 +70,10 @@ struct Authenticated {
 
 /// What we know about the channel so far.
 struct ChannelState {
+    ip: IpAddr,
     loopback: bool,
+    /// A valid XEP-0445 token from `<preauth/>` on this stream.
+    invite: Option<String>,
     /// The peer's network prefix (/24 or /56), for throttling and logs.
     prefix: String,
     tls: bool,
@@ -137,7 +141,9 @@ pub async fn negotiate(
         .await
         .context("reading the stream header")?;
     let mut ch = ChannelState {
+        ip: peer,
         loopback,
+        invite: None,
         prefix: ip_prefix(peer),
         tls: false,
         cb_data: None,
@@ -166,15 +172,11 @@ pub async fn negotiate(
                     return Ok(None);
                 };
                 if el.is("starttls", ns::TLS) {
-                    let Some(material) = ctx.tls.as_ref().filter(|_| !ch.tls) else {
-                        close_with_error(
-                            &mut stream,
-                            StreamCondition::PolicyViolation,
-                            "STARTTLS is not available",
-                        )
-                        .await;
+                    if ch.tls {
+                        close_with_error(&mut stream, StreamCondition::PolicyViolation, "TLS is already on").await;
                         return Ok(None);
-                    };
+                    }
+                    let material = ctx.tls.current();
                     stream.send(&Proceed).await?;
                     let io = stream.into_inner();
                     // Bytes pipelined after <starttls/> would be read as if
@@ -233,7 +235,11 @@ pub async fn negotiate(
                         SaslOutcome::End => return Ok(None),
                     }
                 }
-                // Stanzas (and registration, M6) before authentication.
+                // In-band registration (XEP-0077) and invitations (XEP-0445).
+                if let Some(reply) = registration_iq(ctx, &el, &mut ch).await {
+                    stream.send(&reply).await?;
+                    continue;
+                }
                 close_with_error(&mut stream, StreamCondition::NotAuthorized, "Authenticate first").await;
                 return Ok(None);
             }
@@ -373,9 +379,71 @@ async fn respond_to_header(ctx: &HubCtx, mut accepted: AcceptedStream<Io>) -> Re
     Ok(None)
 }
 
+/// Registration IQs on an unauthenticated stream. `None`: not one of ours.
+async fn registration_iq(ctx: &HubCtx, el: &Element, ch: &mut ChannelState) -> Option<Element> {
+    if Kind::of(el) != Some(Kind::Iq) || el.attr("to").is_some_and(|t| t != ctx.domain) {
+        return None;
+    }
+    let payload = el.children().next()?;
+    let ty = stanza::stanza_type(el);
+    let is_register = payload.is("query", NS_REGISTER);
+    let is_preauth = payload.is("preauth", NS_PARS);
+    if !(is_register || is_preauth) || !matches!(ty, "get" | "set") {
+        return None;
+    }
+    let reg = &ctx.registrar;
+    if !reg.offered(ch.ip, ch.tls) {
+        return stanza::error_reply_with(
+            el,
+            Condition::NotAllowed,
+            Some(&ctx.domain),
+            Some("Registration is not available on this connection (it needs TLS)."),
+            None,
+        );
+    }
+    if is_preauth {
+        let token = payload.attr("token").unwrap_or_default().to_owned();
+        if ty == "set" && reg.invite_valid(&token).await {
+            ch.invite = Some(token);
+            return Some(stanza::iq_result(el, Some(&ctx.domain), None));
+        }
+        return RegError::BadInvite.reply(el, &ctx.domain);
+    }
+    if ty == "get" {
+        let form = reg.form_query(ch.ip, ch.invite.is_some());
+        return Some(stanza::iq_result(el, Some(&ctx.domain), Some(form)));
+    }
+    if payload.has_child("remove", NS_REGISTER) {
+        return stanza::error_reply(el, Condition::BadRequest, Some(&ctx.domain));
+    }
+    let Some(req) = Registrar::parse_set(payload, ch.ip, ch.invite.clone()) else {
+        return stanza::error_reply_with(
+            el,
+            Condition::BadRequest,
+            Some(&ctx.domain),
+            Some("A username and a password are required."),
+            None,
+        );
+    };
+    match reg.register(req).await {
+        Ok(_) => {
+            ch.invite = None;
+            Some(stanza::iq_result(el, Some(&ctx.domain), None))
+        }
+        Err(e) => e.reply(el, &ctx.domain),
+    }
+}
+
 fn pre_auth_features(ctx: &HubCtx, ch: &ChannelState, offered: &[Mechanism]) -> StreamFeatures {
     let mut f = StreamFeatures::default();
-    if !ch.tls && ctx.tls.is_some() {
+    if ctx.registrar.offered(ch.ip, ch.tls) {
+        f.in_band_registration = true;
+        if ctx.registrar.mode() == crate::config::RegistrationMode::Pow {
+            f.others.push(Element::bare("register", crate::register::pow::NS));
+        }
+        f.others.push(Element::bare("register", NS_IBR_TOKEN));
+    }
+    if !ch.tls {
         f.starttls = Some(StartTls {
             required: !(ch.loopback && ctx.config.listen.allow_plaintext_loopback),
         });

@@ -1604,6 +1604,40 @@ Also tested: `rooms_survive_a_restart_and_history_is_served` (members-only confi
 6. **IQs to occupants** other than self-ping are not relayed (`service-unavailable`). There is no XEP-0421 occupant-id, no voice requests, and no room registration (reserved nicks).
 7. **Temporary rooms** (`persistentroom = 0`) and rooms left while still locked are destroyed when the last occupant leaves, archive included.
 
+### Public mode and web onboarding (the milestone after M1)
+
+#### Status and implementation notes (2026-11-10)
+
+**Done.** `hub init --public`, certificate files reloaded on change, XEP-0077 registration with native `urn:xmpp:ibr-pow:0` and XEP-0445 invitations, password change and account removal in-band, the HTTP page with optional web sign-up, and the essential limits.
+
+**What it does**
+1. **`agent-chat hub init --public --domain D [--cert F --key F] [--http ADDR] [--web-signup]`** listens on `0.0.0.0:5222` and `[::]:5222`, sets `tls.mode = "files"`, `registration.mode = "pow"`, and serves the page on `0.0.0.0:5280`. `localhost` and `.local` domains are refused. Web sign-up is off unless `--web-signup` is given.
+2. **Certificates from files.** The hub checks the files every `tls.reload_interval` (30 s) and on SIGHUP, and swaps in a changed certificate for new connections without a restart. Until usable files exist it serves a temporary self-signed certificate (`tls/fallback-*.pem`), as `server/deploy/start-prosody.sh` does today.
+3. **Registration** (`src/register/`), by `registration.mode`:
+   - `open` (the default for a loopback-only hub), `invite` (the default when it serves the network), `pow` (`--public`) or `closed`;
+   - in `pow` mode, loopback clients are exempt unless `exempt_loopback = false`;
+   - registration from non-loopback peers needs TLS.
+4. **PoW, compatible with `mod_register_pow`.** The checks run in its order and give its error conditions: `pow-required`, `challenge-invalid` (also for the wrong address prefix), `unsupported-algorithm`, `challenge-expired`, `challenge-used`, `challenge-outdated`, `solution-invalid`. It uses the same token format, HMAC binding, puzzle and parameters (`pow_bits = 25`, `pow_count = 8`, `pow_max_bits = 31`, 1 h TTL, /32 and /56 prefixes, +1 bit per success from a prefix in 24 h up to 6, load escalation above 30 an hour up to 4). `crates/server/src/register/pow.rs` checks the same §5.7 vector as `test_vector.lua`. The HMAC secret is stored in `meta`, so challenges survive a restart. The escalation state and the replay cache are in memory, as in the Lua module.
+5. **Per-IP limit:** at most `max_per_ip` (5) registrations per `per_ip_period` (1 h) per address prefix, after the proof is checked (Prosody's `registration_throttle_max`, which `mod_register_limits` checks at the same point). The error is `policy-violation` of type `wait`.
+6. **Invitations.** `agent-chat hub invite [--uses N] [--expires 7d]` prints a token and an `xmpp:D?register;preauth=TOKEN` URI. `<preauth xmlns='urn:xmpp:pars:0'/>` on the unauthenticated stream skips the PoW and the mode check. Only a SHA-256 of each token is stored.
+7. **Web page** (`src/http/`): a small HTTP/1.1 server with `/` (the agent instructions to copy, the server details for apps, and the sign-up form if enabled), `/agent.txt`, `/healthz` (JSON) and the sign-up API (`GET /api/challenge`, `POST /api/register`, JSON only). There is no TLS: put it behind the operator's HTTPS front end, and list that proxy in `http.trusted_proxies` so `X-Forwarded-For` gives the client address.
+8. **Web sign-up.** The browser solves the same puzzle in Web Workers (`pow-worker.js`: SHA-256 with a precomputed midstate, one worker per core), and the hub verifies it with the same `Registrar::register` as in-band registration. Web challenges are bound to the `web:` channel in the HMAC, so their lower difficulty can't be used in-band. Both channels share the escalation and the per-IP limit.
+9. **Limits:** a global `limits.max_connections` (10,000; loopback exempt) next to the per-IP caps; at most 256 HTTP connections, a 10 s read timeout, and 16 KiB for the request head and for the body.
+
+**Difficulty for the browser (measured 2026-11-10 on the dev machine, an 8-core Apple Silicon laptop)**
+
+| Solver | Hash rate |
+|---|---|
+| Native, release build (the client's loop: midstate clone + 8-byte nonce) | 5.5 MH/s per thread |
+| Native, debug build | 0.22 MH/s per thread |
+| `pow-worker.js` in V8 (Node 25) | 2.85 MH/s per thread |
+
+The reported 4 minutes for 215M hashes on 8 cores (about 0.9 MH/s in total) fits a **debug build** of `agent-chat`; the user's running daemon is `target/debug/agent-chat`. A release build solves 25 × 8 in about 6 s on 8 cores. In a browser, JavaScript is only about half as fast as native code; phones are the slow case. Default **`web_pow_bits = 22`, `web_pow_count = 8`**: about 33M expected hashes, roughly 2 s on an 8-core desktop browser and around 10 s on a typical phone (estimated at 3–4 MH/s over all cores). As `pow-registration.md` §4 says, SHA-256 PoW hardly slows a GPU, so the per-IP limit and escalation do the real work. In-band registration stays at 25 × 8.
+
+**Tests:** `tests/public.rs` covers open registration (form and legacy fields), PoW with each error condition, escalation and the throttle, invitations, password change and removal, the page, `/healthz`, web sign-up end to end over HTTP (and that a web token fails in-band), and certificate reload. `crates/cli/tests/hub_e2e.rs` covers `account register` against a PoW hub with the real client, and `hub init --public` with the certificate fallback. `register::tests` and `register::pow::tests` cover the rest. The JavaScript solver was checked against Node's crypto and the §5.7 vector by hand; CI doesn't run JavaScript.
+
+**Not done:** XEP-0478 limits advertisement, a per-session stanza rate limit (the byte rate limit covers floods), mDNS, the local CA mode, probation for PoW accounts (§5.7), and storing the escalation state.
+
 ### M6: registration and LAN mode (2 weeks)
 
 **Scope**

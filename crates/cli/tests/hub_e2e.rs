@@ -65,7 +65,7 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        for p in ["alice", "bob"] {
+        for p in ["alice", "bob", "agent"] {
             let _ = self.run(&["--profile", p, "daemon", "stop"]);
         }
         let _ = self.run(&["hub", "stop"]);
@@ -444,6 +444,113 @@ fn private_omemo_room_and_public_room() {
     assert_eq!(
         (m["body"].as_str(), m["kind"].as_str()),
         (Some("hello lobby"), Some("groupchat"))
+    );
+}
+
+/// Public-mode registration: `agent-chat account register` solves the hub's
+/// `urn:xmpp:ibr-pow:0` challenge (low difficulty for the test) and the
+/// new account logs in. Loopback is normally exempt; here it isn't.
+#[test]
+fn account_register_solves_the_hubs_proof_of_work() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    let port = free_port();
+    env.json(&[
+        "hub",
+        "init",
+        "--domain",
+        "hubtest.local",
+        "--listen",
+        &format!("127.0.0.1:{port}"),
+    ]);
+    let paths = agent_chat_server::HubPaths::at(env.hub_dir());
+    let mut cfg = agent_chat_server::Config::load(paths.config()).unwrap();
+    cfg.registration.mode = Some(agent_chat_server::config::RegistrationMode::Pow);
+    cfg.registration.exempt_loopback = false;
+    cfg.registration.pow_bits = 14;
+    cfg.registration.pow_count = 8;
+    std::fs::write(paths.config(), cfg.to_toml().unwrap()).unwrap();
+    env.json(&["hub", "start"]);
+    let out = env.run(&[
+        "--profile",
+        "agent",
+        "account",
+        "register",
+        "--server",
+        "hubtest.local",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &port.to_string(),
+        "--insecure-plaintext",
+        "--store",
+        "config",
+    ]);
+    let r = ok_json(out, &["account register"]);
+    let jid = r["jid"].as_str().unwrap().to_owned();
+    assert!(jid.ends_with("@hubtest.local"), "{r}");
+    assert_eq!(r["pow"]["bits"], 14, "solved the hub's challenge: {r}");
+    wait_for_state(&env, "agent", "online", Duration::from_secs(30));
+    let users = env.json(&["hub", "user", "list"]);
+    let created = users
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["jid"] == jid.as_str())
+        .unwrap();
+    assert_eq!(created["created_via"], "pow");
+}
+
+/// `hub init --public`: certificate files (absent at first: a temporary
+/// certificate), PoW registration, the web page with sign-up.
+#[test]
+fn hub_init_public_writes_a_public_configuration() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    let (port, http) = (free_port(), free_port());
+    let certs = env.home.path().join("certs");
+    let out = env.run(&["hub", "init", "--public", "--domain", "localhost"]);
+    assert!(!out.status.success(), "a public hub needs a real domain");
+    let init = env.json(&[
+        "hub",
+        "init",
+        "--public",
+        "--domain",
+        "chat.example.org",
+        "--listen",
+        &format!("127.0.0.1:{port}"),
+        "--cert",
+        certs.join("fullchain.pem").to_str().unwrap(),
+        "--key",
+        certs.join("privkey.pem").to_str().unwrap(),
+        "--http",
+        &format!("127.0.0.1:{http}"),
+        "--web-signup",
+    ]);
+    assert_eq!(init["tls_mode"], "files", "{init}");
+    let cfg = agent_chat_server::Config::load(&env.hub_dir().join("hub.toml")).unwrap();
+    assert_eq!(
+        cfg.registration_mode(),
+        agent_chat_server::config::RegistrationMode::Pow
+    );
+    assert!(cfg.registration.web);
+    env.json(&["hub", "start"]);
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", http)).unwrap();
+    use std::io::{Read, Write};
+    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut body = String::new();
+    s.read_to_string(&mut body).unwrap();
+    assert!(
+        body.starts_with("HTTP/1.1 200") && body.contains("\"ok\":true"),
+        "{body}"
     );
 }
 

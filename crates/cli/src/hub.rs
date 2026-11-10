@@ -33,6 +33,23 @@ pub enum HubCmd {
         /// Certificate source.
         #[arg(long, value_enum, default_value_t = TlsArg::SelfSigned)]
         tls: TlsArg,
+        /// A public hub for a real domain: listens on all interfaces, uses
+        /// certificate files (reloaded when they change) and requires a proof
+        /// of work (or an invitation) to register.
+        #[arg(long, requires = "domain")]
+        public: bool,
+        /// Certificate chain file (PEM), e.g. /certs/xmpp/fullchain.pem.
+        #[arg(long, value_name = "PATH")]
+        cert: Option<std::path::PathBuf>,
+        /// Private key file (PEM), e.g. /certs/xmpp/privkey.pem.
+        #[arg(long, value_name = "PATH")]
+        key: Option<std::path::PathBuf>,
+        /// Address of the onboarding web page (default with --public: 0.0.0.0:5280).
+        #[arg(long, value_name = "ADDR:PORT")]
+        http: Option<String>,
+        /// Let people sign up on the web page (the browser solves the proof of work).
+        #[arg(long)]
+        web_signup: bool,
     },
     /// Run the hub in the foreground (logs to stderr).
     Run,
@@ -45,6 +62,18 @@ pub enum HubCmd {
     /// Manage accounts.
     #[command(subcommand)]
     User(UserCmd),
+    /// Create an invitation: registration without proof of work (XEP-0445).
+    Invite {
+        /// How many accounts it may create.
+        #[arg(long, default_value_t = 1)]
+        uses: u32,
+        /// How long it is valid, e.g. 7d, 12h.
+        #[arg(long, default_value = "7d")]
+        expires: String,
+        /// A note for yourself.
+        #[arg(long)]
+        note: Option<String>,
+    },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -88,7 +117,13 @@ pub async fn run(cmd: HubCmd, fmt: Format) -> Result<()> {
             lan,
             listen,
             tls,
+            public,
+            cert,
+            key,
+            http,
+            web_signup,
         } => {
+            let files = public || cert.is_some();
             let report = agent_chat_server::init(
                 &paths,
                 InitOptions {
@@ -96,10 +131,16 @@ pub async fn run(cmd: HubCmd, fmt: Format) -> Result<()> {
                     lan,
                     listen,
                     tls_mode: Some(match tls {
+                        _ if files => TlsMode::Files,
                         TlsArg::SelfSigned => TlsMode::SelfSigned,
                         TlsArg::LocalCa => TlsMode::LocalCa,
                         TlsArg::Files => TlsMode::Files,
                     }),
+                    public,
+                    cert,
+                    key,
+                    http,
+                    web_signup,
                 },
             )
             .await?;
@@ -144,6 +185,19 @@ pub async fn run(cmd: HubCmd, fmt: Format) -> Result<()> {
             }
         }
         HubCmd::User(cmd) => user(&paths, cmd, fmt).await?,
+        HubCmd::Invite { uses, expires, note } => {
+            let expires = agent_chat_server::config::parse_duration(&expires)?;
+            let v = connect(&paths)
+                .await?
+                .call_value(AdminRequest::InviteCreate {
+                    uses,
+                    expires_secs: expires.as_secs(),
+                    note,
+                })
+                .await
+                .map_err(admin_err)?;
+            print_json(&v);
+        }
     }
     Ok(())
 }

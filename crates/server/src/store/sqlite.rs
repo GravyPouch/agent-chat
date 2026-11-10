@@ -21,6 +21,7 @@ use crate::util::{now_ms, random_bytes};
 const MIGRATIONS: &[(&str, &str)] = &[
     ("0001_init", include_str!("migrations/0001_init.sql")),
     ("0002_im", include_str!("migrations/0002_im.sql")),
+    ("0003_invites", include_str!("migrations/0003_invites.sql")),
 ];
 
 const READERS: usize = 4;
@@ -908,6 +909,49 @@ impl Store for SqliteStore {
                 )?,
             };
             Ok(())
+        })
+    }
+
+    // ----------------------------------------------------------- invites
+
+    fn invite_put<'a>(
+        &'a self,
+        token_hash: &'a str,
+        expires_ms: i64,
+        uses: u32,
+        note: Option<String>,
+    ) -> BoxFut<'a, ()> {
+        let token_hash = token_hash.to_owned();
+        self.write(move |conn| {
+            conn.execute(
+                "INSERT INTO invites (token_hash, created_ms, expires_ms, uses_left, note) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![token_hash, now_ms(), expires_ms, uses as i64, note],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn invite_valid<'a>(&'a self, token_hash: &'a str, now_ms: i64) -> BoxFut<'a, bool> {
+        let token_hash = token_hash.to_owned();
+        self.read(move |conn| {
+            let n: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM invites WHERE token_hash = ?1 AND expires_ms > ?2 AND uses_left > 0",
+                params![token_hash, now_ms],
+                |r| r.get(0),
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    fn invite_use<'a>(&'a self, token_hash: &'a str, now_ms: i64) -> BoxFut<'a, bool> {
+        let token_hash = token_hash.to_owned();
+        self.write(move |conn| {
+            let n = conn.execute(
+                "UPDATE invites SET uses_left = uses_left - 1 \
+                 WHERE token_hash = ?1 AND expires_ms > ?2 AND uses_left > 0",
+                params![token_hash, now_ms],
+            )?;
+            Ok(n > 0)
         })
     }
 }
