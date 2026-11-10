@@ -619,6 +619,18 @@ fn own_identity_public(mgr: &Manager, v: Version) -> Option<Vec<u8>> {
         .ok()
 }
 
+/// Our own OMEMO devices as (device id, 64-hex fingerprint), for QR codes.
+pub fn own_fingerprints(core: &Core) -> Vec<(u32, String)> {
+    let Ok(mgr) = manager(core) else { return vec![] };
+    VERSIONS
+        .into_iter()
+        .filter_map(|v| {
+            let public = own_identity_public(&mgr, v)?;
+            Some((mgr.device_id(v), fingerprint::fingerprint(Version::Legacy, &public)?))
+        })
+        .collect()
+}
+
 fn device_info(mgr: &Manager, v: Version, row: &super::store::DeviceRow, own: &str) -> DeviceInfo {
     let this = row.jid == own && row.device_id == mgr.device_id(v);
     let key = if this { own_identity_public(mgr, v) } else { row.identity_key.clone() };

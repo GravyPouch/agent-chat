@@ -146,6 +146,16 @@ enum Cmd {
         #[arg(long)]
         mcp_json: bool,
     },
+    /// QR codes and xmpp: links to use this account from a phone or another
+    /// XMPP app (Monal, Siskin, Conversations, Dino, Gajim…).
+    Phone {
+        /// Only the sign-up code for this server.
+        #[arg(long, conflicts_with = "contact")]
+        register: bool,
+        /// Only the "chat with this account" code.
+        #[arg(long)]
+        contact: bool,
+    },
     /// Install the CLI (and GUI) on PATH and the agent skill for Claude Code.
     Install {
         /// Where to put the binaries (default: ~/.local/bin).
@@ -412,6 +422,18 @@ async fn run(cli: Cli) -> Result<()> {
                     .await
                     .map_err(|_| Exit(3, "daemon is not running".into()))?;
                 client.call_value(Request::Shutdown).await?;
+                // Wait until it has really exited (socket gone), so a command
+                // run right after doesn't race the old daemon's lock.
+                let socket = profile.socket_path();
+                for _ in 0..100 {
+                    if !socket.exists() || IpcClient::connect(&socket).await.is_err() {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        if !socket.exists() {
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
                 return Ok(());
             }
             DaemonCmd::Status => {
@@ -617,6 +639,50 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Account(AccountCmd::Register { .. }) | Cmd::Install { .. } | Cmd::Uninstall { .. } => {
             unreachable!("handled before connecting")
+        }
+        Cmd::Phone { register, contact } => {
+            use agent_chat_proto::phone;
+            let status: StatusInfo = client.call(Request::Status).await?;
+            let Some(jid) = status.account.clone() else {
+                return Err(Exit(3, "no account configured; run `agent-chat account add` or `account register` first".into()).into());
+            };
+            let domain = jid.rsplit('@').next().unwrap_or_default().to_owned();
+            let devices: Vec<DeviceInfo> = client.call(Request::OmemoDevices { jid: None }).await.unwrap_or_default();
+            let fingerprints: Vec<(u32, String)> = devices
+                .iter()
+                .filter(|d| d.this_device)
+                .filter_map(|d| Some((d.device_id, d.fingerprint.clone()?)))
+                .collect();
+            let register_uri = phone::register_uri(&domain);
+            let contact_uri = phone::contact_uri(&jid, &fingerprints);
+            let local = phone::local_only(&domain);
+            match fmt {
+                Format::Json => print_json(&serde_json::json!({
+                    "jid": jid,
+                    "register_uri": register_uri,
+                    "contact_uri": contact_uri,
+                    "reachable_from_phone": !local,
+                })),
+                Format::Text => {
+                    if local {
+                        println!(
+                            "Note: {jid} is on `{domain}`, which only this computer can reach. A phone needs a \
+                             server it can reach, such as the Tailscale test server (dev/tailscale)."
+                        );
+                    }
+                    println!("Scan with your phone's camera; it opens your XMPP app (Monal or Siskin on iPhone, Conversations on Android).\n");
+                    if !contact {
+                        println!("1. Create your own account on {domain}:");
+                        print!("{}", phone::qr_terminal(&register_uri));
+                        println!("   {register_uri}\n");
+                    }
+                    if !register {
+                        println!("2. Chat with {jid} (adds the contact and verifies its encryption keys):");
+                        print!("{}", phone::qr_terminal(&contact_uri));
+                        println!("   {contact_uri}");
+                    }
+                }
+            }
         }
         Cmd::Mcp { consumer } => {
             return mcp::serve(client, consumer).await;

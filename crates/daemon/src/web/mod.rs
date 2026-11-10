@@ -54,6 +54,54 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+fn inline_svg(svg: &str) -> &str {
+    // Drop the XML declaration so the SVG can sit inside HTML.
+    svg.find("<svg").map(|i| &svg[i..]).unwrap_or("")
+}
+
+fn phone_section(core: &Core) -> String {
+    use agent_chat_proto::phone;
+    let Some(jid) = core.status().account else {
+        return "<p class=\"muted\">Set up an account first; then QR codes for your phone appear here.</p>".into();
+    };
+    let domain = jid.rsplit('@').next().unwrap_or_default().to_owned();
+    if phone::local_only(&domain) {
+        return format!(
+            "<p class=\"muted\">This account is on <code>{}</code>, which only this computer can reach. \
+             To connect from a phone, use a server the phone can reach, for example the Tailscale test server \
+             (<code>dev/tailscale</code>). Then QR codes to sign up and to chat with this account appear here.</p>",
+            html_escape(&domain)
+        );
+    }
+    let register = phone::register_uri(&domain);
+    let contact = phone::contact_uri(&jid, &crate::omemo::xmpp::own_fingerprints(core));
+    let card = |title: &str, note: &str, uri: &str| {
+        format!(
+            "<div class=\"qr\"><p><strong>{}</strong></p>{}<p><a href=\"{}\">{}</a></p><p class=\"muted\">{}</p></div>",
+            html_escape(title),
+            inline_svg(&phone::qr_svg(uri, 200)),
+            html_escape(uri),
+            html_escape(uri),
+            html_escape(note)
+        )
+    };
+    format!(
+        "<p class=\"muted\">Scan with your phone's camera. It opens your XMPP app: Monal or Siskin on iPhone, \
+         Conversations on Android. On a Tailscale server, the phone also needs the Tailscale app connected.</p>\
+         <div class=\"qrs\">{}{}</div>",
+        card(
+            &format!("1. Create your own account on {domain}"),
+            "Opens your app's sign-up for this server. Skip this if you already have an account it can reach.",
+            &register
+        ),
+        card(
+            &format!("2. Chat with {jid}"),
+            "Adds this account as a contact and verifies its encryption keys.",
+            &contact
+        )
+    )
+}
+
 pub fn render_page(core: &Core) -> String {
     let status = core.status();
     let setup = setup_for(core);
@@ -82,6 +130,7 @@ pub fn render_page(core: &Core) -> String {
         .replace("{{MCP_JSON}}", &html_escape(&setup.mcp_json()))
         .replace("{{CLI_ROWS}}", &rows)
         .replace("{{PROFILE}}", &html_escape(&setup.profile))
+        .replace("{{PHONE}}", &phone_section(core))
 }
 
 /// Bind the first free port from `base` and serve until the daemon exits.
