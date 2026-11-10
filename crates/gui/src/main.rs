@@ -2,6 +2,7 @@
 
 mod app;
 mod face;
+mod menus;
 
 use std::sync::Arc;
 
@@ -111,6 +112,7 @@ fn main() {
 
     application().with_assets(AppAssets).run(move |cx| {
         init(cx);
+        menus::init(cx);
         Theme::sync_system_appearance(None, cx);
         cx.set_reduce_motion(reduce_motion());
         let bounds = WindowBounds::centered(size(px(1120.), px(760.)), cx);
@@ -133,7 +135,7 @@ fn main() {
                     chat
                 })
             })
-            .map(|_| ()),
+            .map(|(handle, chat)| menus::register_chat_window(handle, chat.downgrade(), cx)),
             Err(e) => {
                 let message: SharedString = format!("{e:#}").into();
                 open_window(options, cx, move |_, cx| cx.new(|_| app::ErrorView { message })).map(|_| ())

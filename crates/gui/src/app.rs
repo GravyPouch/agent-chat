@@ -12,11 +12,14 @@ use agent_chat_proto::model::{
 use agent_chat_proto::{CallError, IpcClient};
 use boopface::Signal;
 use chrono::{Local, NaiveDate};
+use gpui_kit::base::input::Copy as CopyAction;
+use gpui_kit::base::{SelectableText, TextSelection};
 use gpui_kit::component::bubble::{Bubble, BubbleVariant};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::message::{
     Message as MessageView, MessageAlignment, MessageAvatar, MessageContent, MessageFooter, MessageHeader,
 };
@@ -29,6 +32,8 @@ use serde::de::DeserializeOwned;
 use crate::face::{self, AnimatedFace};
 
 type LucideIcon = gpui_kit::assets::IconName;
+/// A dialog's submit handler.
+type Submit = fn(&mut ChatApp, &mut Window, &mut Context<ChatApp>);
 
 /// Shown when the daemon can't be reached at all.
 pub struct ErrorView {
@@ -168,7 +173,7 @@ impl ChatApp {
         let room_nick = input("Nickname (optional)", window, cx);
         let invite_jid = input("friend@example.org", window, cx);
 
-        let subscriptions =
+        let mut subscriptions =
             vec![cx.subscribe_in(
                 &composer,
                 window,
@@ -178,6 +183,26 @@ impl ChatApp {
                     _ => {}
                 },
             )];
+        // Enter in a dialog field submits the dialog.
+        let submit_on_enter: [(&Entity<InputState>, Submit); 8] = [
+            (&account_jid, Self::submit_account_dialog),
+            (&account_password, Self::submit_account_dialog),
+            (&account_host, Self::submit_account_dialog),
+            (&contact_jid, Self::submit_add_contact),
+            (&contact_name, Self::submit_add_contact),
+            (&room_jid, Self::submit_join_room),
+            (&room_nick, Self::submit_join_room),
+            (&invite_jid, Self::submit_invite),
+        ];
+        for (input, submit) in submit_on_enter {
+            subscriptions.push(
+                cx.subscribe_in(input, window, move |this, _, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        submit(this, window, cx);
+                    }
+                }),
+            );
+        }
 
         let mut app = Self {
             client,
@@ -677,7 +702,7 @@ impl ChatApp {
             self.account_password.clone(),
             self.account_host.clone(),
         );
-        jid.update(cx, |s, cx| s.focus(window, cx));
+        let first = jid.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
             let app = this.read(cx);
             let (busy, insecure, error) = (app.account_busy, app.account_insecure, app.account_error.clone());
@@ -723,14 +748,22 @@ impl ChatApp {
                     ),
                 )
         });
+        // The dialog takes focus when it opens; hand it to the first field.
+        first.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    fn submit_account_dialog(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.account_busy {
+            self.submit_account(cx);
+        }
     }
 
     fn open_add_contact(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity();
         let (jid, name) = (self.contact_jid.clone(), self.contact_name.clone());
-        jid.update(cx, |s, cx| s.focus(window, cx));
+        let first = jid.clone();
         window.open_dialog(cx, move |dialog, _, _| {
-            let (this, jid2, name2) = (this.clone(), jid.clone(), name.clone());
+            let this = this.clone();
             dialog
                 .title("Add a contact")
                 .child(v_flex().gap_3().child(Input::new(&jid)).child(Input::new(&name)))
@@ -742,41 +775,44 @@ impl ChatApp {
                                 .primary()
                                 .label("Add")
                                 .on_click(move |_, window, cx| {
-                                    let jid = jid2.read(cx).value().trim().to_string();
-                                    let name = name2.read(cx).value().trim().to_string();
-                                    if jid.is_empty() {
-                                        return;
-                                    }
-                                    this.update(cx, |a, cx| {
-                                        a.call::<serde_json::Value>(
-                                            Request::ContactAdd {
-                                                jid,
-                                                name: (!name.is_empty()).then_some(name),
-                                            },
-                                            cx,
-                                            |a, r, cx| {
-                                                if let Err(e) = r {
-                                                    a.error = Some(format!("Couldn't add contact: {e}"));
-                                                }
-                                                a.reload_contacts(cx);
-                                            },
-                                        );
-                                    });
-                                    jid2.update(cx, |s, cx| s.set_value("", window, cx));
-                                    name2.update(cx, |s, cx| s.set_value("", window, cx));
-                                    window.close_dialog(cx);
+                                    this.update(cx, |a, cx| a.submit_add_contact(window, cx));
                                 }),
                         ),
                 )
         });
+        first.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    fn submit_add_contact(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let jid = self.contact_jid.read(cx).value().trim().to_string();
+        let name = self.contact_name.read(cx).value().trim().to_string();
+        if jid.is_empty() {
+            return;
+        }
+        self.call::<serde_json::Value>(
+            Request::ContactAdd {
+                jid,
+                name: (!name.is_empty()).then_some(name),
+            },
+            cx,
+            |a, r, cx| {
+                if let Err(e) = r {
+                    a.error = Some(format!("Couldn't add contact: {e}"));
+                }
+                a.reload_contacts(cx);
+            },
+        );
+        self.contact_jid.update(cx, |s, cx| s.set_value("", window, cx));
+        self.contact_name.update(cx, |s, cx| s.set_value("", window, cx));
+        window.close_dialog(cx);
     }
 
     fn open_join_room(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity();
         let (jid, nick) = (self.room_jid.clone(), self.room_nick.clone());
-        jid.update(cx, |s, cx| s.focus(window, cx));
+        let first = jid.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
-            let (this, jid2, nick2) = (this.clone(), jid.clone(), nick.clone());
+            let this = this.clone();
             dialog
                 .title("Join or create a group chat")
                 .child(
@@ -805,48 +841,50 @@ impl ChatApp {
                                 .primary()
                                 .label("Join")
                                 .on_click(move |_, window, cx| {
-                                    let jid = jid2.read(cx).value().trim().to_string();
-                                    let nick = nick2.read(cx).value().trim().to_string();
-                                    if jid.is_empty() {
-                                        return;
-                                    }
-                                    this.update(cx, |a, cx| {
-                                        let room = jid.clone();
-                                        let private = a.room_private;
-                                        a.call::<Room>(
-                                            Request::RoomJoin {
-                                                jid,
-                                                nick: (!nick.is_empty()).then_some(nick),
-                                                password: None,
-                                                private,
-                                            },
-                                            cx,
-                                            move |a, r, cx| match r {
-                                                Ok(_) => {
-                                                    a.reload_rooms(cx);
-                                                    a.selected = None;
-                                                    a.pending_select = Some(room);
-                                                }
-                                                Err(e) => a.error = Some(format!("Couldn't join: {e}")),
-                                            },
-                                        );
-                                    });
-                                    jid2.update(cx, |s, cx| s.set_value("", window, cx));
-                                    nick2.update(cx, |s, cx| s.set_value("", window, cx));
-                                    window.close_dialog(cx);
+                                    this.update(cx, |a, cx| a.submit_join_room(window, cx));
                                 }),
                         ),
                 )
         });
+        first.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    fn submit_join_room(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let jid = self.room_jid.read(cx).value().trim().to_string();
+        let nick = self.room_nick.read(cx).value().trim().to_string();
+        if jid.is_empty() {
+            return;
+        }
+        let room = jid.clone();
+        self.call::<Room>(
+            Request::RoomJoin {
+                jid,
+                nick: (!nick.is_empty()).then_some(nick),
+                password: None,
+                private: self.room_private,
+            },
+            cx,
+            move |a, r, cx| match r {
+                Ok(_) => {
+                    a.reload_rooms(cx);
+                    a.selected = None;
+                    a.pending_select = Some(room);
+                }
+                Err(e) => a.error = Some(format!("Couldn't join: {e}")),
+            },
+        );
+        self.room_jid.update(cx, |s, cx| s.set_value("", window, cx));
+        self.room_nick.update(cx, |s, cx| s.set_value("", window, cx));
+        window.close_dialog(cx);
     }
 
     fn open_invite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(room) = self.selected.clone() else { return };
         let this = cx.entity();
         let jid = self.invite_jid.clone();
-        jid.update(cx, |s, cx| s.focus(window, cx));
+        let first = jid.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
-            let (this, jid2, room2) = (this.clone(), jid.clone(), room.clone());
+            let this = this.clone();
             let private = this.read(cx).rooms.iter().any(|r| r.jid == room && r.private);
             dialog
                 .title(format!("Invite to {}", local_part(&room)))
@@ -864,24 +902,96 @@ impl ChatApp {
                     DialogFooter::new()
                         .child(DialogClose::new().trigger(|b| b.label("Cancel")))
                         .child(Button::new("send-invite").primary().label("Invite").on_click(move |_, window, cx| {
-                            let jid = jid2.read(cx).value().trim().to_string();
-                            if jid.is_empty() {
-                                return;
-                            }
-                            let room = room2.clone();
-                            this.update(cx, |a, cx| {
-                                a.call::<serde_json::Value>(Request::RoomInvite { room, jid, reason: None }, cx, |a, r, cx| {
-                                    if let Err(e) = r {
-                                        a.error = Some(format!("Couldn't invite: {e}"));
-                                    }
-                                    a.reload_rooms(cx);
-                                });
-                            });
-                            jid2.update(cx, |s, cx| s.set_value("", window, cx));
-                            window.close_dialog(cx);
+                            this.update(cx, |a, cx| a.submit_invite(window, cx));
                         })),
                 )
         });
+        first.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    fn submit_invite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(room) = self.selected.clone() else { return };
+        let jid = self.invite_jid.read(cx).value().trim().to_string();
+        if jid.is_empty() {
+            return;
+        }
+        self.call::<serde_json::Value>(
+            Request::RoomInvite {
+                room,
+                jid,
+                reason: None,
+            },
+            cx,
+            |a, r, cx| {
+                if let Err(e) = r {
+                    a.error = Some(format!("Couldn't invite: {e}"));
+                }
+                a.reload_rooms(cx);
+            },
+        );
+        self.invite_jid.update(cx, |s, cx| s.set_value("", window, cx));
+        window.close_dialog(cx);
+    }
+
+    /// agent-chat › About agent-chat.
+    pub fn show_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.open_dialog(cx, |dialog, _, cx| {
+            let muted = cx.theme().muted_foreground;
+            dialog
+                .title("About agent-chat")
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(muted)
+                                .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .child("An end-to-end encrypted XMPP messenger for people and AI agents."),
+                        )
+                        .child(div().text_sm().text_color(muted).child(
+                            "Licensed under the GNU General Public License v3.0 or later. \
+                             Includes libomemo-c (GPL-3.0) and ports of BoopFace (MIT).",
+                        ))
+                        .child(
+                            Button::new("about-repo")
+                                .ghost()
+                                .small()
+                                .label(env!("CARGO_PKG_REPOSITORY"))
+                                .on_click(|_, _, cx| cx.open_url(env!("CARGO_PKG_REPOSITORY"))),
+                        ),
+                )
+                .footer(DialogFooter::new().child(DialogClose::new().trigger(|b| b.label("OK"))))
+        });
+    }
+
+    /// File › New Chat (Cmd+N).
+    pub fn new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !window.has_active_dialog(cx) {
+            self.open_add_contact(window, cx);
+        }
+    }
+
+    /// File › New Group Chat (Shift+Cmd+N).
+    pub fn new_group_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !window.has_active_dialog(cx) {
+            self.open_join_room(window, cx);
+        }
+    }
+
+    /// Copy selected message text even while the composer has focus: the
+    /// focused input would otherwise copy its own (empty) selection.
+    fn copy_selection(&mut self, _: &CopyAction, window: &mut Window, cx: &mut Context<Self>) {
+        let text = TextSelection::selected_text(window, cx);
+        if text.trim().is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        cx.stop_propagation();
     }
 
     /// Instructions for connecting an agent to this profile.
@@ -1759,7 +1869,10 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
         .when(m.encryption.as_ref().is_some_and(|e| e.error.is_some()), |b| {
             b.with_variant(BubbleVariant::Outline)
         })
-        .child(m.body.clone());
+        .child(SelectableText::new(
+            ElementId::NamedInteger("body".into(), m.id as u64),
+            m.body.clone(),
+        ));
 
     let mut view = MessageView::new()
         .id(ElementId::NamedInteger("msg".into(), m.id as u64))
@@ -1796,7 +1909,9 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
         }
     }
 
+    let body = m.body.clone();
     v_flex()
+        .id(ElementId::NamedInteger("msg-row".into(), m.id as u64))
         .w_full()
         .pt(if same_sender_as_prev { px(2.) } else { px(10.) })
         .when(new_day, |el| {
@@ -1814,6 +1929,13 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
             )
         })
         .child(view)
+        .context_menu(move |menu, _, _| {
+            let body = body.clone();
+            menu.item(
+                PopupMenuItem::new("Copy Message")
+                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(body.clone()))),
+            )
+        })
         .into_any_element()
 }
 
@@ -1851,6 +1973,7 @@ impl Render for ChatApp {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
+            .capture_action(cx.listener(Self::copy_selection))
             .child(self.render_sidebar(window, cx))
             .child(
                 v_flex()
