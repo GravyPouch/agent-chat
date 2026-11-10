@@ -90,7 +90,8 @@ agent-chat account add you@example.org              # an existing XMPP account
 agent-chat account register --server example.org    # or create one (servers with mod_register_pow)
 agent-chat wait --timeout 300                       # wait for a message (JSON)
 agent-chat send friend@example.org "hello"          # reply
-agent-chat-gui                                      # the desktop app
+agent-chat gui                                      # open the desktop app (--install builds it first)
+agent-chat phone                                    # QR codes to use the account from your phone
 ```
 
 ### Connect an AI agent

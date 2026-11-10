@@ -156,6 +156,18 @@ enum Cmd {
         #[arg(long)]
         contact: bool,
     },
+    /// Open the desktop app (building and installing it first with --install).
+    Gui {
+        /// Start with this conversation open.
+        #[arg(long)]
+        open: Option<String>,
+        /// Build the app from source and install it next to this binary.
+        #[arg(long)]
+        install: bool,
+        /// With --install: don't open it afterwards.
+        #[arg(long, requires = "install")]
+        no_launch: bool,
+    },
     /// Install the CLI (and GUI) on PATH and the agent skill for Claude Code.
     Install {
         /// Where to put the binaries (default: ~/.local/bin).
@@ -475,6 +487,32 @@ async fn run(cli: Cli) -> Result<()> {
             }
             return Ok(());
         }
+        Cmd::Gui { open, install: build, no_launch } => {
+            let mut built = false;
+            let gui = match (install::find_gui(), *build) {
+                (Some(g), false) => g,
+                (_, true) => {
+                    built = true;
+                    install::build_and_install_gui()?
+                }
+                (None, false) => {
+                    return Err(Exit(
+                        1,
+                        "The desktop app isn't installed. Run `agent-chat gui --install` to build and install it \
+                         (needs the GPUI build dependencies; see the README)."
+                            .into(),
+                    )
+                    .into());
+                }
+            };
+            let pid = if *no_launch {
+                None
+            } else {
+                Some(install::launch_gui(&gui, &profile, open.as_deref())?)
+            };
+            print_json(&serde_json::json!({"ok": true, "gui": gui, "built": built, "pid": pid}));
+            return Ok(());
+        }
         Cmd::Uninstall { bin_dir, skills_dir } => {
             print_json(&install::uninstall(bin_dir.clone(), skills_dir.clone())?);
             return Ok(());
@@ -637,7 +675,7 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Cmd::Account(AccountCmd::Register { .. }) | Cmd::Install { .. } | Cmd::Uninstall { .. } => {
+        Cmd::Account(AccountCmd::Register { .. }) | Cmd::Install { .. } | Cmd::Uninstall { .. } | Cmd::Gui { .. } => {
             unreachable!("handled before connecting")
         }
         Cmd::Phone { register, contact } => {

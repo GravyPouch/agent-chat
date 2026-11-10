@@ -103,6 +103,7 @@ done
 | `agent-chat rooms join ROOM@SERVICE --private` | Create a private room (members-only); its messages are end-to-end encrypted |
 | `agent-chat rooms invite ROOM JID` / `rooms invites` / `rooms decline ROOM` | Invite someone; list or ignore invitations you received |
 | `agent-chat presence away "busy"` | Presence |
+| `agent-chat gui [--open JID]` / `gui --install` | Open the desktop app for this profile, or build and install it first |
 | `agent-chat phone` | QR codes and `xmpp:` links: sign up on this server, or chat with this account, from a phone (Monal, Siskin, Conversations) |
 | `agent-chat omemo devices [JID]` / `omemo trust JID FINGERPRINT` | Encryption devices and trust |
 

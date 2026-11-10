@@ -243,3 +243,74 @@ mod tests {
         assert!(!bin.join("agent-chat").exists());
     }
 }
+
+// ------------------------------------------------------------------ GUI
+
+/// The desktop app: next to this binary, else on PATH.
+pub fn find_gui() -> Option<PathBuf> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.canonicalize().ok())
+        .map(|e| e.with_file_name("agent-chat-gui"))
+        .filter(|p| p.is_file());
+    beside.or_else(|| find_on_path("agent-chat-gui"))
+}
+
+/// The source checkout this binary was built from, if it still exists.
+pub fn source_root() -> Option<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?.parent()?.to_path_buf();
+    (root.join("Cargo.toml").is_file() && root.join("crates/gui/Cargo.toml").is_file()).then_some(root)
+}
+
+/// Build the desktop app from source (release) and put it next to this
+/// binary, unless this binary runs from the checkout's target directory.
+pub fn build_and_install_gui() -> Result<PathBuf> {
+    let root = source_root().ok_or_else(|| {
+        anyhow!(
+            "no source checkout found to build the desktop app from; install it with \
+             `cargo install --git https://github.com/GravyPouch/agent-chat agent-chat-gui`"
+        )
+    })?;
+    eprintln!("Building the desktop app in {} (this can take a few minutes the first time)…", root.display());
+    let status = Command::new("cargo")
+        .args(["build", "--release", "-p", "agent-chat-gui"])
+        .current_dir(&root)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .context("running cargo (is the Rust toolchain installed?)")?;
+    if !status.success() {
+        return Err(anyhow!("building the desktop app failed (see the output above)"));
+    }
+    let built = root.join("target/release/agent-chat-gui");
+    let exe_dir = std::env::current_exe()?.canonicalize()?.parent().map(Path::to_path_buf);
+    match exe_dir {
+        // Running from the checkout: use the build output in place.
+        Some(dir) if dir.starts_with(root.join("target")) => Ok(built),
+        Some(dir) => {
+            let dst = dir.join("agent-chat-gui");
+            install_binary(&built, &dst)?;
+            Ok(dst)
+        }
+        None => Ok(built),
+    }
+}
+
+/// Start the desktop app detached from this terminal.
+pub fn launch_gui(gui: &Path, profile: &Profile, open: Option<&str>) -> Result<u32> {
+    let mut cmd = Command::new(gui);
+    cmd.args(["--profile", &profile.name]);
+    if let Some(jid) = open {
+        cmd.args(["--open", jid]);
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let child = cmd.spawn().with_context(|| format!("starting {}", gui.display()))?;
+    Ok(child.id())
+}
