@@ -31,7 +31,12 @@ pub use paths::HubPaths;
 pub fn init_logging(cfg: &config::Log) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(format!("{},tokio_xmpp=warn", cfg.level)));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr);
+    use std::io::IsTerminal;
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        // No colour codes in hub.log when detached.
+        .with_ansi(std::io::stderr().is_terminal());
     let _ = match cfg.format {
         config::LogFormat::Json => builder.json().try_init(),
         config::LogFormat::Text => builder.try_init(),
