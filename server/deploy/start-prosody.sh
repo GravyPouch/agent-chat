@@ -35,9 +35,12 @@ trap 'kill -TERM "$prosody_pid" 2>/dev/null || true; wait "$prosody_pid" || true
             current="$(sha256sum /certs/xmpp/fullchain.pem | cut -d' ' -f1)"
             if [[ "$current" != "$previous" ]]; then
                 install_certificate
-                prosodyctl reload
-                previous="$current"
-                echo "Installed renewed XMPP certificate"
+                # The image ships systemd detection but runs without systemd.
+                # Signal Prosody itself, using its own PID rather than runuser's.
+                if kill -HUP "$(cat /var/run/prosody/prosody.pid)"; then
+                    previous="$current"
+                    echo "Installed renewed XMPP certificate"
+                fi
             fi
         fi
         sleep 60
