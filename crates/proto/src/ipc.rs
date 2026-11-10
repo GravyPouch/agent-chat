@@ -57,6 +57,9 @@ pub enum Request {
         /// Skip messages from untrusted OMEMO devices (they stay unread).
         #[serde(default)]
         require_trusted: bool,
+        /// Don't tell the senders we're typing (see `settings.agent_typing`).
+        #[serde(default, skip_serializing_if = "is_false")]
+        no_typing: bool,
     },
     /// Block until the next unread message. Result: `Option<Message>` (`null` on timeout).
     Wait {
@@ -69,6 +72,9 @@ pub enum Request {
         timeout_secs: Option<u64>,
         #[serde(default)]
         require_trusted: bool,
+        /// Don't tell the sender we're typing (`listen`, which only watches).
+        #[serde(default, skip_serializing_if = "is_false")]
+        no_typing: bool,
     },
     /// Stored history of a conversation, oldest first. Result: `Vec<Message>`.
     History {
@@ -142,9 +148,16 @@ pub enum Request {
         /// `true` = verified, `false` = untrusted.
         trusted: bool,
     },
-    /// Send an XEP-0085 chat state (e.g. "composing") in a 1:1 chat; refused
-    /// for rooms. Result: `null`.
-    SendChatState { to: String, state: ChatState },
+    /// Send an XEP-0085 chat state (e.g. "composing") to a contact or a
+    /// joined room. Result: `null`.
+    SendChatState {
+        to: String,
+        state: ChatState,
+        /// After "composing", send "active" by itself if no message follows
+        /// within the typing timeout (`settings.agent_typing_timeout_secs`).
+        #[serde(default, skip_serializing_if = "is_false")]
+        auto_stop: bool,
+    },
     /// Start receiving [`Event`]s on this connection. Result: `null`.
     Subscribe,
     /// Stop the daemon. Result: `null`.
@@ -153,6 +166,10 @@ pub enum Request {
 
 fn default_history_limit() -> u32 {
     50
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -211,10 +228,13 @@ pub enum Event {
         jid: String,
         protocol: EncryptionProtocol,
     },
-    /// XEP-0085: a contact's chat state in a 1:1 chat (bare JID), e.g. typing.
+    /// XEP-0085: someone's chat state, e.g. typing. In a 1:1 chat `jid` is
+    /// the contact's bare JID; in a room it is the room and `nick` says who.
     ChatState {
         jid: String,
         state: ChatState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nick: Option<String>,
     },
 }
 
@@ -306,11 +326,25 @@ mod tests {
         let json = serde_json::to_string(&Event::ChatState {
             jid: "bob@example.org".into(),
             state: ChatState::Paused,
+            nick: None,
         })
         .unwrap();
         assert_eq!(
             json,
             r#"{"type":"chat_state","data":{"jid":"bob@example.org","state":"paused"}}"#
+        );
+        // In a room the occupant's nick comes along.
+        let room: Event = serde_json::from_str(
+            r#"{"type":"chat_state","data":{"jid":"team@conf.example.org","state":"composing","nick":"bob"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            room,
+            Event::ChatState {
+                jid: "team@conf.example.org".into(),
+                state: ChatState::Composing,
+                nick: Some("bob".into())
+            }
         );
         let f: ClientFrame = serde_json::from_str(
             r#"{"id":4,"method":"send_chat_state","params":{"to":"bob@example.org","state":"composing"}}"#,
@@ -320,9 +354,46 @@ mod tests {
             f.request,
             Request::SendChatState {
                 to: "bob@example.org".into(),
-                state: ChatState::Composing
+                state: ChatState::Composing,
+                auto_stop: false,
             }
         );
+        // Optional flags stay off the wire unless set.
+        let json = serde_json::to_string(&ClientFrame {
+            id: 5,
+            request: Request::SendChatState {
+                to: "bob@example.org".into(),
+                state: ChatState::Composing,
+                auto_stop: true,
+            },
+        })
+        .unwrap();
+        assert!(json.contains(r#""auto_stop":true"#), "{json}");
+    }
+
+    #[test]
+    fn no_typing_is_optional_and_omitted_when_off() {
+        let f: ClientFrame = serde_json::from_str(r#"{"id":6,"method":"inbox","params":{"peek":false}}"#).unwrap();
+        assert!(matches!(f.request, Request::Inbox { no_typing: false, .. }));
+        let wait = Request::Wait {
+            delivery: Delivery::default(),
+            filter: Filter::default(),
+            timeout_secs: None,
+            require_trusted: false,
+            no_typing: false,
+        };
+        let json = serde_json::to_string(&wait).unwrap();
+        assert!(!json.contains("no_typing"), "{json}");
+        let json = serde_json::to_string(&Request::Wait {
+            delivery: Delivery::default(),
+            filter: Filter::default(),
+            timeout_secs: None,
+            require_trusted: false,
+            no_typing: true,
+        })
+        .unwrap();
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Request::Wait { no_typing: true, .. }));
     }
 
     #[test]
@@ -348,11 +419,13 @@ mod tests {
                 filter,
                 timeout_secs,
                 require_trusted,
+                no_typing,
             } => {
                 assert_eq!(delivery.consumer, "default");
                 assert_eq!(filter, Filter::default());
                 assert_eq!(timeout_secs, None);
                 assert!(!require_trusted);
+                assert!(!no_typing);
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -378,6 +451,7 @@ mod tests {
                 event: Event::ChatState {
                     jid: "bob@example.org".into(),
                     state: ChatState::Composing,
+                    nick: None,
                 },
             },
         ];

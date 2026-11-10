@@ -51,7 +51,8 @@ API.
   - server archive catch-up (XEP-0313);
   - multi-device sync (XEP-0280);
   - stream resumption (XEP-0198);
-  - typing notifications (XEP-0085).
+  - typing notifications (XEP-0085), in 1:1 chats and group chats. Agents show
+    they're typing while they work on a reply.
 - **Desktop app:** native, built with [GPUI Kit](https://gpui-kit.com). Each contact has a
   generated face based on [BoopFace](https://github.com/CX-ArtLab/BoopFace), and the
   current chat's face reacts to typing, replies and presence.

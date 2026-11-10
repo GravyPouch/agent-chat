@@ -76,6 +76,10 @@ pub struct Core {
     session: Mutex<Option<SessionHandle>>,
     /// OMEMO engines, opened on first use.
     pub omemo: Mutex<Option<Arc<crate::omemo::Manager>>>,
+    /// What agents reading through this daemon are doing (typing).
+    agent: Mutex<crate::agent::AgentState>,
+    /// Wakes the agent timer when its deadlines change.
+    pub agent_wake: Notify,
     pub shutdown: Notify,
 }
 
@@ -112,6 +116,8 @@ impl Core {
             }),
             session: Mutex::new(None),
             omemo: Mutex::new(None),
+            agent: Mutex::new(crate::agent::AgentState::default()),
+            agent_wake: Notify::new(),
             shutdown: Notify::new(),
         })
     }
@@ -124,6 +130,10 @@ impl Core {
         self.state.lock().unwrap()
     }
 
+    pub fn agent(&self) -> MutexGuard<'_, crate::agent::AgentState> {
+        self.agent.lock().unwrap()
+    }
+
     pub fn emit(&self, event: Event) {
         let _ = self.events.send(event);
     }
@@ -132,6 +142,9 @@ impl Core {
     pub fn store_message(&self, m: &NewMessage) -> Result<Option<Message>> {
         let stored = self.store().insert_message(m)?;
         if let Some(msg) = &stored {
+            if msg.own {
+                crate::agent::on_own_message(self, msg);
+            }
             self.emit(Event::Message(msg.clone()));
         }
         Ok(stored)

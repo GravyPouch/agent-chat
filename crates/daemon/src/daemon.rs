@@ -49,6 +49,7 @@ pub async fn run(profile: Profile) -> Result<()> {
         core.state().status.web_url = Some(url);
     }
 
+    tokio::spawn(crate::agent::run(core.clone()));
     if let Err(e) = core.restart_session().await {
         tracing::warn!("not connecting: {e:#}");
     }

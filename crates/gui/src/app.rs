@@ -1,8 +1,9 @@
 //! The chat window: sidebar (account, chats, rooms) + conversation pane.
 
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent_chat_proto::ipc::{AccountParams, ContactList, EncryptionMode, Event, PasswordStorage, Request};
 use agent_chat_proto::model::{
@@ -116,8 +117,11 @@ pub struct ChatApp {
     install_result: Option<String>,
     /// The animated face of the open 1:1 chat.
     face: Option<Entity<AnimatedFace>>,
-    /// We told this contact we're typing (XEP-0085 "composing").
+    /// We told this contact or room we're typing (XEP-0085 "composing").
     composing_to: Option<String>,
+    /// Who is typing where: lower-case conversation → who (the contact is
+    /// "", room occupants by nick) → since when.
+    typing: HashMap<String, BTreeMap<String, Instant>>,
     /// Sends "paused" when typing stops for a while.
     paused_timer: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -128,6 +132,8 @@ const FACE_SMALL: u32 = 24;
 const FACE_MEDIUM: u32 = 48;
 /// Send "paused" after this long without typing.
 const PAUSED_AFTER: Duration = Duration::from_secs(10);
+/// A "typing" nobody ended (a crashed client) is ignored after this long.
+const TYPING_STALE: Duration = Duration::from_secs(180);
 /// How long a "Copied" confirmation stays.
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 
@@ -244,6 +250,7 @@ impl ChatApp {
             install_result: None,
             face: None,
             composing_to: None,
+            typing: HashMap::new(),
             paused_timer: None,
             _subscriptions: subscriptions,
         };
@@ -382,13 +389,26 @@ impl ChatApp {
 
     fn send_chat_state(&mut self, to: String, state: ChatState, cx: &mut Context<Self>) {
         // Best effort: a lost chat state isn't worth an error banner.
-        self.call::<serde_json::Value>(Request::SendChatState { to, state }, cx, |_, _, _| {});
+        self.call::<serde_json::Value>(
+            Request::SendChatState {
+                to,
+                state,
+                auto_stop: false,
+            },
+            cx,
+            |_, _, _| {},
+        );
     }
 
     /// XEP-0085 for our side: "composing" when we start typing, "paused"
     /// after a while without typing, "active" when the text is cleared.
     fn on_composer_change(&mut self, cx: &mut Context<Self>) {
-        let Some(to) = self.selected.clone().filter(|j| self.is_direct(j)) else {
+        // 1:1 chats and joined rooms (not private messages inside a room).
+        let Some(to) = self
+            .selected
+            .clone()
+            .filter(|j| self.is_direct(j) || self.rooms.iter().any(|r| r.joined && r.jid.eq_ignore_ascii_case(j)))
+        else {
             return;
         };
         if self.composer.read(cx).value().trim().is_empty() {
@@ -472,6 +492,12 @@ impl ChatApp {
     fn on_event(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             Event::Message(m) => {
+                // A message ends its sender's typing.
+                if !m.own
+                    && let Some(who) = self.typing.get_mut(&m.conversation.to_lowercase())
+                {
+                    who.remove(m.nick.as_deref().unwrap_or_default());
+                }
                 // Their reply (or a message we couldn't decrypt) for the open chat's face.
                 if !m.own && m.kind == MessageKind::Chat && m.source != MessageSource::Mam {
                     let failed = m.encryption.as_ref().is_some_and(|e| e.error.is_some());
@@ -513,13 +539,22 @@ impl ChatApp {
                 }
                 self.face_signal(&jid, Signal::Online(online), cx);
             }
-            Event::ChatState { jid, state } => {
-                let signal = if state == ChatState::Composing {
-                    Signal::Typing
+            Event::ChatState { jid, state, nick } => {
+                let who = nick.clone().unwrap_or_default();
+                let entry = self.typing.entry(jid.to_lowercase()).or_default();
+                if state == ChatState::Composing {
+                    entry.insert(who, Instant::now());
                 } else {
-                    Signal::StoppedTyping
-                };
-                self.face_signal(&jid, signal, cx);
+                    entry.remove(&who);
+                }
+                if nick.is_none() {
+                    let signal = if state == ChatState::Composing {
+                        Signal::Typing
+                    } else {
+                        Signal::StoppedTyping
+                    };
+                    self.face_signal(&jid, signal, cx);
+                }
             }
             Event::ContactsChanged | Event::SubscriptionRequest(_) => self.reload_contacts(cx),
             Event::RoomsChanged | Event::RoomInvite(_) => self.reload_rooms(cx),
@@ -1903,6 +1938,27 @@ impl ChatApp {
             })
     }
 
+    /// "Bob is typing…" for the open conversation, if anyone is.
+    fn typing_line(&self, jid: &str) -> Option<String> {
+        let who = self.typing.get(&jid.to_lowercase())?;
+        let names: Vec<String> = who
+            .iter()
+            .filter(|(_, since)| since.elapsed() < TYPING_STALE)
+            .map(|(nick, _)| {
+                if nick.is_empty() {
+                    self.contacts
+                        .iter()
+                        .find(|c| c.jid.eq_ignore_ascii_case(jid))
+                        .and_then(|c| c.name.clone())
+                        .unwrap_or_else(|| local_part(jid))
+                } else {
+                    nick.clone()
+                }
+            })
+            .collect();
+        typing_label(&names)
+    }
+
     fn render_conversation(&mut self, jid: String, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let is_room = self.rooms.iter().any(|r| r.jid.eq_ignore_ascii_case(&jid));
@@ -1911,12 +1967,24 @@ impl ChatApp {
             render_message(&messages, ix, is_room, cx)
         })
         .with_bottom_fade(theme.background);
+        let typing = self.typing_line(&jid);
         v_flex()
             .flex_1()
             .h_full()
             .min_w_0()
             .child(self.render_header(&jid, cx))
             .child(div().flex_1().min_h_0().px_4().child(scroller))
+            .child(
+                // Reserve the line so the composer doesn't jump.
+                div()
+                    .h(px(20.))
+                    .px_4()
+                    .text_xs()
+                    .italic()
+                    .text_color(theme.muted_foreground)
+                    .truncate()
+                    .when_some(typing, |el, t| el.child(t)),
+            )
             .child(
                 h_flex()
                     .items_end()
@@ -1933,6 +2001,17 @@ impl ChatApp {
                             .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
                     ),
             )
+    }
+}
+
+/// "Bob is typing…", "Ann and Bob are typing…", "4 people are typing…".
+fn typing_label(names: &[String]) -> Option<String> {
+    match names {
+        [] => None,
+        [one] => Some(format!("{one} is typing…")),
+        [a, b] => Some(format!("{a} and {b} are typing…")),
+        [a, b, c] => Some(format!("{a}, {b} and {c} are typing…")),
+        more => Some(format!("{} people are typing…", more.len())),
     }
 }
 
@@ -2111,5 +2190,30 @@ impl Render for ChatApp {
                             .into_any_element(),
                     }),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: GPUI's glob export includes a `test` macro.
+    use super::typing_label;
+
+    #[test]
+    fn typing_labels() {
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(typing_label(&[]), None);
+        assert_eq!(typing_label(&names(&["bob"])).unwrap(), "bob is typing…");
+        assert_eq!(
+            typing_label(&names(&["ann", "bob"])).unwrap(),
+            "ann and bob are typing…"
+        );
+        assert_eq!(
+            typing_label(&names(&["ann", "bob", "cy"])).unwrap(),
+            "ann, bob and cy are typing…"
+        );
+        assert_eq!(
+            typing_label(&names(&["a", "b", "c", "d"])).unwrap(),
+            "4 people are typing…"
+        );
     }
 }

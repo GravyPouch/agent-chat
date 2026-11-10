@@ -595,6 +595,10 @@ pub async fn send_message(
     };
     msg.id = Some(MessageId(id.clone()));
     msg = msg.with_payload(OriginId { id: id.clone() });
+    if kind != MessageKind::MucPrivate {
+        // XEP-0085: a message ends "composing"; say so explicitly.
+        msg = msg.with_payload(xmpp_parsers::chatstates::ChatState::Active);
+    }
 
     // End-to-end encryption.
     let mut encryption = None;
@@ -667,8 +671,8 @@ pub async fn send_message(
     Ok(stored)
 }
 
-/// XEP-0085: tell a contact we're typing (or stopped). 1:1 chats only, and
-/// never stored (XEP-0334 `no-store`).
+/// XEP-0085: tell a contact or a joined room we're typing (or stopped).
+/// Never stored (XEP-0334 `no-store`).
 pub fn send_chat_state(
     core: &Core,
     handle: &SessionHandle,
@@ -680,10 +684,12 @@ pub fn send_chat_state(
 
     let to_jid =
         BareJid::new(to).map_err(|e| IpcError::new(ErrorCode::BadRequest, format!("invalid bare JID {to:?}: {e}")))?;
-    if core.room_nick(&to_jid.to_string()).is_some() {
+    let to_s = to_jid.to_string();
+    let room = core.room_nick(&to_s).is_some();
+    if room && core.joined_room_nick(&to_s).is_none() {
         return Err(IpcError::new(
             ErrorCode::BadRequest,
-            "chat states are only sent in 1:1 chats",
+            format!("not in room {to_s}; run `agent-chat rooms join {to_s}` first"),
         ));
     }
     let payload = match state {
@@ -693,7 +699,12 @@ pub fn send_chat_state(
         ChatState::Inactive => XChatState::Inactive,
         ChatState::Gone => XChatState::Gone,
     };
-    let mut msg = XMessage::chat(Some(to_jid.into())).with_payload(payload);
+    let mut msg = if room {
+        XMessage::groupchat(Some(to_jid.into()))
+    } else {
+        XMessage::chat(Some(to_jid.into()))
+    }
+    .with_payload(payload);
     msg.payloads
         .push(Element::builder("no-store", "urn:xmpp:hints").build());
     handle

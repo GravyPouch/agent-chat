@@ -238,7 +238,7 @@ pub struct PresenceInfo {
     pub status: Option<String>,
 }
 
-/// XEP-0085 chat state notification (1:1 chats only).
+/// XEP-0085 chat state notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatState {

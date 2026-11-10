@@ -136,15 +136,22 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             peek,
             limit,
             require_trusted,
+            no_typing,
         } => {
-            let store = core.store();
-            let msgs = store
-                .undelivered(&delivery, &filter, require_trusted, limit)
-                .map_err(internal)?;
-            if !peek {
-                for m in &msgs {
-                    store.mark_delivered(&delivery.consumer, m.id).map_err(internal)?;
+            let msgs = {
+                let store = core.store();
+                let msgs = store
+                    .undelivered(&delivery, &filter, require_trusted, limit)
+                    .map_err(internal)?;
+                if !peek {
+                    for m in &msgs {
+                        store.mark_delivered(&delivery.consumer, m.id).map_err(internal)?;
+                    }
                 }
+                msgs
+            };
+            if !peek && !no_typing {
+                crate::agent::on_read(core, &msgs);
             }
             json(msgs)
         }
@@ -153,7 +160,16 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             filter,
             timeout_secs,
             require_trusted,
-        } => json(wait(core, &delivery, &filter, timeout_secs, require_trusted).await?),
+            no_typing,
+        } => {
+            let m = wait(core, &delivery, &filter, timeout_secs, require_trusted).await?;
+            if let Some(m) = &m
+                && !no_typing
+            {
+                crate::agent::on_read(core, std::slice::from_ref(m));
+            }
+            json(m)
+        }
         Request::History {
             conversation,
             limit,
@@ -234,8 +250,8 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             fingerprint,
             trusted,
         } => json(crate::omemo::xmpp::set_trust(core, &jid, &fingerprint, trusted).await?),
-        Request::SendChatState { to, state } => {
-            actions::send_chat_state(core, &core.session()?, &to, state)?;
+        Request::SendChatState { to, state, auto_stop } => {
+            crate::agent::send_chat_state(core, &to, state, auto_stop)?;
             Ok(Value::Null)
         }
         Request::Subscribe => Ok(Value::Null),

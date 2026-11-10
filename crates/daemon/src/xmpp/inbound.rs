@@ -65,10 +65,12 @@ pub enum Classified {
         room: String,
         subject: String,
     },
-    /// XEP-0085 chat state from a contact in a 1:1 chat (bare JID).
+    /// XEP-0085 chat state from a contact (bare JID), or from a room
+    /// occupant (room JID and nick).
     ChatState {
         jid: String,
         state: ChatState,
+        nick: Option<String>,
     },
     Ignore(&'static str),
 }
@@ -201,6 +203,19 @@ fn classify_inner(
             };
         }
         if !has_body && !encrypted {
+            // XEP-0085 in a room: someone else typing. Our own states come
+            // back reflected; archived ones are stale.
+            if source == MessageSource::Live
+                && let Some(state) = find_payload::<XChatState>(&m).map(chat_state_of)
+                && let Some(nick) = &nick
+                && (ctx.room_nick)(&room).as_ref() != Some(nick)
+            {
+                return Classified::ChatState {
+                    jid: room,
+                    state,
+                    nick: Some(nick.clone()),
+                };
+            }
             return Classified::Ignore("groupchat without body");
         }
         let our_nick = (ctx.room_nick)(&room);
@@ -310,18 +325,26 @@ fn chat_state(ctx: &Ctx<'_>, m: &Message, source: MessageSource, sent_carbon: bo
     if source == MessageSource::Mam || sent_carbon {
         return None;
     }
-    let state = match find_payload::<XChatState>(m)? {
+    let state = chat_state_of(find_payload::<XChatState>(m)?);
+    let from = m.from.as_ref()?.to_bare().to_string();
+    if same_bare(&from, &ctx.own.to_string()) || (ctx.room_nick)(&from).is_some() {
+        return None;
+    }
+    Some(Classified::ChatState {
+        jid: from,
+        state,
+        nick: None,
+    })
+}
+
+fn chat_state_of(state: XChatState) -> ChatState {
+    match state {
         XChatState::Active => ChatState::Active,
         XChatState::Composing => ChatState::Composing,
         XChatState::Paused => ChatState::Paused,
         XChatState::Inactive => ChatState::Inactive,
         XChatState::Gone => ChatState::Gone,
-    };
-    let from = m.from.as_ref()?.to_bare().to_string();
-    if same_bare(&from, &ctx.own.to_string()) || (ctx.room_nick)(&from).is_some() {
-        return None;
     }
-    Some(Classified::ChatState { jid: from, state })
 }
 
 /// A group chat invitation: XEP-0045 mediated (`muc#user` from the room) or
@@ -402,7 +425,7 @@ pub async fn on_message(core: &Arc<Core>, handle: &SessionHandle, m: Message) {
             }
             core.emit(Event::RoomSubject { room, subject });
         }
-        Classified::ChatState { jid, state } => core.emit(Event::ChatState { jid, state }),
+        Classified::ChatState { jid, state, nick } => core.emit(Event::ChatState { jid, state, nick }),
         Classified::Store(p) => {
             if let Err(e) = store_parsed(core, handle, *p).await {
                 tracing::warn!("failed to store message: {e:#}");
@@ -886,7 +909,7 @@ mod tests {
     #[test]
     fn chat_states_without_body() {
         let state = |xml: &str, room: Option<(&str, &str)>| match run(xml, None, room) {
-            Classified::ChatState { jid, state } => Some((jid, state)),
+            Classified::ChatState { jid, state, nick: None } => Some((jid, state)),
             Classified::Ignore("no body") => None,
             other => panic!("unexpected {other:?}"),
         };
@@ -927,9 +950,19 @@ mod tests {
             ),
             None
         );
-        // In a room, chat states are never reported.
+        // In a room: the occupant typing, by nick; our own reflection isn't news.
         let c = run(
             "<message xmlns='jabber:client' type='groupchat' from='room@conf.example.org/bob'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>",
+            None,
+            Some(("room@conf.example.org", "alice")),
+        );
+        assert!(
+            matches!(&c, Classified::ChatState { jid, state: ChatState::Composing, nick: Some(n) }
+                if jid == "room@conf.example.org" && n == "bob"),
+            "{c:?}"
+        );
+        let c = run(
+            "<message xmlns='jabber:client' type='groupchat' from='room@conf.example.org/alice'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>",
             None,
             Some(("room@conf.example.org", "alice")),
         );

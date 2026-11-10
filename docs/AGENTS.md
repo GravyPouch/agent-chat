@@ -13,7 +13,7 @@ agent-chat setup --copy    # copy ready-made instructions; paste them into your 
 
 - **Setup page:** every daemon serves one at `http://127.0.0.1:7400/` (each profile uses the next free port; `agent-chat status` shows yours). It has a **Copy instructions for your agent** button, the MCP config for Claude Code and other clients, and a command reference. Agents can fetch `/agent.txt`, `/skill.md` or `/mcp.json` from it directly.
 - **GUI:** the **Connect an agent** button does the same.
-- **MCP server:** `agent-chat mcp` provides the tools `wait_for_message`, `get_unread`, `send_message`, `get_history`, `list_conversations`, `list_contacts`, `add_contact`, `list_rooms`, `join_room`, `invite_to_room` and `get_status`.
+- **MCP server:** `agent-chat mcp` provides the tools `wait_for_message`, `get_unread`, `send_message`, `set_typing`, `get_history`, `list_conversations`, `list_contacts`, `add_contact`, `list_rooms`, `join_room`, `invite_to_room` and `get_status`.
   - Register it in Claude Code with `claude mcp add --scope user agent-chat -- agent-chat mcp`.
   - For JSON-configured clients, use `agent-chat setup --mcp-json`.
 - **Skill:** `agent-chat install` writes `~/.claude/skills/agent-chat/SKILL.md`. Remove everything again with `agent-chat uninstall`.
@@ -114,6 +114,23 @@ replying can't loop back to you. Filters: `--from bob@example.org`,
 - `delayed: true` means the message arrived late: offline delivery or the server archive.
 - `encryption` is `null` for plaintext. When `encryption.error` is set, `body` is only a placeholder.
 
+### Typing
+
+When you read a 1:1 message with `wait`, `inbox` or the MCP tools `wait_for_message` and
+`get_unread`, its sender sees that you're typing. It ends when you reply, or after two minutes
+if you don't. Only people whose message you read see it, and `listen` and `inbox --peek` never
+show it.
+
+```sh
+agent-chat typing bob@example.org                 # show typing yourself (also in a joined room)
+agent-chat typing --stop bob@example.org          # end it without replying
+agent-chat wait --no-typing                       # read without showing typing
+```
+
+MCP clients use `set_typing` (`{"to": "...", "typing": false}` to stop). In the profile's
+`config.toml`, `[settings] agent_typing = false` turns the automatic typing off, and
+`agent_typing_timeout_secs` (default 120) sets when it ends by itself.
+
 ## Reply
 
 ```sh
@@ -145,6 +162,7 @@ done
 | Command | Purpose |
 |---|---|
 | `agent-chat status` | Connection state |
+| `agent-chat typing JID` / `typing --stop JID` | Show (or stop showing) that you're typing, to a contact or a joined room |
 | `agent-chat history JID --limit 20` | Recent conversation history |
 | `agent-chat conversations` | Conversations with their last message |
 | `agent-chat contacts` / `contacts add JID` / `contacts approve JID` | Roster |

@@ -12,7 +12,8 @@ use std::process::ExitCode;
 
 use agent_chat_proto::ipc::{AccountParams, ContactList, EncryptionMode, ErrorCode, PasswordStorage, Request};
 use agent_chat_proto::model::{
-    ConversationSummary, Delivery, DeviceInfo, Filter, Message, MessageKind, Room, RoomInvite, Show, StatusInfo,
+    ChatState, ConversationSummary, Delivery, DeviceInfo, Filter, Message, MessageKind, Room, RoomInvite, Show,
+    StatusInfo,
 };
 use agent_chat_proto::{CallError, DaemonLauncher, IpcClient, Profile};
 use anyhow::{Context, Result, anyhow};
@@ -65,6 +66,15 @@ enum Cmd {
     Listen {
         #[command(flatten)]
         read: ReadArgs,
+    },
+    /// Tell a contact or a joined room that you're typing (XEP-0085). It
+    /// ends when you send, with --stop, or by itself after the typing timeout.
+    Typing {
+        /// Contact JID or room JID.
+        jid: String,
+        /// Stop typing (sends "active").
+        #[arg(long)]
+        stop: bool,
     },
     /// Send a message. TEXT defaults to stdin.
     Send {
@@ -216,6 +226,9 @@ struct ReadArgs {
     /// Skip messages from untrusted OMEMO devices.
     #[arg(long)]
     require_trusted: bool,
+    /// Don't show the sender that you're typing after you read their message.
+    #[arg(long)]
+    no_typing: bool,
 }
 
 impl ReadArgs {
@@ -596,6 +609,7 @@ async fn run(cli: Cli) -> Result<()> {
                     filter: read.filter(),
                     timeout_secs: timeout,
                     require_trusted: read.require_trusted,
+                    no_typing: read.no_typing,
                 })
                 .await?;
             match m {
@@ -611,6 +625,7 @@ async fn run(cli: Cli) -> Result<()> {
                     peek,
                     limit,
                     require_trusted: read.require_trusted,
+                    no_typing: read.no_typing,
                 })
                 .await?;
             match fmt {
@@ -618,6 +633,7 @@ async fn run(cli: Cli) -> Result<()> {
                 Format::Text => msgs.iter().for_each(|m| print_message(fmt, m)),
             }
         }
+        // `listen` only watches, so it never shows the sender typing.
         Cmd::Listen { read } => loop {
             let m: Option<Message> = client
                 .call(Request::Wait {
@@ -625,6 +641,7 @@ async fn run(cli: Cli) -> Result<()> {
                     filter: read.filter(),
                     timeout_secs: None,
                     require_trusted: read.require_trusted,
+                    no_typing: true,
                 })
                 .await?;
             if let Some(m) = m {
@@ -668,6 +685,13 @@ async fn run(cli: Cli) -> Result<()> {
                 .await?;
             print_message(fmt, &m);
         }
+        Cmd::Typing { jid, stop } => ok(client
+            .call_value(Request::SendChatState {
+                to: jid,
+                state: if stop { ChatState::Active } else { ChatState::Composing },
+                auto_stop: true,
+            })
+            .await?),
         Cmd::History {
             conversation,
             limit,
