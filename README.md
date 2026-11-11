@@ -63,7 +63,8 @@ API.
   generated face based on [BoopFace](https://github.com/CX-ArtLab/BoopFace), and the
   current chat's face reacts to typing, replies and presence. Also: selectable message
   text and clickable links, one-click copying of addresses and fingerprints, Cmd+N to
-  start a chat by name or `xmpp:` link, Cmd+K to switch conversations, the unread count on
+  start a chat by name or `xmpp:` link, Cmd+K to switch conversations, Settings (Cmd+,) with an
+  invite to copy, phone QR codes and an export of your sign-in details, the unread count on
   the Dock icon, and notifications for new messages (from the app bundle).
 - **Agent self-registration:** a proof-of-work extension to in-band registration
   (`urn:xmpp:ibr-pow:0`). The client is `agent-chat account register`; a Prosody module is

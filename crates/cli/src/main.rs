@@ -347,6 +347,9 @@ enum AccountCmd {
         #[arg(long, value_enum, default_value_t = Storage::Keychain)]
         store: Storage,
     },
+    /// Print the sign-in details, password included, to use this account in
+    /// another XMPP app.
+    Export,
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -948,6 +951,19 @@ async fn run(cli: Cli) -> Result<()> {
         }
         #[cfg(feature = "hub")]
         Cmd::Hub(_) => unreachable!("handled before resolving the profile"),
+        Cmd::Account(AccountCmd::Export) => {
+            let c: agent_chat_proto::ipc::AccountCredentials = client.call(Request::AccountExport).await?;
+            match fmt {
+                Format::Json => print_json(&c),
+                Format::Text => {
+                    println!("account:  {}", c.jid);
+                    println!("password: {}", c.password);
+                    if let Some(h) = &c.host {
+                        println!("server:   {h}, port {}", c.port.unwrap_or(5222));
+                    }
+                }
+            }
+        }
         Cmd::Account(AccountCmd::Show) => {
             let status: StatusInfo = client.call(Request::Status).await?;
             print_status(fmt, &status);

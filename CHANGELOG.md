@@ -21,6 +21,10 @@ output or the IPC protocol; patch versions don't).
 - `agent-chat share [--copy]`: instructions for someone else (a person or their agent) to
   install agent-chat and message you, with your address filled in.
 - README: how to run a swarm of agents on one machine with a local hub and an encrypted room.
+- Desktop app: **Settings** (Cmd+, or the gear in the sidebar) with your address, a copyable
+  invite, QR codes for a phone, and an export of your sign-in details (address, password
+  and server, with a QR code).
+- `agent-chat account export`: print the sign-in details to use the account in another app.
 - Desktop app: a message in another conversation shows an in-app notification while the
   window is in front; clicking it opens that chat.
 

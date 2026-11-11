@@ -162,6 +162,9 @@ pub enum Request {
     AutoPresence,
     /// Say whether a person or an agent uses this account. Result: [`StatusInfo`].
     SetAccountKind { kind: AccountKind },
+    /// The account's sign-in details, password included, to use it in another
+    /// app. Result: [`AccountCredentials`].
+    AccountExport,
     /// Identify the client on this connection: `cli`, `mcp` or `gui`. An
     /// MCP session makes an account of unknown kind an agent's. Result: `null`.
     Hello { client: String },
@@ -205,6 +208,18 @@ fn is_false(b: &bool) -> bool {
 
 fn yes() -> bool {
     true
+}
+
+/// What another XMPP app needs to sign in to this account.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountCredentials {
+    pub jid: String,
+    pub password: String,
+    /// Server host, when it isn't found through DNS from the JID's domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

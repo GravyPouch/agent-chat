@@ -14,6 +14,7 @@ gpui_kit::actions!(
     agent_chat,
     [
         About,
+        OpenSettings,
         HideApp,
         HideOthers,
         ShowAll,
@@ -41,6 +42,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-h", HideApp, None),
         KeyBinding::new("alt-cmd-h", HideOthers, None),
         KeyBinding::new("cmd-m", Minimize, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-n", NewChat, None),
         KeyBinding::new("shift-cmd-n", NewGroupChat, None),
         KeyBinding::new("cmd-k", SwitchChat, None),
@@ -49,6 +51,8 @@ pub fn init(cx: &mut App) {
     cx.set_menus(vec![
         Menu::new("agent-chat").items([
             MenuItem::action("About agent-chat", About),
+            MenuItem::separator(),
+            MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
@@ -88,6 +92,7 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window) + 'static) {
 /// Route the window-specific menu actions to the chat window.
 pub fn register_chat_window(handle: AnyWindowHandle, chat: WeakEntity<ChatApp>, cx: &mut App) {
     on_chat::<About>(handle, chat.clone(), cx, ChatApp::show_about);
+    on_chat::<OpenSettings>(handle, chat.clone(), cx, ChatApp::open_settings);
     on_chat::<NewChat>(handle, chat.clone(), cx, ChatApp::new_chat);
     on_chat::<NewGroupChat>(handle, chat.clone(), cx, ChatApp::new_group_chat);
     on_chat::<SwitchChat>(handle, chat, cx, ChatApp::switch_chat);

@@ -272,6 +272,22 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             crate::agent::set_account_kind(core, kind)?;
             json(core.status())
         }
+        Request::AccountExport => {
+            let acct = core
+                .config
+                .lock()
+                .unwrap()
+                .account
+                .clone()
+                .ok_or_else(|| IpcError::new(ErrorCode::NoAccount, "no account configured"))?;
+            let password = crate::config::resolve_password(&acct).map_err(internal)?;
+            json(agent_chat_proto::ipc::AccountCredentials {
+                jid: acct.jid,
+                password,
+                host: acct.host,
+                port: acct.port,
+            })
+        }
         // Handled per connection in `handle_connection`.
         Request::Hello { .. } => Ok(Value::Null),
         Request::OmemoDevices { jid } => json(crate::omemo::xmpp::list_devices(core, jid).await?),

@@ -34,6 +34,8 @@ use serde::de::DeserializeOwned;
 
 use crate::face::{self, AnimatedFace};
 
+mod settings;
+
 type LucideIcon = gpui_kit::assets::IconName;
 /// A dialog's submit handler.
 type Submit = fn(&mut ChatApp, &mut Window, &mut Context<ChatApp>);
@@ -138,6 +140,7 @@ pub struct ChatApp {
     copied_reset: Option<Task<()>>,
     /// "Connect an agent" dialog: the result of the last install.
     install_result: Option<String>,
+    settings: settings::SettingsState,
     /// The animated face of the open 1:1 chat.
     face: Option<Entity<AnimatedFace>>,
     /// We told this contact or room we're typing (XEP-0085 "composing").
@@ -302,6 +305,7 @@ impl ChatApp {
             copied: None,
             copied_reset: None,
             install_result: None,
+            settings: Default::default(),
             face: None,
             composing_to: None,
             typing: HashMap::new(),
@@ -2151,12 +2155,24 @@ impl ChatApp {
                             .child(presence_button("p-dnd", "Busy", Show::Dnd, cx)),
                     )
                     .child(
-                        Button::new("connect-agent")
-                            .small()
-                            .w_full()
-                            .icon(IconName::Bot)
-                            .label("Connect an agent")
-                            .on_click(cx.listener(|this, _, window, cx| this.open_connect_agent(window, cx))),
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("connect-agent")
+                                    .small()
+                                    .flex_1()
+                                    .icon(IconName::Bot)
+                                    .label("Connect an agent")
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_connect_agent(window, cx))),
+                            )
+                            .child(
+                                Button::new("open-settings")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::Settings)
+                                    .tooltip("Settings")
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))),
+                            ),
                     ),
             )
             .child(
