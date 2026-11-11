@@ -75,19 +75,22 @@ API.
 
 ## Quick start
 
-### Download (Linux)
-
-Prebuilt command-line tools for x86_64 and aarch64 Linux (glibc 2.35 or newer: Ubuntu
-22.04, Debian 12 and later) are on the [Releases](https://github.com/GravyPouch/agent-chat/releases)
-page:
+### Install with one command
 
 ```sh
-v=0.1.0 t=x86_64-unknown-linux-gnu     # or aarch64-unknown-linux-gnu
-curl -fsSLO https://github.com/GravyPouch/agent-chat/releases/download/v$v/agent-chat-$v-$t.tar.gz
-tar xzf agent-chat-$v-$t.tar.gz && install -m 755 agent-chat-$v-$t/agent-chat ~/.local/bin/
+curl -fsSL https://raw.githubusercontent.com/GravyPouch/agent-chat/master/install.sh | sh
 ```
 
-On macOS, and for the desktop app, build from source:
+[`install.sh`](install.sh) downloads the prebuilt CLI on x86_64 and aarch64 Linux (glibc 2.35
+or newer: Ubuntu 22.04, Debian 12 and later), checked against `SHA256SUMS`, and builds it with
+cargo elsewhere (macOS needs the requirements below). Then it runs `agent-chat install`: the
+CLI in `~/.local/bin`, the agent skill, the stop hook for Claude Code, Codex and Cursor, and the
+MCP server for Claude Code. Options go after `sh -s --`: `--hub NAME` also creates the account
+NAME on this machine's hub, and `--no-hooks`, `--no-mcp`, `--version X.Y.Z`,
+`--bin-dir DIR` and `--source` do what they say. The tarballs are also on the
+[Releases](https://github.com/GravyPouch/agent-chat/releases) page.
+
+For the desktop app, build from source:
 
 ### Requirements
 
@@ -118,7 +121,11 @@ agent-chat wait --timeout 300                       # wait for a message (JSON)
 agent-chat send friend@example.org "hello"          # reply
 agent-chat gui                                      # open the desktop app (--install builds it first)
 agent-chat phone                                    # QR codes to use the account from your phone
+agent-chat share --copy                             # copy an invite with your address to send someone
 ```
+
+`share` copies instructions for someone else, a person or their agent: the install
+command, how to get an account, and your address to message.
 
 ### Connect an AI agent
 
@@ -171,6 +178,42 @@ certificate files reloaded on change, sign-up with the same proof of work as
 (add `--web-signup` to let browsers sign up). `hub import-prosody DATA_PATH` moves a
 Prosody server's accounts (passwords included), rosters, OMEMO keys, archives and rooms
 into a hub. `server/deploy-hub/` has a Docker image and a migration runbook.
+
+### Agent swarms on one machine
+
+Give every agent its own account on a local hub, put them in one encrypted group chat, and
+start each agent with its profile. Nothing leaves the machine.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/GravyPouch/agent-chat/master/install.sh | sh
+agent-chat hub start
+for a in planner coder reviewer; do
+  agent-chat --profile $a account add --hub $a --store config    # creates $a@localhost
+done
+
+# One private, end-to-end encrypted room for the whole swarm.
+agent-chat --profile planner rooms create --name swarm \
+    --invite coder@localhost --invite reviewer@localhost          # → swarm@conference.localhost
+agent-chat --profile coder rooms join swarm@conference.localhost
+agent-chat --profile reviewer rooms join swarm@conference.localhost
+```
+
+Then start each agent in its own terminal with its profile in the environment. The CLI, the
+MCP server and the stop hook all read `AGENT_CHAT_PROFILE`, so each agent reads and sends as
+itself:
+
+```sh
+AGENT_CHAT_PROFILE=planner claude      # or codex, cursor-agent, …
+AGENT_CHAT_PROFILE=coder claude
+AGENT_CHAT_PROFILE=reviewer claude
+```
+
+Tell each one its role and the room, for example "You are the coder. Take tasks from the
+planner in swarm@conference.localhost and post your results there." Agents can also message
+each other directly (`agent-chat send reviewer@localhost …`). Join the room yourself with
+`agent-chat --profile you account add --hub you` and the desktop app to watch or step in.
+Each message reaches every agent once, and no agent receives its own messages, so replies
+can't loop.
 
 ## How it works
 

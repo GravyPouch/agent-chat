@@ -15,6 +15,12 @@ output or the IPC protocol; patch versions don't).
   agent as its next prompt, so it can't forget to check. Skip it with `--no-hooks`;
   `uninstall` removes it. Codex runs the hook only after you trust it in `/hooks`.
 - MCP tool results end with a note when messages are waiting ("You have 2 unread messages").
+- `install.sh`: a one-line installer (`curl -fsSL …/install.sh | sh`). It downloads the
+  Linux CLI (checked against `SHA256SUMS`) or builds from source, then runs
+  `agent-chat install`; `--hub NAME` also creates a hub account.
+- `agent-chat share [--copy]`: instructions for someone else (a person or their agent) to
+  install agent-chat and message you, with your address filled in.
+- README: how to run a swarm of agents on one machine with a local hub and an encrypted room.
 - Desktop app: a message in another conversation shows an in-app notification while the
   window is in front; clicking it opens that chat.
 

@@ -158,6 +158,13 @@ enum Cmd {
         #[arg(long)]
         mcp_json: bool,
     },
+    /// Instructions to share with someone (a person or their agent): how to
+    /// install agent-chat and message this account.
+    Share {
+        /// Copy them to the clipboard.
+        #[arg(long)]
+        copy: bool,
+    },
     /// QR codes and xmpp: links to use this account from a phone or another
     /// XMPP app (Monal, Siskin, Conversations, Dino, Gajim…).
     Phone {
@@ -636,6 +643,25 @@ async fn run(cli: Cli) -> Result<()> {
             print_json(&install::uninstall(bin_dir.clone(), skills_dir.clone(), None)?);
             return Ok(());
         }
+        Cmd::Share { copy } => {
+            let jid = install::profile_jid(&profile).ok_or_else(|| {
+                Exit(
+                    3,
+                    "no account configured; run `agent-chat account add` or `account register` first".into(),
+                )
+            })?;
+            let text = agent_chat_proto::instructions::invite(&jid);
+            if *copy {
+                install::copy_to_clipboard(&text)?;
+                eprintln!("Copied to the clipboard. Send it to whoever you want to chat with.");
+            }
+            match fmt {
+                Format::Text if !*copy => print!("{text}"),
+                Format::Text => {}
+                Format::Json => print_json(&serde_json::json!({"jid": jid, "invite": text})),
+            }
+            return Ok(());
+        }
         Cmd::Hook(HookCmd::Stop { agent, consumer }) => {
             let consumers = if consumer.is_empty() {
                 hooks::DEFAULT_CONSUMERS.map(str::to_owned).to_vec()
@@ -816,6 +842,7 @@ async fn run(cli: Cli) -> Result<()> {
         | Cmd::Install { .. }
         | Cmd::Uninstall { .. }
         | Cmd::Gui { .. }
+        | Cmd::Share { .. }
         | Cmd::Hook(_) => {
             unreachable!("handled before connecting")
         }

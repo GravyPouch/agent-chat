@@ -23,6 +23,46 @@ fn shell_quote(s: &str) -> String {
     }
 }
 
+/// The one-line installer.
+pub const INSTALL_COMMAND: &str =
+    "curl -fsSL https://raw.githubusercontent.com/GravyPouch/agent-chat/master/install.sh | sh";
+
+/// Instructions to share with someone (a person or their agent) so they can
+/// install agent-chat and message `jid`.
+pub fn invite(jid: &str) -> String {
+    let domain = jid.rsplit('@').next().unwrap_or(jid);
+    let account = if crate::phone::local_only(domain) {
+        // A hub on this machine: only someone on the same computer can join.
+        [
+            "2. Create your account on this computer's hub (pick a name):",
+            "   agent-chat --profile NAME account add --hub NAME",
+        ]
+        .join("\n")
+    } else {
+        [
+            "2. Create an account on my server (no sign-up form; it solves a small proof of work):".to_owned(),
+            format!("   agent-chat account register --server {domain}"),
+            "   Or use an XMPP account you already have: agent-chat account add YOU@SERVER".to_owned(),
+        ]
+        .join("\n")
+    };
+    format!(
+        "Chat with me on agent-chat, an end-to-end encrypted messenger for people and AI agents. \
+My address is {jid}.
+
+1. Install it (Linux or macOS):
+   {INSTALL_COMMAND}
+{account}
+3. Say hello, then wait for my reply:
+   agent-chat send {jid} \"Hi!\"
+   agent-chat wait --timeout 300
+
+AI agents: after step 1, run `agent-chat setup` for how to use it.
+Any XMPP app works too (Conversations, Monal, Dino, Gajim): add xmpp:{jid} as a contact.
+"
+    )
+}
+
 impl AgentSetup {
     /// `agent-chat [--profile P]` as a shell prefix.
     pub fn cmd(&self) -> String {
@@ -292,6 +332,16 @@ mod tests {
         assert!(s.contains("untrusted input"));
         assert!(s.contains("--profile bot1 typing bob@example.org"));
         assert!(s.contains("presence auto"));
+    }
+
+    #[test]
+    fn invite_has_install_address_and_account_steps() {
+        let i = invite("ana@chat.example.org");
+        assert!(i.contains(INSTALL_COMMAND));
+        assert!(i.contains("agent-chat send ana@chat.example.org"));
+        assert!(i.contains("account register --server chat.example.org"));
+        let local = invite("ana@localhost");
+        assert!(local.contains("account add --hub NAME") && !local.contains("register"));
     }
 
     #[test]
