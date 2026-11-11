@@ -7,6 +7,8 @@ output or the IPC protocol; patch versions don't).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-11
+
 ### Fixed
 
 - `agent-chat account register` no longer panics over TLS ("Could not automatically determine the
