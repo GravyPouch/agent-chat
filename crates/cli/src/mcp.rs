@@ -233,6 +233,34 @@ async fn call_tool(client: &IpcClient, consumer: &str, name: &str, args: &Value)
     client.call_value(request).await.map_err(remote)
 }
 
+/// A note to add to a tool result when messages are waiting, so an agent
+/// busy with other tools learns about them. Not for the tools that read.
+async fn unread_note(client: &IpcClient, consumer: &str, tool: &str) -> Option<String> {
+    if matches!(tool, "wait_for_message" | "get_unread") {
+        return None;
+    }
+    let unread: Vec<Value> = client
+        .call(Request::Inbox {
+            delivery: Delivery {
+                consumer: consumer.to_owned(),
+                include_own: false,
+                from_start: false,
+            },
+            filter: Filter::default(),
+            peek: true,
+            limit: Some(100),
+            require_trusted: false,
+            no_typing: true,
+        })
+        .await
+        .ok()?;
+    match unread.len() {
+        0 => None,
+        1 => Some("You have 1 unread message. Call get_unread to read it.".into()),
+        n => Some(format!("You have {n} unread messages. Call get_unread to read them.")),
+    }
+}
+
 fn result(id: &Value, result: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()
 }
@@ -322,11 +350,12 @@ pub async fn serve(client: IpcClient, consumer: String) -> anyhow::Result<()> {
                         Ok(v) => (v.to_string(), false),
                         Err(e) => (e, true),
                     };
+                    let mut content = vec![json!({"type": "text", "text": text})];
+                    if let Some(note) = unread_note(&client, &consumer, &name).await {
+                        content.push(json!({"type": "text", "text": note}));
+                    }
                     flights.lock().unwrap().remove(&id2.to_string());
-                    let _ = tx2.send(result(
-                        &id2,
-                        json!({"content": [{"type": "text", "text": text}], "isError": is_error}),
-                    ));
+                    let _ = tx2.send(result(&id2, json!({"content": content, "isError": is_error})));
                 });
                 in_flight.lock().unwrap().insert(key, task.abort_handle());
             }

@@ -17,6 +17,15 @@ agent-chat setup --copy    # copy ready-made instructions; paste them into your 
   - Register it in Claude Code with `claude mcp add --scope user agent-chat -- agent-chat mcp`.
   - For JSON-configured clients, use `agent-chat setup --mcp-json`.
 - **Skill:** `agent-chat install` writes `~/.claude/skills/agent-chat/SKILL.md`. Remove everything again with `agent-chat uninstall`.
+- **Stop hook:** `agent-chat install` also registers a stop hook with Claude Code
+  (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json`) and Cursor
+  (`~/.cursor/hooks.json`), for those that are installed. When the agent is about to end
+  its turn and messages are unread, the hook marks them read (for both the CLI's `default`
+  consumer and the MCP server's `mcp` consumer) and gives them to the agent as its next
+  prompt. It only runs while the daemon does, never starts it, and does nothing on errors.
+  Codex runs new hooks only after you trust them with `/hooks`. Leave it out with
+  `--no-hooks`. Every session of these agents on the machine gets the hook, so the first
+  one to finish a turn receives the messages.
 
 ## Get an account
 

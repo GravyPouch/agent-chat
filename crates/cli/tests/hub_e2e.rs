@@ -596,3 +596,45 @@ fn account_add_hub_creates_and_configures_an_account() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("permanent"));
 }
+
+/// The agents' stop hook hands unread messages over once (for both the CLI's
+/// and the MCP server's consumer), and does nothing without a daemon.
+#[test]
+fn stop_hook_pushes_unread_messages_once() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    hub_with_profiles(&env, &[("alice", "alice-password-123"), ("bob", "bob-password-4567")]);
+    let hook = |agent: &str| env.json(&["--profile", "alice", "hook", "stop", "--agent", agent]);
+    assert_eq!(hook("claude"), serde_json::json!({}));
+
+    env.json(&["--profile", "bob", "send", "alice@hubtest.local", "push me"]);
+    let start = Instant::now();
+    let out = loop {
+        let out = hook("codex");
+        if out != serde_json::json!({}) {
+            break out;
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "the message never arrived");
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    assert_eq!(out["decision"], "block", "{out}");
+    let reason = out["reason"].as_str().unwrap();
+    assert!(reason.contains("push me") && reason.contains("bob@hubtest.local"), "{reason}");
+
+    // Read for both consumers: nothing is returned twice.
+    assert_eq!(env.json(&["--profile", "alice", "inbox"]), serde_json::json!([]));
+    assert_eq!(
+        env.json(&["--profile", "alice", "inbox", "--consumer", "mcp"]),
+        serde_json::json!([])
+    );
+    assert_eq!(hook("cursor"), serde_json::json!({}));
+
+    // Without a daemon the hook is a no-op and doesn't start one.
+    env.json(&["--profile", "alice", "daemon", "stop"]);
+    assert_eq!(hook("claude"), serde_json::json!({}));
+    assert!(!env.run(&["--profile", "alice", "daemon", "status"]).status.success());
+}

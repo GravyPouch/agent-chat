@@ -63,6 +63,10 @@ pub struct InstallOptions {
     pub skills_dir: Option<PathBuf>,
     pub skill: bool,
     pub mcp: bool,
+    /// Register the stop hook that pushes new messages to coding agents.
+    pub hooks: bool,
+    /// Where the agents' config directories are (default: $HOME).
+    pub hooks_home: Option<PathBuf>,
 }
 
 pub fn install(profile: &Profile, opts: InstallOptions) -> Result<Value> {
@@ -147,6 +151,16 @@ pub fn install(profile: &Profile, opts: InstallOptions) -> Result<Value> {
         Value::Null
     };
 
+    let hooks = if opts.hooks {
+        let home = match opts.hooks_home {
+            Some(h) => h,
+            None => home()?,
+        };
+        crate::hooks::install(&home, &setup.cli, &setup.profile)
+    } else {
+        Value::Null
+    };
+
     let path_hint = (!on_path(&bin_dir)).then(|| {
         format!(
             "{} is not on your PATH; add this to your shell profile: export PATH=\"{}:$PATH\"",
@@ -161,12 +175,13 @@ pub fn install(profile: &Profile, opts: InstallOptions) -> Result<Value> {
         "gui": gui,
         "skill": skill,
         "mcp": mcp,
+        "hooks": hooks,
         "path_hint": path_hint,
         "next": format!("Paste the output of `{} setup` into your agent, or open the setup page.", setup.cmd()),
     }))
 }
 
-pub fn uninstall(bin_dir: Option<PathBuf>, skills_dir: Option<PathBuf>) -> Result<Value> {
+pub fn uninstall(bin_dir: Option<PathBuf>, skills_dir: Option<PathBuf>, hooks_home: Option<PathBuf>) -> Result<Value> {
     let bin_dir = match bin_dir {
         Some(d) => d,
         None => default_bin_dir()?,
@@ -188,7 +203,12 @@ pub fn uninstall(bin_dir: Option<PathBuf>, skills_dir: Option<PathBuf>) -> Resul
         std::fs::remove_dir_all(&skill)?;
         removed.push(skill);
     }
-    Ok(json!({"ok": true, "removed": removed}))
+    let hooks_home = match hooks_home {
+        Some(h) => h,
+        None => home()?,
+    };
+    let hooks = crate::hooks::uninstall(&hooks_home);
+    Ok(json!({"ok": true, "removed": removed, "hooks_removed": hooks}))
 }
 
 /// Copy text to the system clipboard (pbcopy / wl-copy / xclip).
@@ -314,6 +334,8 @@ mod tests {
                 skills_dir: Some(skills.clone()),
                 skill: true,
                 mcp: false,
+                hooks: true,
+                hooks_home: Some(dir.path().to_path_buf()),
             },
         )
         .unwrap();
@@ -322,7 +344,7 @@ mod tests {
         assert!(skill.starts_with("---\nname: agent-chat"));
         assert!(skill.contains(&format!("{} --profile bot1 wait", bin.join("agent-chat").display())));
         assert!(out["path_hint"].is_string());
-        let removed = uninstall(Some(bin.clone()), Some(skills.clone())).unwrap();
+        let removed = uninstall(Some(bin.clone()), Some(skills.clone()), Some(dir.path().to_path_buf())).unwrap();
         assert_eq!(removed["removed"].as_array().unwrap().len(), 2);
         assert!(!bin.join("agent-chat").exists());
     }

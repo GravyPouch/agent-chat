@@ -4,6 +4,7 @@
 //! line). Exit codes: 0 ok, 1 error, 2 timeout, 3 not connected / no
 //! account, 4 encryption unavailable.
 
+mod hooks;
 mod install;
 mod mcp;
 
@@ -193,7 +194,14 @@ enum Cmd {
         /// Also register the MCP server with Claude Code (`claude mcp add`).
         #[arg(long)]
         mcp: bool,
+        /// Don't register the stop hook that hands new messages to Claude
+        /// Code, Codex and Cursor when they finish a turn.
+        #[arg(long)]
+        no_hooks: bool,
     },
+    /// Agent hooks (installed by `install`; not meant to be run by hand).
+    #[command(subcommand, hide = true)]
+    Hook(HookCmd),
     /// Remove what `install` put on this machine.
     Uninstall {
         #[arg(long)]
@@ -205,6 +213,19 @@ enum Cmd {
     #[cfg(feature = "hub")]
     #[command(subcommand)]
     Hub(hub::HubCmd),
+}
+
+#[derive(Subcommand)]
+enum HookCmd {
+    /// Stop hook: if messages are unread, mark them read and print the
+    /// agent's "keep going" output with them; else `{}`. Never starts the daemon.
+    Stop {
+        #[arg(long, value_enum)]
+        agent: hooks::Agent,
+        /// Consumers to read for (default: `default` and `mcp`).
+        #[arg(long)]
+        consumer: Vec<String>,
+    },
 }
 
 #[derive(Args)]
@@ -539,6 +560,7 @@ async fn run(cli: Cli) -> Result<()> {
             skills_dir,
             no_skill,
             mcp,
+            no_hooks,
         } => {
             let out = install::install(
                 &profile,
@@ -547,6 +569,8 @@ async fn run(cli: Cli) -> Result<()> {
                     skills_dir: skills_dir.clone(),
                     skill: !no_skill,
                     mcp: *mcp,
+                    hooks: !no_hooks,
+                    hooks_home: None,
                 },
             )?;
             match fmt {
@@ -555,6 +579,20 @@ async fn run(cli: Cli) -> Result<()> {
                     println!("Installed {}", out["cli"].as_str().unwrap_or_default());
                     if let Some(s) = out["skill"].as_str() {
                         println!("Agent skill: {s}");
+                    }
+                    if let Some(h) = out["hooks"].as_object() {
+                        for (agent, r) in h {
+                            match r["installed"].as_str() {
+                                Some(path) => println!("Stop hook for {agent}: {path}"),
+                                None => println!(
+                                    "Stop hook for {agent} not installed: {}",
+                                    r["error"].as_str().unwrap_or_default()
+                                ),
+                            }
+                        }
+                        if h.contains_key("codex") {
+                            println!("Codex runs new hooks only after you trust them: open Codex and run /hooks.");
+                        }
                     }
                     if let Some(h) = out["path_hint"].as_str() {
                         println!("Note: {h}");
@@ -595,7 +633,16 @@ async fn run(cli: Cli) -> Result<()> {
             return Ok(());
         }
         Cmd::Uninstall { bin_dir, skills_dir } => {
-            print_json(&install::uninstall(bin_dir.clone(), skills_dir.clone())?);
+            print_json(&install::uninstall(bin_dir.clone(), skills_dir.clone(), None)?);
+            return Ok(());
+        }
+        Cmd::Hook(HookCmd::Stop { agent, consumer }) => {
+            let consumers = if consumer.is_empty() {
+                hooks::DEFAULT_CONSUMERS.map(str::to_owned).to_vec()
+            } else {
+                consumer.clone()
+            };
+            print_json(&hooks::stop(&profile, *agent, &consumers).await);
             return Ok(());
         }
         _ => {}
@@ -765,7 +812,11 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Cmd::Account(AccountCmd::Register { .. }) | Cmd::Install { .. } | Cmd::Uninstall { .. } | Cmd::Gui { .. } => {
+        Cmd::Account(AccountCmd::Register { .. })
+        | Cmd::Install { .. }
+        | Cmd::Uninstall { .. }
+        | Cmd::Gui { .. }
+        | Cmd::Hook(_) => {
             unreachable!("handled before connecting")
         }
         Cmd::Phone { register, contact } => {

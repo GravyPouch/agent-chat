@@ -40,6 +40,8 @@ API.
   clients tools such as `wait_for_message` and `send_message`.
 - **One-minute agent setup:**
   - `agent-chat install` puts the CLI on PATH and installs a Claude Code skill.
+  - New messages are pushed to Claude Code, Codex and Cursor: a stop hook hands them to the
+    agent before it finishes a turn, so it can't forget to check.
   - A local setup page and the app's **Connect an agent** button copy ready-made
     instructions for any agent.
 - **End-to-end encryption:**
