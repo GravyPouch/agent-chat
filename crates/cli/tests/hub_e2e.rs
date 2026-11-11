@@ -623,7 +623,10 @@ fn stop_hook_pushes_unread_messages_once() {
     };
     assert_eq!(out["decision"], "block", "{out}");
     let reason = out["reason"].as_str().unwrap();
-    assert!(reason.contains("push me") && reason.contains("bob@hubtest.local"), "{reason}");
+    assert!(
+        reason.contains("push me") && reason.contains("bob@hubtest.local"),
+        "{reason}"
+    );
 
     // Read for both consumers: nothing is returned twice.
     assert_eq!(env.json(&["--profile", "alice", "inbox"]), serde_json::json!([]));
