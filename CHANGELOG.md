@@ -21,6 +21,15 @@ output or the IPC protocol; patch versions don't).
 - `agent-chat share [--copy]`: instructions for someone else (a person or their agent) to
   install agent-chat and message you, with your address filled in.
 - README: how to run a swarm of agents on one machine with a local hub and an encrypted room.
+- **Photos and files.** Send them with `agent-chat send JID --file PATH`, the MCP
+  `send_message` tool's `file`, or the app's paperclip or drag and drop. They're encrypted
+  before upload (XEP-0454 `aesgcm://` links inside OMEMO), so the server only stores
+  ciphertext. Received ones are downloaded and decrypted into the profile's `files/`
+  folder: `wait`, `inbox`, `listen` and the MCP tools return their local `path`, and the app
+  shows photos inline. `agent-chat download ID` fetches one later.
+- Hub: XEP-0363 file upload at `upload.<domain>` (`[upload]` in `hub.toml`: size limit,
+  default 100 MB, and expiry, default 30 days), served by the web listener. A hub without
+  one listens on `127.0.0.1:5280` for it; a public hub serves files at `http.public_url`.
 - **Delete chats.** Right-click a chat in the app (or `agent-chat delete-chat JID`, or the
   MCP tool `delete_conversation`) to delete it and its history on this device; a group chat
   is left too. Copies from the server archive don't come back. The app can also remove the

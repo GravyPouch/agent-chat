@@ -55,15 +55,16 @@ fn tools() -> Value {
         },
         {
             "name": "send_message",
-            "description": "Send a message to a contact (bare JID) or a joined group chat (room JID). Encrypted with OMEMO when the recipient supports it. Reply to a message by sending to its `conversation`.",
+            "description": "Send a message, photo or file to a contact (bare JID) or a joined group chat (room JID). Encrypted with OMEMO when the recipient supports it. Reply to a message by sending to its `conversation`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "to": {"type": "string", "description": "Contact or room address."},
-                    "text": {"type": "string"},
+                    "text": {"type": "string", "description": "The message; with `file`, an optional caption."},
+                    "file": {"type": "string", "description": "Absolute path of a photo or file to send (encrypted end to end)."},
                     "require_encryption": {"type": "boolean", "description": "Fail instead of sending plaintext."}
                 },
-                "required": ["to", "text"]
+                "required": ["to"]
             }
         },
         {
@@ -89,6 +90,11 @@ fn tools() -> Value {
                 },
                 "required": ["conversation"]
             }
+        },
+        {
+            "name": "download_attachment",
+            "description": "Download a message's photo or file; returns the message with `attachment.path`, the local file. wait_for_message and get_unread already do this.",
+            "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The message's id."}}, "required": ["id"]}
         },
         {"name": "list_conversations", "description": "Conversations with their latest message.", "inputSchema": {"type": "object", "properties": {}}},
         {
@@ -170,16 +176,30 @@ async fn call_tool(client: &IpcClient, consumer: &str, name: &str, args: &Value)
                 })
                 .await
                 .map_err(remote)?;
-            return Ok(if r.is_null() { json!({"timeout": true}) } else { r });
+            return Ok(if r.is_null() {
+                json!({"timeout": true})
+            } else {
+                with_file(client, r).await
+            });
         }
-        "get_unread" => Request::Inbox {
-            delivery,
-            filter: Filter::default(),
-            peek: args.get("peek").and_then(Value::as_bool).unwrap_or(false),
-            limit: args.get("limit").and_then(Value::as_u64).map(|l| l as u32),
-            require_trusted: false,
-            no_typing: false,
-        },
+        "get_unread" => {
+            let r = client
+                .call_value(Request::Inbox {
+                    delivery,
+                    filter: Filter::default(),
+                    peek: args.get("peek").and_then(Value::as_bool).unwrap_or(false),
+                    limit: args.get("limit").and_then(Value::as_u64).map(|l| l as u32),
+                    require_trusted: false,
+                    no_typing: false,
+                })
+                .await
+                .map_err(remote)?;
+            let mut out = Vec::new();
+            for m in r.as_array().cloned().unwrap_or_default() {
+                out.push(with_file(client, m).await);
+            }
+            return Ok(Value::Array(out));
+        }
         "set_typing" => Request::SendChatState {
             to: require(args, "to")?,
             state: if args.get("typing").and_then(Value::as_bool).unwrap_or(true) {
@@ -189,15 +209,48 @@ async fn call_tool(client: &IpcClient, consumer: &str, name: &str, args: &Value)
             },
             auto_stop: true,
         },
-        "send_message" => Request::Send {
-            to: require(args, "to")?,
-            body: require(args, "text")?,
-            room: None,
-            encryption: if args.get("require_encryption").and_then(Value::as_bool).unwrap_or(false) {
+        "send_message" => {
+            let encryption = if args.get("require_encryption").and_then(Value::as_bool).unwrap_or(false) {
                 EncryptionMode::Require
             } else {
                 EncryptionMode::Auto
-            },
+            };
+            let to = require(args, "to")?;
+            let text = arg_str(args, "text").filter(|t| !t.is_empty());
+            let Some(file) = arg_str(args, "file").filter(|f| !f.is_empty()) else {
+                return client
+                    .call_value(Request::Send {
+                        to,
+                        body: text.ok_or("missing argument `text` (or `file`)")?,
+                        room: None,
+                        encryption,
+                    })
+                    .await
+                    .map_err(remote);
+            };
+            let sent = client
+                .call_value(Request::SendFile {
+                    to: to.clone(),
+                    path: file,
+                    room: None,
+                    encryption,
+                })
+                .await
+                .map_err(remote)?;
+            let Some(body) = text else { return Ok(sent) };
+            let caption = client
+                .call_value(Request::Send {
+                    to,
+                    body,
+                    room: None,
+                    encryption,
+                })
+                .await
+                .map_err(remote)?;
+            return Ok(json!([sent, caption]));
+        }
+        "download_attachment" => Request::Download {
+            id: args.get("id").and_then(Value::as_i64).ok_or("missing argument `id`")?,
         },
         "get_history" => Request::History {
             conversation: require(args, "conversation")?,
@@ -266,6 +319,17 @@ async fn unread_note(client: &IpcClient, consumer: &str, tool: &str) -> Option<S
         0 => None,
         1 => Some("You have 1 unread message. Call get_unread to read it.".into()),
         n => Some(format!("You have {n} unread messages. Call get_unread to read them.")),
+    }
+}
+
+/// Download a message's attachment so the agent gets a local path.
+async fn with_file(client: &IpcClient, m: Value) -> Value {
+    let pending = m
+        .get("attachment")
+        .is_some_and(|a| a.get("path").is_none_or(Value::is_null));
+    match (pending, m.get("id").and_then(Value::as_i64)) {
+        (true, Some(id)) => client.call_value(Request::Download { id }).await.unwrap_or(m),
+        _ => m,
     }
 }
 

@@ -19,6 +19,9 @@ WEBROOT.mkdir(parents=True, exist_ok=True)
 # The hub's HTTP port on Sliplane's private network (not published).
 HUB_URL = os.environ.get("HUB_URL", "http://agentchat-xmpp.internal:5280").rstrip("/")
 MAX_BODY = 64 * 1024
+# File uploads (XEP-0363, under /upload/) stream through up to this size; the
+# hub enforces its own, smaller limit.
+MAX_UPLOAD = 110 * 1000 * 1000
 REQUEST_HEADERS = ("Content-Type", "Accept", "Accept-Language", "User-Agent")
 RESPONSE_HEADERS = (
     "Content-Type",
@@ -30,8 +33,29 @@ RESPONSE_HEADERS = (
     "Referrer-Policy",
     "X-Content-Type-Options",
     "X-Frame-Options",
+    "Content-Disposition",
+    "Access-Control-Allow-Origin",
+    "Access-Control-Allow-Methods",
+    "Access-Control-Allow-Headers",
 )
 UNAVAILABLE = b"agent-chat XMPP server\n\nThe web page is unavailable right now.\n"
+
+
+class LimitedReader:
+    """At most `remaining` bytes of a stream, for urllib to send as a body."""
+
+    def __init__(self, stream, remaining):
+        self.stream = stream
+        self.remaining = remaining
+
+    def read(self, size=-1):
+        if self.remaining <= 0:
+            return b""
+        if size < 0 or size > self.remaining:
+            size = self.remaining
+        data = self.stream.read(min(size, 64 * 1024))
+        self.remaining -= len(data)
+        return data
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -52,6 +76,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         self.forward()
 
+    def do_PUT(self):
+        if self.path.startswith("/upload/"):
+            self.forward()
+        else:
+            self.reply(405, b"method not allowed\n")
+
+    def do_OPTIONS(self):
+        if self.path.startswith("/upload/"):
+            self.forward()
+        else:
+            self.reply(405, b"method not allowed\n")
+
     def reply(self, status, body, content_type="text/plain; charset=utf-8"):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -67,27 +103,45 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return forwarded or self.client_address[0]
 
     def forward(self):
+        upload = self.path.startswith("/upload/")
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             return self.reply(400, b"bad request\n")
-        if length < 0 or length > MAX_BODY:
+        if length < 0 or length > (MAX_UPLOAD if upload else MAX_BODY):
             return self.reply(413, b"request too large\n")
-        body = self.rfile.read(length) if length else None
+        if upload and length:
+            # Stream the file through instead of holding it in memory.
+            body = LimitedReader(self.rfile, length)
+        else:
+            body = self.rfile.read(length) if length else None
         request = urllib.request.Request(HUB_URL + self.path, data=body, method=self.command)
+        if upload and length:
+            request.add_header("Content-Length", str(length))
         for name in REQUEST_HEADERS:
             if self.headers.get(name):
                 request.add_header(name, self.headers[name])
         request.add_header("X-Forwarded-For", self.client_address_for_hub())
         request.add_header("X-Forwarded-Proto", "https")
         try:
-            response = urllib.request.urlopen(request, timeout=30)
+            response = urllib.request.urlopen(request, timeout=600 if upload else 30)
         except urllib.error.HTTPError as error:
             response = error
         except Exception as error:
             print(f"Hub web page unavailable: {error}", flush=True)
             return self.reply(502, UNAVAILABLE)
         with response:
+            if upload:
+                # Files stream back without being held in memory.
+                self.send_response(response.status)
+                for name in RESPONSE_HEADERS + ("Content-Length",):
+                    value = response.headers.get(name)
+                    if value:
+                        self.send_header(name, value)
+                self.end_headers()
+                if self.command != "HEAD":
+                    shutil.copyfileobj(response, self.wfile, 64 * 1024)
+                return
             data = response.read()
             self.send_response(response.status)
             for name in RESPONSE_HEADERS:

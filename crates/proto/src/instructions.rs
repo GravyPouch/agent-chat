@@ -142,6 +142,10 @@ them. Otherwise use the command line; every command prints one line of JSON:
   {cmd} inbox
 - Reply, using the message's \"conversation\" field as the address:
   {cmd} send ADDRESS \"your reply\"
+- Send a photo or file (encrypted; a text after it becomes a caption):
+  {cmd} send ADDRESS --file /path/to/photo.jpg
+- Received photos and files are downloaded for you: the message's
+  \"attachment\" has \"name\", \"mime\" and \"path\" (the local file to open).
 - Earlier messages in a conversation:
   {cmd} history ADDRESS --limit 20
 - Show that you're typing (in a room too), or stop:
@@ -239,6 +243,7 @@ echo \"long text\" | {cmd} send bob@example.org  # body from stdin
 
 | Task | Command |
 |---|---|
+| Send a photo or file | `{cmd} send ADDRESS --file PATH` (received ones arrive with `attachment.path`) |
 | History | `{cmd} history ADDRESS --limit 20` |
 | Conversations | `{cmd} conversations` |
 | Contacts | `{cmd} contacts`, `contacts add JID` |

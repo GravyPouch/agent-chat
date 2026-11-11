@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -80,7 +80,7 @@ impl Default for Settings {
     }
 }
 
-/// Handles stanzas for `conference.<domain>` (M5).
+/// Handles stanzas for a subdomain service, such as `conference.<domain>`.
 pub trait Component: Send + Sync {
     fn deliver(self: Arc<Self>, el: Element);
 }
@@ -99,9 +99,9 @@ pub struct Router {
     next_actor: AtomicU64,
     /// XEP-0115 ver → features.
     caps: Mutex<HashMap<String, Arc<Vec<String>>>>,
-    component: OnceLock<Arc<dyn Component>>,
-    /// Component JIDs listed in the domain's disco#items.
-    components: OnceLock<Vec<String>>,
+    /// Subdomain services by host (MUC, file upload), listed in the
+    /// domain's disco#items.
+    components: RwLock<Vec<(String, Arc<dyn Component>)>>,
 }
 
 impl Router {
@@ -113,8 +113,7 @@ impl Router {
             users: Mutex::default(),
             next_actor: AtomicU64::new(1),
             caps: Mutex::default(),
-            component: OnceLock::new(),
-            components: OnceLock::new(),
+            components: RwLock::default(),
         })
     }
 
@@ -130,15 +129,24 @@ impl Router {
         &self.settings
     }
 
-    /// Register the subdomain component (the MUC service) at `jid`.
-    pub fn set_component(&self, jid: &str, c: Arc<dyn Component>) {
-        let _ = self.component.set(c);
-        let _ = self.components.set(vec![jid.to_owned()]);
+    /// Register a subdomain service at `host`.
+    pub fn add_component(&self, host: &str, c: Arc<dyn Component>) {
+        self.components.write().unwrap().push((host.to_ascii_lowercase(), c));
     }
 
     /// Component JIDs, for the domain's disco#items.
-    pub fn components(&self) -> &[String] {
-        self.components.get().map(Vec::as_slice).unwrap_or(&[])
+    pub fn components(&self) -> Vec<String> {
+        self.components.read().unwrap().iter().map(|(h, _)| h.clone()).collect()
+    }
+
+    fn component(&self, to: &Jid) -> Option<Arc<dyn Component>> {
+        let host = to.domain().as_str().to_ascii_lowercase();
+        self.components
+            .read()
+            .unwrap()
+            .iter()
+            .find(|(h, _)| *h == host)
+            .map(|(_, c)| c.clone())
     }
 
     pub fn user_actors(&self) -> usize {
@@ -241,7 +249,7 @@ impl Router {
         };
         match classify(&self.domain, &to) {
             Target::Domain => {
-                if let Some(reply) = disco::handle_domain_stanza(&self.domain, self.components(), &el) {
+                if let Some(reply) = disco::handle_domain_stanza(&self.domain, &self.components(), &el) {
                     self.deliver_reply(reply);
                 }
             }
@@ -265,8 +273,8 @@ impl Router {
                     }
                 }
             }
-            Target::Component(_) => match self.component.get() {
-                Some(c) => c.clone().deliver(el),
+            Target::Component(ref jid) => match self.component(jid) {
+                Some(c) => c.deliver(el),
                 None => self.bounce(&el, Condition::ServiceUnavailable, Some(&to.to_string())),
             },
             Target::Remote(_) => self.bounce(&el, Condition::RemoteServerNotFound, Some(&to.to_string())),
@@ -306,9 +314,9 @@ impl Router {
                 // Errors about errors are never generated, so a full mailbox just drops.
                 let _ = self.send_to_actor(&bare, UserMsg::Deliver(reply));
             }
-            Target::Component(_) => {
-                if let Some(c) = self.component.get() {
-                    c.clone().deliver(reply);
+            Target::Component(jid) => {
+                if let Some(c) = self.component(&jid) {
+                    c.deliver(reply);
                 }
             }
             _ => {}

@@ -92,6 +92,105 @@ pub struct Message {
     /// End-to-end encryption details, or `null` if the message was plaintext.
     #[serde(default)]
     pub encryption: Option<EncryptionInfo>,
+    /// A shared photo or file; `body` is then its link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<Attachment>,
+}
+
+/// A photo or file shared in a message: an XEP-0363 upload, linked with
+/// XEP-0066 or, encrypted, as an XEP-0454 `aesgcm://` link (the key is in
+/// the link's fragment, so the server never sees the content).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub url: String,
+    /// File name, from the link.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// Encrypted on the server (an `aesgcm://` link).
+    pub encrypted: bool,
+    /// The local copy, once downloaded (`agent-chat download ID`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+impl Attachment {
+    /// The attachment a message body stands for: an `aesgcm://` link, or an
+    /// http(s) link the message also carries as XEP-0066 out-of-band data.
+    pub fn from_body(body: &str, oob_url: Option<&str>) -> Option<Self> {
+        let url = body.trim();
+        if url.is_empty() || url.contains(char::is_whitespace) {
+            return None;
+        }
+        let encrypted = url.starts_with("aesgcm://");
+        let linked = (url.starts_with("https://") || url.starts_with("http://")) && oob_url == Some(url);
+        if !encrypted && !linked {
+            return None;
+        }
+        let path = url.split(['#', '?']).next().unwrap_or(url);
+        let name = percent_decode(path.rsplit('/').next().unwrap_or(""));
+        let name = if name.is_empty() { "file".to_owned() } else { name };
+        Some(Self {
+            url: url.to_owned(),
+            mime: mime_for(&name).map(str::to_owned),
+            name,
+            size: None,
+            encrypted,
+            path: None,
+        })
+    }
+
+    pub fn is_image(&self) -> bool {
+        self.mime.as_deref().is_some_and(|m| m.starts_with("image/"))
+    }
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok());
+        if b[i] == b'%'
+            && let Some(Ok(v)) = hex.map(|h| u8::from_str_radix(h, 16))
+        {
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The MIME type for a file name's extension (common types only).
+pub fn mime_for(name: &str) -> Option<&'static str> {
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "svg" => "image/svg+xml",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "wav" => "audio/wav",
+        "pdf" => "application/pdf",
+        "txt" | "md" | "log" => "text/plain",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        _ => return None,
+    })
 }
 
 /// Which OMEMO version protected a message.
@@ -480,6 +579,21 @@ impl Default for Delivery {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn attachments_from_bodies() {
+        let a = Attachment::from_body("aesgcm://up.example.org/upload/abc/My%20Photo.JPG#00112233", None).unwrap();
+        assert!(a.encrypted);
+        assert_eq!(a.name, "My Photo.JPG");
+        assert_eq!(a.mime.as_deref(), Some("image/jpeg"));
+        assert!(a.is_image());
+        let url = "https://up.example.org/upload/abc/report.pdf";
+        assert!(Attachment::from_body(url, None).is_none(), "a plain link needs OOB");
+        let a = Attachment::from_body(url, Some(url)).unwrap();
+        assert!(!a.encrypted && a.mime.as_deref() == Some("application/pdf"));
+        assert!(Attachment::from_body("look: aesgcm://x/y", None).is_none());
+    }
+
     use super::*;
 
     #[test]

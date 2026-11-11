@@ -479,7 +479,6 @@ fn new_message(p: &Parsed, body: String, encryption: Option<agent_chat_proto::mo
         kind: p.kind,
         sender: p.sender.clone(),
         nick: p.nick.clone(),
-        body,
         timestamp: p.timestamp,
         delayed: p.delayed,
         source: p.source,
@@ -488,8 +487,19 @@ fn new_message(p: &Parsed, body: String, encryption: Option<agent_chat_proto::mo
         stanza_id: p.stanza_id.clone(),
         origin_id: p.origin_id.clone(),
         xmpp_id: p.xmpp_id.clone(),
+        attachment: agent_chat_proto::model::Attachment::from_body(&body, oob_url(&p.message).as_deref()),
+        body,
         encryption,
     }
+}
+
+/// XEP-0066: the out-of-band link a message carries, if any.
+fn oob_url(m: &Message) -> Option<String> {
+    m.payloads
+        .iter()
+        .find(|e| e.is("x", "jabber:x:oob"))
+        .and_then(|x| x.get_child("url", "jabber:x:oob"))
+        .map(|u| u.text().trim().to_owned())
 }
 
 pub fn presence_info(p: &Presence) -> PresenceInfo {

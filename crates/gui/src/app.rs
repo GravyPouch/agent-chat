@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use agent_chat_proto::ipc::{AccountParams, ContactList, EncryptionMode, Event, PasswordStorage, Request};
 use agent_chat_proto::model::{
-    AccountKind, ChatState, ConnectionState, Contact, ConversationSummary, DeviceInfo, Message, MessageKind,
-    MessageSource, Room, RoomInvite, Show, StatusInfo, SubscriptionRequest, Trust,
+    AccountKind, Attachment, ChatState, ConnectionState, Contact, ConversationSummary, DeviceInfo, Message,
+    MessageKind, MessageSource, Room, RoomInvite, Show, StatusInfo, SubscriptionRequest, Trust,
 };
 use agent_chat_proto::{CallError, IpcClient};
 use boopface::Signal;
@@ -143,6 +143,8 @@ pub struct ChatApp {
     settings: settings::SettingsState,
     /// "Delete chat" dialog: also remove the contact.
     delete_remove_contact: bool,
+    /// Attachments being downloaded (message ids).
+    downloading: std::collections::HashSet<i64>,
     /// The animated face of the open 1:1 chat.
     face: Option<Entity<AnimatedFace>>,
     /// We told this contact or room we're typing (XEP-0085 "composing").
@@ -309,6 +311,7 @@ impl ChatApp {
             install_result: None,
             settings: Default::default(),
             delete_remove_contact: false,
+            downloading: Default::default(),
             face: None,
             composing_to: None,
             typing: HashMap::new(),
@@ -578,6 +581,7 @@ impl ChatApp {
                     self.scroller.update(cx, |s, cx| {
                         s.append(1, cx);
                     });
+                    self.fetch_attachments(cx);
                     if window.is_window_active() {
                         self.mark_read(conversation, id, cx);
                     }
@@ -681,7 +685,7 @@ impl ChatApp {
                 .and_then(|c| c.name.clone())
                 .unwrap_or_else(|| m.conversation.clone()),
         };
-        let body: String = m.body.replace('\n', " ").chars().take(240).collect();
+        let body: String = preview_text(m).replace('\n', " ").chars().take(240).collect();
         let this = cx.entity().downgrade();
         let conversation = m.conversation.clone();
         let notification = Notification::new()
@@ -853,6 +857,7 @@ impl ChatApp {
                     s.reset(n, cx);
                     s.scroll_to_end(cx);
                 });
+                this.fetch_attachments(cx);
                 if let Some(id) = last {
                     this.mark_read(conversation, id, cx);
                 }
@@ -892,6 +897,70 @@ impl ChatApp {
                 }
             },
         );
+    }
+
+    /// Download the open chat's photos and files, so they can be shown.
+    fn fetch_attachments(&mut self, cx: &mut Context<Self>) {
+        let pending: Vec<i64> = self
+            .messages
+            .iter()
+            .filter(|m| m.attachment.as_ref().is_some_and(|a| a.path.is_none()))
+            .map(|m| m.id)
+            .filter(|id| !self.downloading.contains(id))
+            .collect();
+        for id in pending {
+            self.downloading.insert(id);
+            self.call::<Message>(Request::Download { id }, cx, move |this, r, cx| {
+                if let Ok(m) = r
+                    && let Some(slot) = Rc::make_mut(&mut this.messages).iter_mut().find(|x| x.id == id)
+                {
+                    *slot = m;
+                    this.downloading.remove(&id);
+                    cx.notify();
+                }
+            });
+        }
+    }
+
+    /// The paperclip: pick files and send them to the open chat.
+    fn pick_files(&mut self, cx: &mut Context<Self>) {
+        let Some(to) = self.selected.clone() else { return };
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Send".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await {
+                let _ = this.update(cx, |a, cx| a.send_files(to, paths, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn send_files(&mut self, to: String, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        for path in paths.into_iter().filter(|p| p.is_file()) {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.call::<Message>(
+                Request::SendFile {
+                    to: to.clone(),
+                    path: path.to_string_lossy().into_owned(),
+                    room: None,
+                    encryption: EncryptionMode::Auto,
+                },
+                cx,
+                move |this, r, cx| {
+                    if let Err(e) = r {
+                        this.error = Some(format!("{name} not sent: {e}"));
+                        cx.notify();
+                    }
+                },
+            );
+        }
     }
 
     fn set_presence(&mut self, show: Show, cx: &mut Context<Self>) {
@@ -1884,9 +1953,9 @@ impl ChatApp {
                     .unwrap_or_else(|| c.conversation.clone()),
                 preview: c.last_message.as_ref().map(|m| {
                     let p = if m.own {
-                        format!("You: {}", m.body)
+                        format!("You: {}", preview_text(m))
                     } else {
-                        m.body.clone()
+                        preview_text(m)
                     };
                     p.replace('\n', " ")
                 }),
@@ -2643,10 +2712,16 @@ impl ChatApp {
         })
         .with_bottom_fade(theme.background);
         let typing = self.typing_line(&jid);
+        let drop_to = jid.clone();
         v_flex()
+            .id("conversation")
             .flex_1()
             .h_full()
             .min_w_0()
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().accent.opacity(0.3)))
+            .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
+                this.send_files(drop_to.clone(), paths.paths().to_vec(), cx);
+            }))
             .child(self.render_header(&jid, cx))
             .child(div().flex_1().min_h_0().px_4().child(scroller))
             .child(
@@ -2667,6 +2742,13 @@ impl ChatApp {
                     .p_3()
                     .border_t_1()
                     .border_color(theme.border)
+                    .child(
+                        Button::new("attach")
+                            .ghost()
+                            .icon(Icon::new(LucideIcon::Paperclip))
+                            .tooltip("Send a photo or file")
+                            .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
+                    )
                     .child(div().flex_1().child(Textarea::new(&self.composer)))
                     .child(
                         Button::new("send")
@@ -2687,6 +2769,64 @@ fn typing_label(names: &[String]) -> Option<String> {
         [a, b] => Some(format!("{a} and {b} are typing…")),
         [a, b, c] => Some(format!("{a}, {b} and {c} are typing…")),
         more => Some(format!("{} people are typing…", more.len())),
+    }
+}
+
+/// What a message says in a preview: its text, or what it shares.
+fn preview_text(m: &Message) -> String {
+    match &m.attachment {
+        Some(a) if a.is_image() => "Photo".into(),
+        Some(a) => format!("File: {}", a.name),
+        None => m.body.clone(),
+    }
+}
+
+/// A photo inline, or a file to open; "Downloading…" until it's here.
+fn render_attachment(id: i64, a: Attachment, cx: &mut App) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let path = a.path.clone().map(std::path::PathBuf::from);
+    match path {
+        Some(p) if a.is_image() => {
+            let open = p.clone();
+            div()
+                .id(ElementId::NamedInteger("photo".into(), id as u64))
+                .cursor_pointer()
+                .child(
+                    img(p)
+                        .max_w(px(320.))
+                        .max_h(px(320.))
+                        .object_fit(ObjectFit::Contain)
+                        .rounded_md(),
+                )
+                .on_click(move |_, _, cx| cx.open_with_system(&open))
+                .into_any_element()
+        }
+        Some(p) => Button::new(ElementId::NamedInteger("file".into(), id as u64))
+            .ghost()
+            .small()
+            .icon(Icon::new(LucideIcon::File))
+            .label(match a.size {
+                Some(n) => format!("{} · {}", a.name, human_size(n)),
+                None => a.name.clone(),
+            })
+            .tooltip("Open")
+            .on_click(move |_, _, cx| cx.open_with_system(&p))
+            .into_any_element(),
+        None => h_flex()
+            .gap_2()
+            .text_sm()
+            .text_color(muted)
+            .child(Icon::new(LucideIcon::File).small())
+            .child(format!("{} · downloading…", a.name))
+            .into_any_element(),
+    }
+}
+
+fn human_size(n: u64) -> String {
+    match n {
+        n if n >= 1_000_000 => format!("{:.1} MB", n as f64 / 1e6),
+        n if n >= 1_000 => format!("{:.0} KB", n as f64 / 1e3),
+        n => format!("{n} bytes"),
     }
 }
 
@@ -2723,12 +2863,19 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
         .when(m.encryption.as_ref().is_some_and(|e| e.error.is_some()), |b| {
             b.with_variant(BubbleVariant::Outline)
         })
-        .child(SelectableText::new(
-            ElementId::NamedInteger("body".into(), m.id as u64),
-            m.body.clone(),
-        ));
+        .when(m.attachment.is_none(), |b| {
+            b.child(SelectableText::new(
+                ElementId::NamedInteger("body".into(), m.id as u64),
+                m.body.clone(),
+            ))
+        })
+        .when_some(m.attachment.clone(), |b, a| b.child(render_attachment(m.id, a, cx)));
 
-    let links = crate::desktop::find_links(&m.body);
+    let links = if m.attachment.is_some() {
+        vec![]
+    } else {
+        crate::desktop::find_links(&m.body)
+    };
     let link_row = (!links.is_empty()).then(|| {
         h_flex()
             .gap_1()

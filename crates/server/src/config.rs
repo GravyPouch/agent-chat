@@ -49,6 +49,8 @@ pub struct Config {
     #[serde(default)]
     pub http: Http,
     #[serde(default)]
+    pub upload: Upload,
+    #[serde(default)]
     pub log: Log,
 }
 
@@ -154,6 +156,30 @@ pub struct Http {
     pub trusted_proxies: Vec<String>,
     /// The public URL of the page, for links (optional).
     pub public_url: Option<String>,
+}
+
+/// XEP-0363 file upload on `<host>.<domain>`: photos and files, served by
+/// the web listener (without one, the hub listens on `127.0.0.1:5280` for it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Upload {
+    pub enabled: bool,
+    /// The subdomain: `upload` → `upload.<domain>`.
+    pub host: String,
+    pub max_file_size: ByteSize,
+    /// Files are deleted this long after the upload.
+    pub expire_after: HumanDuration,
+}
+
+impl Default for Upload {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            host: "upload".into(),
+            max_file_size: ByteSize(100_000_000),
+            expire_after: HumanDuration(Duration::from_secs(30 * 86_400)),
+        }
+    }
 }
 
 /// XEP-0045 group chat on `<host>.<domain>`.
@@ -410,6 +436,7 @@ impl Config {
             muc: Muc::default(),
             registration: Registration::default(),
             http: Http::default(),
+            upload: Upload::default(),
             log: Log::default(),
         }
     }
@@ -521,6 +548,26 @@ impl Config {
     }
 
     /// The MUC service's JID, if enabled.
+    pub fn upload_host(&self) -> Option<String> {
+        self.upload
+            .enabled
+            .then(|| format!("{}.{}", self.upload.host, self.domain))
+    }
+
+    /// Where uploaded files are served: `http.public_url`, else the first web
+    /// listener (`addr`: the bound one).
+    pub fn upload_base_url(&self, addr: Option<SocketAddr>) -> Option<String> {
+        if let Some(u) = &self.http.public_url {
+            return Some(u.trim_end_matches('/').to_owned());
+        }
+        let addr = addr?;
+        Some(if addr.ip().is_unspecified() {
+            format!("http://{}:{}", self.domain, addr.port())
+        } else {
+            format!("http://{addr}")
+        })
+    }
+
     pub fn muc_host(&self) -> Option<String> {
         self.muc.enabled.then(|| format!("{}.{}", self.muc.host, self.domain))
     }

@@ -127,7 +127,7 @@ impl UserActor {
             self.account_register(resource, &el, &p).await;
             return;
         }
-        if let Some(reply) = disco::handle_domain_stanza(self.router.domain(), self.router.components(), &el) {
+        if let Some(reply) = disco::handle_domain_stanza(self.router.domain(), &self.router.components(), &el) {
             self.send(resource, reply);
         }
     }

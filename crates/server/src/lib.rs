@@ -25,6 +25,7 @@ pub mod router;
 pub mod stanza;
 pub mod stats;
 pub mod store;
+pub mod upload;
 pub mod user;
 pub mod util;
 

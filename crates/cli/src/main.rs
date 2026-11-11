@@ -95,6 +95,16 @@ enum Cmd {
         /// Fail instead of sending plaintext when OMEMO isn't available.
         #[arg(long)]
         require_encryption: bool,
+        /// Send a photo or file (encrypted unless --plaintext); TEXT, if
+        /// given, follows as a caption.
+        #[arg(long, value_name = "PATH")]
+        file: Option<std::path::PathBuf>,
+    },
+    /// Download a message's photo or file and print the message with its
+    /// local path (`attachment.path`).
+    Download {
+        /// The message's id.
+        id: i64,
     },
     /// Show stored history of a conversation (oldest first).
     History {
@@ -264,6 +274,10 @@ struct ReadArgs {
     /// Don't show the sender that you're typing after you read their message.
     #[arg(long)]
     no_typing: bool,
+    /// Don't download photos and files (by default they are, so
+    /// `attachment.path` is set).
+    #[arg(long)]
+    no_download: bool,
 }
 
 impl ReadArgs {
@@ -739,12 +753,12 @@ async fn run(cli: Cli) -> Result<()> {
                 })
                 .await?;
             match m {
-                Some(m) => print_message(fmt, &m),
+                Some(m) => print_message(fmt, &with_file(&client, m, !read.no_download).await),
                 None => return Err(Exit(2, "timeout: no new messages".into()).into()),
             }
         }
         Cmd::Inbox { read, peek, limit } => {
-            let msgs: Vec<Message> = client
+            let mut msgs: Vec<Message> = client
                 .call(Request::Inbox {
                     delivery: read.delivery(),
                     filter: read.filter(),
@@ -754,6 +768,11 @@ async fn run(cli: Cli) -> Result<()> {
                     no_typing: read.no_typing,
                 })
                 .await?;
+            if !read.no_download {
+                for m in msgs.iter_mut() {
+                    *m = with_file(&client, m.clone(), true).await;
+                }
+            }
             match fmt {
                 Format::Json => print_json(&msgs),
                 Format::Text => msgs.iter().for_each(|m| print_message(fmt, m)),
@@ -771,7 +790,7 @@ async fn run(cli: Cli) -> Result<()> {
                 })
                 .await?;
             if let Some(m) = m {
-                print_message(fmt, &m);
+                print_message(fmt, &with_file(&client, m, !read.no_download).await);
             }
         },
         Cmd::Send {
@@ -781,7 +800,46 @@ async fn run(cli: Cli) -> Result<()> {
             chat,
             plaintext,
             require_encryption,
+            file,
         } => {
+            let room = if room {
+                Some(true)
+            } else if chat {
+                Some(false)
+            } else {
+                None
+            };
+            let encryption = if plaintext {
+                EncryptionMode::Plaintext
+            } else if require_encryption {
+                EncryptionMode::Require
+            } else {
+                EncryptionMode::Auto
+            };
+            if let Some(file) = file {
+                let path = std::path::absolute(&file)?;
+                let m: Message = client
+                    .call(Request::SendFile {
+                        to: to.clone(),
+                        path: path.to_string_lossy().into_owned(),
+                        room,
+                        encryption,
+                    })
+                    .await?;
+                print_message(fmt, &m);
+                if !text.is_empty() {
+                    let m: Message = client
+                        .call(Request::Send {
+                            to,
+                            body: text.join(" "),
+                            room,
+                            encryption,
+                        })
+                        .await?;
+                    print_message(fmt, &m);
+                }
+                return Ok(());
+            }
             let body = if text.is_empty() || text == ["-"] {
                 let mut s = String::new();
                 std::io::stdin().read_to_string(&mut s)?;
@@ -793,22 +851,14 @@ async fn run(cli: Cli) -> Result<()> {
                 .call(Request::Send {
                     to,
                     body,
-                    room: if room {
-                        Some(true)
-                    } else if chat {
-                        Some(false)
-                    } else {
-                        None
-                    },
-                    encryption: if plaintext {
-                        EncryptionMode::Plaintext
-                    } else if require_encryption {
-                        EncryptionMode::Require
-                    } else {
-                        EncryptionMode::Auto
-                    },
+                    room,
+                    encryption,
                 })
                 .await?;
+            print_message(fmt, &m);
+        }
+        Cmd::Download { id } => {
+            let m: Message = client.call(Request::Download { id }).await?;
             print_message(fmt, &m);
         }
         Cmd::Typing { jid, stop } => ok(client
@@ -1290,6 +1340,21 @@ fn read_password(jid: &str, from_stdin: bool) -> Result<String> {
     rpassword::prompt_password(format!("Password for {jid}: ")).context("reading password")
 }
 
+/// Download a message's attachment so `attachment.path` is set; on failure
+/// keep the message as it is and say why on stderr.
+async fn with_file(client: &IpcClient, m: Message, download: bool) -> Message {
+    if !download || m.attachment.as_ref().is_none_or(|a| a.path.is_some()) {
+        return m;
+    }
+    match client.call::<Message>(Request::Download { id: m.id }).await {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("couldn't download the attachment of message {}: {e}", m.id);
+            m
+        }
+    }
+}
+
 fn print_json<T: Serialize>(v: &T) {
     println!("{}", serde_json::to_string(v).expect("serializable"));
 }
@@ -1318,13 +1383,23 @@ fn print_message(fmt: Format, m: &Message) {
                 Some(_) => " [encrypted, untrusted device]",
                 None => "",
             };
+            let body = match &m.attachment {
+                Some(a) => format!(
+                    "[file: {}] {}",
+                    a.name,
+                    a.path
+                        .clone()
+                        .unwrap_or_else(|| format!("(agent-chat download {})", m.id))
+                ),
+                None => m.body.clone(),
+            };
             println!(
                 "#{} {} {}{}: {}",
                 m.id,
                 m.timestamp.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M"),
                 who,
                 lock,
-                m.body
+                body
             );
         }
     }

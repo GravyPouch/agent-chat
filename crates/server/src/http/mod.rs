@@ -105,10 +105,19 @@ async fn read_request(tcp: &mut TcpStream) -> Result<Option<HttpRequest>> {
         .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
         .and_then(|(_, v)| v.parse().ok())
         .unwrap_or(0);
+    let mut body = buf[head_end + 4..].to_vec();
+    if method == "PUT" && path.starts_with("/upload/") {
+        // File uploads stream the rest of the body to disk.
+        return Ok(Some(HttpRequest {
+            method,
+            path,
+            headers,
+            body,
+        }));
+    }
     if len > MAX_BODY {
         return Ok(None);
     }
-    let mut body = buf[head_end + 4..].to_vec();
     while body.len() < len {
         let mut chunk = vec![0u8; len - body.len()];
         let n = tokio::time::timeout(READ_TIMEOUT, tcp.read(&mut chunk)).await??;
@@ -206,6 +215,125 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// `/upload/<token>/<name>` → (token, name).
+fn upload_path(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/upload/")?;
+    let (token, name) = rest.split_once('/')?;
+    (!name.is_empty() && !name.contains('/')).then_some((token, name))
+}
+
+async fn text(tcp: &mut TcpStream, status: &str, msg: &str) -> Result<()> {
+    respond(
+        tcp,
+        status,
+        "text/plain; charset=utf-8",
+        msg.as_bytes(),
+        &[("Access-Control-Allow-Origin", "*")],
+    )
+    .await
+}
+
+/// XEP-0363 PUT: stream the body into the slot's file.
+async fn upload_put(ctx: &Arc<HubCtx>, tcp: &mut TcpStream, req: HttpRequest) -> Result<()> {
+    let (Some(service), Some((token, name))) = (ctx.upload.get(), upload_path(&req.path)) else {
+        return text(tcp, "404 Not Found", "not found").await;
+    };
+    let Some((size, content_type, owner)) = service.take_slot(token, name) else {
+        return text(tcp, "403 Forbidden", "no such upload slot, or it expired").await;
+    };
+    let len: Option<u64> = req.header("content-length").and_then(|v| v.parse().ok());
+    if len != Some(size) {
+        return text(tcp, "400 Bad Request", "Content-Length must match the slot's size").await;
+    }
+    let Some(dir) = service.file_dir(token) else {
+        return text(tcp, "404 Not Found", "not found").await;
+    };
+    let result = async {
+        tokio::fs::create_dir_all(&dir).await?;
+        let part = dir.join(".part");
+        let mut file = tokio::fs::File::create(&part).await?;
+        let mut written = req.body.len() as u64;
+        if written > size {
+            anyhow::bail!("body is longer than announced");
+        }
+        file.write_all(&req.body).await?;
+        let mut chunk = vec![0u8; 64 * 1024];
+        while written < size {
+            let want = chunk.len().min((size - written) as usize);
+            let n = tokio::time::timeout(READ_TIMEOUT, tcp.read(&mut chunk[..want])).await??;
+            if n == 0 {
+                anyhow::bail!("connection closed after {written} of {size} bytes");
+            }
+            file.write_all(&chunk[..n]).await?;
+            written += n as u64;
+        }
+        file.flush().await?;
+        drop(file);
+        tokio::fs::rename(&part, dir.join(name)).await?;
+        service.write_meta(
+            token,
+            &crate::upload::FileMeta {
+                filename: name.to_owned(),
+                size,
+                content_type,
+                owner,
+                uploaded: crate::util::now_ms(),
+            },
+        )?;
+        Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => text(tcp, "201 Created", "created").await,
+        Err(e) => {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            tracing::debug!("upload failed: {e:#}");
+            text(tcp, "400 Bad Request", "upload failed").await
+        }
+    }
+}
+
+/// Types a browser may show inline; anything else downloads.
+fn inline_type(t: &str) -> bool {
+    (t.starts_with("image/") && t != "image/svg+xml")
+        || t.starts_with("audio/")
+        || t.starts_with("video/")
+        || t == "text/plain"
+        || t == "application/pdf"
+}
+
+/// XEP-0363 GET: serve an uploaded file.
+async fn upload_get(ctx: &Arc<HubCtx>, tcp: &mut TcpStream, req: &HttpRequest) -> Result<()> {
+    let (Some(service), Some((token, name))) = (ctx.upload.get(), upload_path(&req.path)) else {
+        return text(tcp, "404 Not Found", "not found").await;
+    };
+    let meta = service.read_meta(token).filter(|m| m.filename == name);
+    let (Some(meta), Some(dir)) = (meta, service.file_dir(token)) else {
+        return text(tcp, "404 Not Found", "not found").await;
+    };
+    let Ok(mut file) = tokio::fs::File::open(dir.join(name)).await else {
+        return text(tcp, "404 Not Found", "not found").await;
+    };
+    let disposition = if inline_type(&meta.content_type) {
+        "inline"
+    } else {
+        "attachment"
+    };
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\
+         Content-Disposition: {disposition}\r\nX-Content-Type-Options: nosniff\r\n\
+         Content-Security-Policy: sandbox; default-src 'none'\r\nReferrer-Policy: no-referrer\r\n\
+         Cache-Control: private, max-age=86400\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
+        meta.content_type, meta.size
+    );
+    tcp.write_all(head.as_bytes()).await?;
+    if req.method != "HEAD" {
+        tokio::io::copy(&mut file, tcp).await?;
+    }
+    tcp.flush().await?;
+    Ok(())
+}
+
 /// Instructions for an AI agent: install, create its own account, chat.
 fn agent_text(domain: &str) -> String {
     [
@@ -267,6 +395,22 @@ async fn handle(ctx: &Arc<HubCtx>, mut tcp: TcpStream, peer: SocketAddr) -> Resu
                     "Content-Security-Policy",
                     "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'",
                 )],
+            )
+            .await
+        }
+        ("PUT", p) if p.starts_with("/upload/") => upload_put(ctx, &mut tcp, req).await,
+        ("GET" | "HEAD", p) if p.starts_with("/upload/") => upload_get(ctx, &mut tcp, &req).await,
+        ("OPTIONS", p) if p.starts_with("/upload/") => {
+            respond(
+                &mut tcp,
+                "204 No Content",
+                "text/plain",
+                b"",
+                &[
+                    ("Access-Control-Allow-Origin", "*"),
+                    ("Access-Control-Allow-Methods", "GET, HEAD, PUT"),
+                    ("Access-Control-Allow-Headers", "Content-Type"),
+                ],
             )
             .await
         }

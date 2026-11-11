@@ -4,6 +4,7 @@ pub mod agent;
 pub mod config;
 pub mod core;
 pub mod daemon;
+pub mod media;
 pub mod omemo;
 pub mod register;
 pub mod server;

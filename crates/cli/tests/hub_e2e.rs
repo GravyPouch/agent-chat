@@ -212,7 +212,17 @@ fn two_agents_chat_through_the_hub_and_survive_a_restart() {
 fn hub_with_profiles(env: &Env, users: &[(&str, &str)]) -> u16 {
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
-    env.json(&["hub", "init", "--domain", "hubtest.local", "--listen", &listen]);
+    let http = format!("127.0.0.1:{}", free_port());
+    env.json(&[
+        "hub",
+        "init",
+        "--domain",
+        "hubtest.local",
+        "--listen",
+        &listen,
+        "--http",
+        &http,
+    ]);
     env.json(&["hub", "start"]);
     for (user, pw) in users {
         ok_json(
@@ -664,7 +674,15 @@ fn delete_chat_removes_history_and_leaves_rooms() {
     let convs = env.json(&["--profile", "alice", "conversations"]);
     assert!(!convs.to_string().contains("bob@hubtest.local"), "{convs}");
 
-    let room = env.json(&["--profile", "alice", "rooms", "create", "--name", "gone soon", "--public"]);
+    let room = env.json(&[
+        "--profile",
+        "alice",
+        "rooms",
+        "create",
+        "--name",
+        "gone soon",
+        "--public",
+    ]);
     let jid = room["jid"].as_str().unwrap().to_owned();
     env.json(&["--profile", "alice", "send", &jid, "hello room"]);
     env.json(&["--profile", "alice", "delete-chat", &jid]);
@@ -673,5 +691,63 @@ fn delete_chat_removes_history_and_leaves_rooms() {
     assert_eq!(
         env.json(&["--profile", "alice", "history", &jid]),
         serde_json::json!([])
+    );
+}
+
+/// Photos and files: encrypted by default (the hub only stores
+/// ciphertext), as a plain link with --plaintext; `wait` downloads them.
+#[test]
+fn files_are_uploaded_encrypted_and_downloaded() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    hub_with_profiles(&env, &[("alice", "alice-password-123"), ("bob", "bob-password-4567")]);
+    let photo = env.home.path().join("cat photo.png");
+    let content: Vec<u8> = (0..200_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    std::fs::write(&photo, &content).unwrap();
+
+    for plaintext in [false, true] {
+        let waiter = env
+            .cmd(&["--profile", "alice", "wait", "--timeout", "30"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let path = photo.to_string_lossy().into_owned();
+        let mut args = vec!["--profile", "bob", "send", "alice@hubtest.local", "--file", &path];
+        if plaintext {
+            args.push("--plaintext");
+        }
+        let sent = env.json(&args);
+        assert_eq!(sent["attachment"]["name"], "cat photo.png", "{sent}");
+        assert_eq!(sent["attachment"]["encrypted"], !plaintext, "{sent}");
+        let got = ok_json(waiter.wait_with_output().unwrap(), &["wait"]);
+        let att = &got["attachment"];
+        assert_eq!(att["name"], "cat photo.png", "{got}");
+        assert_eq!(att["mime"], "image/png", "{got}");
+        assert_eq!(att["encrypted"], !plaintext, "{got}");
+        let local = att["path"].as_str().unwrap_or_else(|| panic!("not downloaded: {got}"));
+        assert_eq!(std::fs::read(local).unwrap(), content);
+    }
+
+    // The hub has two uploads; the encrypted one isn't the photo.
+    let uploads: Vec<Vec<u8>> = std::fs::read_dir(env.hub_dir().join("uploads"))
+        .unwrap()
+        .flatten()
+        .map(|d| std::fs::read(d.path().join("cat%20photo.png")).unwrap())
+        .collect();
+    assert_eq!(uploads.len(), 2);
+    assert_eq!(
+        uploads.iter().filter(|u| **u == content).count(),
+        1,
+        "only the plaintext one"
+    );
+    assert!(
+        uploads.iter().any(|u| u.len() == content.len() + 16),
+        "ciphertext with the GCM tag"
     );
 }

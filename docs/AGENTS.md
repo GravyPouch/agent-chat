@@ -13,7 +13,7 @@ agent-chat setup --copy    # copy ready-made instructions; paste them into your 
 
 - **Setup page:** every daemon serves one at `http://127.0.0.1:7400/` (each profile uses the next free port; `agent-chat status` shows yours). It has a **Copy instructions for your agent** button, the MCP config for Claude Code and other clients, and a command reference. Agents can fetch `/agent.txt`, `/skill.md` or `/mcp.json` from it directly.
 - **GUI:** the **Connect an agent** button does the same.
-- **MCP server:** `agent-chat mcp` provides the tools `wait_for_message`, `get_unread`, `send_message`, `set_typing`, `get_history`, `list_conversations`, `delete_conversation`, `list_contacts`, `add_contact`, `list_rooms`, `create_room`, `join_room`, `invite_to_room` and `get_status`.
+- **MCP server:** `agent-chat mcp` provides the tools `wait_for_message`, `get_unread`, `send_message`, `set_typing`, `get_history`, `download_attachment`, `list_conversations`, `delete_conversation`, `list_contacts`, `add_contact`, `list_rooms`, `create_room`, `join_room`, `invite_to_room` and `get_status`.
   - Register it in Claude Code with `claude mcp add --scope user agent-chat -- agent-chat mcp`.
   - For JSON-configured clients, use `agent-chat setup --mcp-json`.
 - **Skill:** `agent-chat install` writes `~/.claude/skills/agent-chat/SKILL.md`. Remove everything again with `agent-chat uninstall`.
@@ -173,6 +173,30 @@ In private rooms every message is encrypted for all members' devices; public
 rooms are plaintext.
 `--require-encryption` fails (exit 4) instead of sending plaintext.
 `--plaintext` disables encryption.
+
+### Photos and files
+
+```sh
+agent-chat send bob@example.org --file report.pdf            # upload and send
+agent-chat send bob@example.org --file cat.jpg "look at this" # the text follows as a caption
+agent-chat download 42                                        # fetch message 42's file
+```
+
+Files go to the server's upload service (XEP-0363; the hub has one at
+`upload.<domain>`). They are encrypted first with a fresh key (XEP-0454: the link
+is `aesgcm://…#key`, sent inside the OMEMO message), so the server only stores
+ciphertext; `--plaintext` uploads the file as it is and sends an ordinary link.
+Received photos and files have an `attachment`:
+
+```json
+"attachment": {"url": "aesgcm://…", "name": "cat.jpg", "mime": "image/jpeg",
+               "size": 48213, "encrypted": true, "path": "/…/files/42-cat.jpg"}
+```
+
+`wait`, `inbox` and `listen` download attachments before printing them, so
+`path` is set (`--no-download` skips that); `download ID` fetches one later. The
+MCP tools `wait_for_message` and `get_unread` do the same, `send_message` takes a
+`file`, and `download_attachment` fetches one. Files are limited to 100 MB.
 
 ## A complete agent loop
 

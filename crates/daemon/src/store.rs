@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use agent_chat_proto::model::{
-    ConversationSummary, Delivery, EncryptionInfo, EncryptionProtocol, Filter, Message, MessageKind, MessageSource,
-    Room, Trust,
+    Attachment, ConversationSummary, Delivery, EncryptionInfo, EncryptionProtocol, Filter, Message, MessageKind,
+    MessageSource, Room, Trust,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -76,6 +76,14 @@ CREATE TABLE cleared (
     before        TEXT NOT NULL
 );
 "#,
+    r#"
+-- Shared photos and files (XEP-0363/0066/0454).
+ALTER TABLE messages ADD COLUMN att_url TEXT;
+ALTER TABLE messages ADD COLUMN att_name TEXT;
+ALTER TABLE messages ADD COLUMN att_mime TEXT;
+ALTER TABLE messages ADD COLUMN att_size INTEGER;
+ALTER TABLE messages ADD COLUMN att_path TEXT;
+"#,
 ];
 
 /// A message about to be stored, before it has a local id.
@@ -96,6 +104,7 @@ pub struct NewMessage {
     pub origin_id: Option<String>,
     pub xmpp_id: Option<String>,
     pub encryption: Option<EncryptionInfo>,
+    pub attachment: Option<agent_chat_proto::model::Attachment>,
 }
 
 /// Identifiers used to detect duplicates, without the (possibly encrypted) body.
@@ -218,11 +227,14 @@ impl Store {
             return Ok(None);
         }
         let enc = m.encryption.as_ref();
+        let att = m.attachment.as_ref();
         self.conn.execute(
             "INSERT INTO messages (conversation, kind, sender, nick, body, timestamp, delayed,
                 source, own, archive, stanza_id, origin_id, xmpp_id,
-                enc_protocol, enc_device, enc_trust, enc_error)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                enc_protocol, enc_device, enc_trust, enc_error,
+                att_url, att_name, att_mime, att_size, att_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                     ?18, ?19, ?20, ?21, ?22)",
             params![
                 m.conversation,
                 m.kind.as_str(),
@@ -241,6 +253,11 @@ impl Store {
                 enc.map(|e| e.sender_device),
                 enc.map(|e| e.trust.as_str()),
                 enc.and_then(|e| e.error.clone()),
+                att.map(|a| a.url.clone()),
+                att.map(|a| a.name.clone()),
+                att.and_then(|a| a.mime.clone()),
+                att.and_then(|a| a.size.map(|s| s as i64)),
+                att.and_then(|a| a.path.clone()),
             ],
         )?;
         let id = self.conn.last_insert_rowid();
@@ -286,6 +303,15 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(n)
+    }
+
+    /// Record where an attachment was saved (and its size).
+    pub fn set_attachment_file(&self, id: i64, path: &str, size: u64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET att_path = ?2, att_size = ?3 WHERE id = ?1",
+            params![id, path, size as i64],
+        )?;
+        Ok(())
     }
 
     pub fn get_message(&self, id: i64) -> Result<Option<Message>> {
@@ -527,7 +553,8 @@ fn message_trusted(m: &Message) -> bool {
 }
 
 const SELECT_MESSAGE: &str = "SELECT id, conversation, kind, sender, nick, body, timestamp, delayed,
-    source, own, enc_protocol, enc_device, enc_trust, enc_error FROM messages";
+    source, own, enc_protocol, enc_device, enc_trust, enc_error,
+    att_url, att_name, att_mime, att_size, att_path FROM messages";
 
 fn row_to_message(r: &Row<'_>) -> rusqlite::Result<Message> {
     let kind: String = r.get(2)?;
@@ -561,6 +588,17 @@ fn row_to_message(r: &Row<'_>) -> rusqlite::Result<Message> {
         source: MessageSource::parse(&source).unwrap_or(MessageSource::Live),
         own: r.get(9)?,
         encryption,
+        attachment: match r.get::<_, Option<String>>(14)? {
+            Some(url) => Some(Attachment {
+                encrypted: url.starts_with("aesgcm://"),
+                url,
+                name: r.get::<_, Option<String>>(15)?.unwrap_or_default(),
+                mime: r.get(16)?,
+                size: r.get::<_, Option<i64>>(17)?.map(|s| s as u64),
+                path: r.get(18)?,
+            }),
+            None => None,
+        },
     })
 }
 
@@ -584,6 +622,7 @@ mod tests {
             origin_id: None,
             xmpp_id: None,
             encryption: None,
+            attachment: None,
         }
     }
 

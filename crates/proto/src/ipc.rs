@@ -165,6 +165,20 @@ pub enum Request {
     /// The account's sign-in details, password included, to use it in another
     /// app. Result: [`AccountCredentials`].
     AccountExport,
+    /// Upload a file (encrypted unless `encryption` is plaintext) and send
+    /// its link. Result: [`Message`].
+    SendFile {
+        to: String,
+        /// Absolute path of the file.
+        path: String,
+        #[serde(default)]
+        room: Option<bool>,
+        #[serde(default)]
+        encryption: EncryptionMode,
+    },
+    /// Download (and decrypt) a message's attachment. Result: [`Message`]
+    /// with `attachment.path` set.
+    Download { id: i64 },
     /// Delete a conversation and its history on this device (a group chat is
     /// left too). Archived copies don't come back. Result: `{"deleted": N}`.
     DeleteConversation { conversation: String },

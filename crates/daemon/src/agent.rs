@@ -537,6 +537,7 @@ mod tests {
             source: MessageSource::Live,
             own,
             encryption: None,
+            attachment: None,
         }
     }
 

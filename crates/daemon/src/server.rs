@@ -272,6 +272,23 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             crate::agent::set_account_kind(core, kind)?;
             json(core.status())
         }
+        Request::SendFile {
+            to,
+            path,
+            room,
+            encryption,
+        } => json(
+            crate::media::send_file(
+                core,
+                &core.session()?,
+                &to,
+                std::path::Path::new(&path),
+                room,
+                encryption,
+            )
+            .await?,
+        ),
+        Request::Download { id } => json(crate::media::download(core, id).await?),
         Request::DeleteConversation { conversation } => {
             let conversation = conversation.trim().to_owned();
             if conversation.is_empty() {

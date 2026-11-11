@@ -727,6 +727,22 @@ pub async fn send_message(
     room: Option<bool>,
     mode: EncryptionMode,
 ) -> Result<Message, IpcError> {
+    send_message_with(core, handle, to, body, room, mode, None, None).await
+}
+
+/// [`send_message`] with a shared file: `oob` adds an XEP-0066 link (for
+/// plaintext links), `attachment` is stored with our copy.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_message_with(
+    core: &Arc<Core>,
+    handle: &SessionHandle,
+    to: &str,
+    body: String,
+    room: Option<bool>,
+    mode: EncryptionMode,
+    oob: Option<String>,
+    attachment: Option<agent_chat_proto::model::Attachment>,
+) -> Result<Message, IpcError> {
     if body.is_empty() {
         return Err(IpcError::new(ErrorCode::BadRequest, "message body is empty"));
     }
@@ -799,6 +815,11 @@ pub async fn send_message(
     }
     if encryption.is_none() {
         msg.bodies.insert(Lang::default(), body.clone());
+        if let Some(url) = &oob {
+            let mut x = Element::builder("x", "jabber:x:oob").build();
+            x.append_child(Element::builder("url", "jabber:x:oob").append(url.as_str()).build());
+            msg.payloads.push(x);
+        }
     }
     // Ask the server to archive even body-less encrypted messages (XEP-0334).
     msg.payloads.push(Element::builder("store", "urn:xmpp:hints").build());
@@ -827,6 +848,7 @@ pub async fn send_message(
             origin_id: Some(id.clone()),
             xmpp_id: Some(id),
             encryption,
+            attachment,
         })
         .map_err(internal)?
         .ok_or_else(|| internal("message id collision"))?;

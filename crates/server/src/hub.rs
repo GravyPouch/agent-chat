@@ -47,6 +47,8 @@ pub struct HubCtx {
     pub started_at: DateTime<Utc>,
     pub started: Instant,
     pub listeners: Vec<SocketAddr>,
+    /// XEP-0363 file upload, once the web listener is up.
+    pub upload: std::sync::OnceLock<Arc<crate::upload::UploadService>>,
     next_conn: AtomicU64,
 }
 
@@ -350,6 +352,7 @@ impl RunningHub {
             started: Instant::now(),
             listeners: listeners.clone(),
             next_conn: AtomicU64::new(1),
+            upload: std::sync::OnceLock::new(),
             tls,
             store,
             domain,
@@ -371,7 +374,7 @@ impl RunningHub {
                     mam_max_page: ctx.config.archive.max_page,
                 },
             );
-            ctx.router.set_component(&host, muc);
+            ctx.router.add_component(&host, muc);
         }
         for l in bound {
             let addr = l.local_addr()?;
@@ -385,6 +388,42 @@ impl RunningHub {
             tracing::info!(addr = %bound, "serving the web page");
             http.push(bound);
             ctx.tracker.spawn(crate::http::serve(ctx.clone(), l));
+        }
+        if let Some(host) = ctx.config.upload_host() {
+            // File upload needs the web listener; a hub without one gets a
+            // local one (enough for the people and agents on this machine).
+            if http.is_empty() {
+                match "127.0.0.1:5280"
+                    .parse()
+                    .map_err(anyhow::Error::from)
+                    .and_then(listener::bind)
+                {
+                    Ok(l) => {
+                        let bound = l.local_addr()?;
+                        tracing::info!(addr = %bound, "serving file uploads");
+                        http.push(bound);
+                        ctx.tracker.spawn(crate::http::serve(ctx.clone(), l));
+                    }
+                    Err(e) => tracing::warn!("file upload is off: can't listen on 127.0.0.1:5280: {e:#}"),
+                }
+            }
+            if let Some(base) = ctx.config.upload_base_url(http.first().copied()) {
+                let dir = ctx.paths.dir.join("uploads");
+                std::fs::create_dir_all(&dir)?;
+                let service = crate::upload::UploadService::new(
+                    &host,
+                    &ctx.domain,
+                    &ctx.router,
+                    dir,
+                    &base,
+                    ctx.config.upload.max_file_size.0,
+                );
+                ctx.router.add_component(&host, service.clone());
+                let _ = ctx.upload.set(service.clone());
+                ctx.tracker
+                    .spawn(expire_uploads(ctx.clone(), service, ctx.config.upload.expire_after.0));
+                tracing::info!(%host, %base, "file upload enabled");
+            }
         }
         ctx.tracker.spawn(watch_certificate(ctx.clone()));
         if let (true, Some(keep)) = (ctx.config.archive.enabled, ctx.config.archive.expire_after.0) {
@@ -551,4 +590,19 @@ pub async fn run(paths: HubPaths) -> Result<()> {
     });
     hub.wait().await;
     Ok(())
+}
+
+/// Delete expired uploads now and then.
+async fn expire_uploads(ctx: Arc<HubCtx>, service: Arc<crate::upload::UploadService>, keep: Duration) {
+    loop {
+        let s = service.clone();
+        let n = tokio::task::spawn_blocking(move || s.expire(keep)).await.unwrap_or(0);
+        if n > 0 {
+            tracing::info!(files = n, "deleted expired uploads");
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(3600)) => {}
+            _ = ctx.shutdown.cancelled() => return,
+        }
+    }
 }

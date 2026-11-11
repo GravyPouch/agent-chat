@@ -80,6 +80,8 @@ pub struct State {
     pub disco_pending: BTreeSet<String>,
     /// The account's group chat service, once discovered.
     pub muc_service: Option<String>,
+    /// XEP-0363 upload service, once found.
+    pub upload_service: Option<crate::media::UploadService>,
 }
 
 pub struct Core {
@@ -134,6 +136,7 @@ impl Core {
                 caps_agents: HashMap::new(),
                 disco_pending: BTreeSet::new(),
                 muc_service: None,
+                upload_service: None,
             }),
             session: Mutex::new(None),
             omemo: Mutex::new(None),
