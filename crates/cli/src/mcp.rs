@@ -91,6 +91,11 @@ fn tools() -> Value {
             }
         },
         {"name": "list_conversations", "description": "Conversations with their latest message.", "inputSchema": {"type": "object", "properties": {}}},
+        {
+            "name": "delete_conversation",
+            "description": "Delete a conversation and its history on this device; a group chat is left too. Others keep their copies.",
+            "inputSchema": {"type": "object", "properties": {"conversation": {"type": "string", "description": "Contact or room address."}}, "required": ["conversation"]}
+        },
         {"name": "list_contacts", "description": "Contacts (roster) with presence, and pending subscription requests.", "inputSchema": {"type": "object", "properties": {}}},
         {
             "name": "add_contact",
@@ -200,6 +205,9 @@ async fn call_tool(client: &IpcClient, consumer: &str, name: &str, args: &Value)
             before_id: None,
         },
         "list_conversations" => Request::Conversations,
+        "delete_conversation" => Request::DeleteConversation {
+            conversation: require(args, "conversation")?,
+        },
         "list_contacts" => Request::Contacts,
         "add_contact" => Request::ContactAdd {
             jid: require(args, "jid")?,

@@ -141,6 +141,8 @@ pub struct ChatApp {
     /// "Connect an agent" dialog: the result of the last install.
     install_result: Option<String>,
     settings: settings::SettingsState,
+    /// "Delete chat" dialog: also remove the contact.
+    delete_remove_contact: bool,
     /// The animated face of the open 1:1 chat.
     face: Option<Entity<AnimatedFace>>,
     /// We told this contact or room we're typing (XEP-0085 "composing").
@@ -306,6 +308,7 @@ impl ChatApp {
             copied_reset: None,
             install_result: None,
             settings: Default::default(),
+            delete_remove_contact: false,
             face: None,
             composing_to: None,
             typing: HashMap::new(),
@@ -619,6 +622,18 @@ impl ChatApp {
             }
             Event::ContactsChanged | Event::SubscriptionRequest(_) => self.reload_contacts(cx),
             Event::RoomsChanged | Event::RoomInvite(_) => self.reload_rooms(cx),
+            Event::ConversationDeleted { conversation } => {
+                if self
+                    .selected
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(&conversation))
+                {
+                    self.selected = None;
+                    self.messages = Rc::new(Vec::new());
+                    self.face = None;
+                }
+                self.reload_conversations(cx);
+            }
             Event::RoomSubject { room, subject } => {
                 if let Some(r) = self.rooms.iter_mut().find(|r| r.jid.eq_ignore_ascii_case(&room)) {
                     r.subject = Some(subject);
@@ -1995,7 +2010,110 @@ impl ChatApp {
                         }),
                 )
             })
-            .on_click(cx.listener(move |this, _, window, cx| this.select(jid.clone(), window, cx)))
+            .on_click({
+                let jid = jid.clone();
+                cx.listener(move |this, _, window, cx| this.select(jid.clone(), window, cx))
+            })
+            .context_menu({
+                let this = cx.entity().downgrade();
+                move |menu, _, _| {
+                    let (this, jid) = (this.clone(), jid.clone());
+                    menu.item(
+                        PopupMenuItem::new(if room { "Leave and Delete…" } else { "Delete Chat…" }).on_click(
+                            move |_, window, cx| {
+                                let jid = jid.clone();
+                                let _ = this.update(cx, |a, cx| a.confirm_delete_chat(jid, window, cx));
+                            },
+                        ),
+                    )
+                }
+            })
+    }
+
+    /// Ask before deleting a conversation (and leaving it, for a room).
+    fn confirm_delete_chat(&mut self, jid: String, window: &mut Window, cx: &mut Context<Self>) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        self.delete_remove_contact = false;
+        let room = self.rooms.iter().find(|r| r.jid.eq_ignore_ascii_case(&jid)).cloned();
+        let contact = self
+            .contacts
+            .iter()
+            .find(|c| c.jid.eq_ignore_ascii_case(&jid))
+            .map(|c| c.name.clone().unwrap_or_else(|| c.jid.clone()));
+        let name = match (&room, &contact) {
+            (Some(r), _) => r.name.clone().unwrap_or_else(|| local_part(&r.jid)),
+            (None, Some(n)) => n.clone(),
+            (None, None) => jid.clone(),
+        };
+        let this = cx.entity();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let remove_contact = this.read(cx).delete_remove_contact;
+            let muted = cx.theme().muted_foreground;
+            let (t1, t2) = (this.clone(), this.clone());
+            let jid = jid.clone();
+            dialog
+                .title(if room.is_some() {
+                    format!("Leave and delete {name}?")
+                } else {
+                    format!("Delete the chat with {name}?")
+                })
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(div().text_sm().text_color(muted).child(if room.is_some() {
+                            "You'll leave the group chat, and its messages are deleted from this device. \
+                             Others still have their copies."
+                        } else {
+                            "The messages are deleted from this device. The other person still has their copy."
+                        }))
+                        .when(room.is_none() && contact.is_some(), |el| {
+                            el.child(
+                                Checkbox::new("delete-remove-contact")
+                                    .label("Also remove from contacts")
+                                    .checked(remove_contact)
+                                    .on_click(move |checked, _, cx| {
+                                        t1.update(cx, |a, cx| {
+                                            a.delete_remove_contact = *checked;
+                                            cx.notify();
+                                        })
+                                    }),
+                            )
+                        }),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|b| b.label("Cancel")))
+                        .child(
+                            Button::new("delete-chat")
+                                .danger()
+                                .label("Delete")
+                                .on_click(move |_, window, cx| {
+                                    let jid = jid.clone();
+                                    t2.update(cx, |a, cx| a.delete_chat(jid, cx));
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+        });
+    }
+
+    fn delete_chat(&mut self, jid: String, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.delete_remove_contact) {
+            self.call::<serde_json::Value>(Request::ContactRemove { jid: jid.clone() }, cx, |this, r, cx| {
+                if let Err(e) = r {
+                    this.error = Some(format!("Couldn't remove the contact: {e}"));
+                    cx.notify();
+                }
+            });
+        }
+        self.call::<serde_json::Value>(Request::DeleteConversation { conversation: jid }, cx, |this, r, cx| {
+            if let Err(e) = r {
+                this.error = Some(format!("Couldn't delete the chat: {e}"));
+                cx.notify();
+            }
+        });
     }
 
     fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

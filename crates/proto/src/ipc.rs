@@ -165,6 +165,9 @@ pub enum Request {
     /// The account's sign-in details, password included, to use it in another
     /// app. Result: [`AccountCredentials`].
     AccountExport,
+    /// Delete a conversation and its history on this device (a group chat is
+    /// left too). Archived copies don't come back. Result: `{"deleted": N}`.
+    DeleteConversation { conversation: String },
     /// Identify the client on this connection: `cli`, `mcp` or `gui`. An
     /// MCP session makes an account of unknown kind an agent's. Result: `null`.
     Hello { client: String },
@@ -273,6 +276,10 @@ pub enum Event {
     ContactsChanged,
     SubscriptionRequest(SubscriptionRequest),
     RoomsChanged,
+    /// A conversation and its history were deleted.
+    ConversationDeleted {
+        conversation: String,
+    },
     RoomSubject {
         room: String,
         subject: String,

@@ -641,3 +641,37 @@ fn stop_hook_pushes_unread_messages_once() {
     assert_eq!(hook("claude"), serde_json::json!({}));
     assert!(!env.run(&["--profile", "alice", "daemon", "status"]).status.success());
 }
+
+/// `delete-chat` removes a 1:1 conversation's history, and leaves and
+/// removes a group chat.
+#[test]
+fn delete_chat_removes_history_and_leaves_rooms() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    hub_with_profiles(&env, &[("alice", "alice-password-123"), ("bob", "bob-password-4567")]);
+    exchange(&env, "bob", "alice", "alice@hubtest.local", "to be deleted");
+    let history = env.json(&["--profile", "alice", "history", "bob@hubtest.local"]);
+    assert_eq!(history.as_array().unwrap().len(), 1, "{history}");
+
+    let out = env.json(&["--profile", "alice", "delete-chat", "bob@hubtest.local"]);
+    assert_eq!(out["deleted"], 1, "{out}");
+    let history = env.json(&["--profile", "alice", "history", "bob@hubtest.local"]);
+    assert_eq!(history, serde_json::json!([]));
+    let convs = env.json(&["--profile", "alice", "conversations"]);
+    assert!(!convs.to_string().contains("bob@hubtest.local"), "{convs}");
+
+    let room = env.json(&["--profile", "alice", "rooms", "create", "--name", "gone soon", "--public"]);
+    let jid = room["jid"].as_str().unwrap().to_owned();
+    env.json(&["--profile", "alice", "send", &jid, "hello room"]);
+    env.json(&["--profile", "alice", "delete-chat", &jid]);
+    let rooms = env.json(&["--profile", "alice", "rooms", "list"]);
+    assert!(!rooms.to_string().contains(&jid), "{rooms}");
+    assert_eq!(
+        env.json(&["--profile", "alice", "history", &jid]),
+        serde_json::json!([])
+    );
+}

@@ -10,7 +10,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE messages (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation  TEXT NOT NULL,
@@ -66,7 +67,16 @@ CREATE TABLE kv (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
 );
-"#];
+"#,
+    r#"
+-- Deleted conversations: messages from before `before` (archive and offline
+-- copies arriving later) are not stored again.
+CREATE TABLE cleared (
+    conversation  TEXT PRIMARY KEY COLLATE NOCASE,
+    before        TEXT NOT NULL
+);
+"#,
+];
 
 /// A message about to be stored, before it has a local id.
 #[derive(Debug, Clone)]
@@ -194,6 +204,9 @@ impl Store {
             origin_id: m.origin_id.as_deref(),
             xmpp_id: m.xmpp_id.as_deref(),
         };
+        if self.cleared_after(&m.conversation, m.timestamp)? {
+            return Ok(None);
+        }
         if let Some(existing) = self.find_duplicate(&keys)? {
             if let (Some(archive), Some(sid)) = (&m.archive, &m.stanza_id) {
                 self.conn.execute(
@@ -232,6 +245,47 @@ impl Store {
         )?;
         let id = self.conn.last_insert_rowid();
         self.get_message(id)
+    }
+
+    /// Whether the conversation was deleted after `timestamp`.
+    fn cleared_after(&self, conversation: &str, timestamp: DateTime<Utc>) -> Result<bool> {
+        let before: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT before FROM cleared WHERE conversation = ?1",
+                params![conversation],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(before
+            .and_then(|b| DateTime::parse_from_rfc3339(&b).ok())
+            .is_some_and(|b| timestamp <= b))
+    }
+
+    /// Delete a conversation's messages, deliveries and read marker, and keep
+    /// archive copies of them from coming back. Returns how many messages.
+    pub fn delete_conversation(&self, conversation: &str) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM deliveries WHERE message_id IN
+               (SELECT id FROM messages WHERE conversation = ?1 COLLATE NOCASE)",
+            params![conversation],
+        )?;
+        let n = tx.execute(
+            "DELETE FROM messages WHERE conversation = ?1 COLLATE NOCASE",
+            params![conversation],
+        )?;
+        tx.execute(
+            "DELETE FROM read_markers WHERE conversation = ?1 COLLATE NOCASE",
+            params![conversation],
+        )?;
+        tx.execute(
+            "INSERT INTO cleared (conversation, before) VALUES (?1, ?2)
+             ON CONFLICT(conversation) DO UPDATE SET before = excluded.before",
+            params![conversation, Utc::now().to_rfc3339()],
+        )?;
+        tx.commit()?;
+        Ok(n)
     }
 
     pub fn get_message(&self, id: i64) -> Result<Option<Message>> {
@@ -565,6 +619,28 @@ mod tests {
         let mut d = msg("bob@x", "eve@x", "hi");
         d.origin_id = Some("o1".into());
         assert!(s.insert_message(&d).unwrap().is_some());
+    }
+
+    #[test]
+    fn deleted_conversation_stays_deleted() {
+        let s = Store::open_in_memory().unwrap();
+        let old = msg("bob@x", "bob@x", "old");
+        s.insert_message(&old).unwrap().unwrap();
+        s.insert_message(&msg("carol@x", "carol@x", "keep")).unwrap().unwrap();
+        s.mark_read("bob@x", 1).unwrap();
+        assert_eq!(s.delete_conversation("Bob@X").unwrap(), 1);
+        assert!(s.history("bob@x", 10, None).unwrap().is_empty());
+        assert_eq!(s.conversations().unwrap().len(), 1);
+        // An archive copy of an old message doesn't bring it back…
+        let mut replay = old.clone();
+        replay.delayed = true;
+        replay.source = MessageSource::Mam;
+        assert!(s.insert_message(&replay).unwrap().is_none());
+        // …but a new message starts the conversation again.
+        let mut new = msg("bob@x", "bob@x", "new");
+        new.timestamp = Utc::now() + chrono::Duration::seconds(1);
+        assert_eq!(s.insert_message(&new).unwrap().unwrap().body, "new");
+        assert_eq!(s.conversations().unwrap()[0].unread, 1);
     }
 
     #[test]

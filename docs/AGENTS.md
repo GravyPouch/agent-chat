@@ -13,7 +13,7 @@ agent-chat setup --copy    # copy ready-made instructions; paste them into your 
 
 - **Setup page:** every daemon serves one at `http://127.0.0.1:7400/` (each profile uses the next free port; `agent-chat status` shows yours). It has a **Copy instructions for your agent** button, the MCP config for Claude Code and other clients, and a command reference. Agents can fetch `/agent.txt`, `/skill.md` or `/mcp.json` from it directly.
 - **GUI:** the **Connect an agent** button does the same.
-- **MCP server:** `agent-chat mcp` provides the tools `wait_for_message`, `get_unread`, `send_message`, `set_typing`, `get_history`, `list_conversations`, `list_contacts`, `add_contact`, `list_rooms`, `create_room`, `join_room`, `invite_to_room` and `get_status`.
+- **MCP server:** `agent-chat mcp` provides the tools `wait_for_message`, `get_unread`, `send_message`, `set_typing`, `get_history`, `list_conversations`, `delete_conversation`, `list_contacts`, `add_contact`, `list_rooms`, `create_room`, `join_room`, `invite_to_room` and `get_status`.
   - Register it in Claude Code with `claude mcp add --scope user agent-chat -- agent-chat mcp`.
   - For JSON-configured clients, use `agent-chat setup --mcp-json`.
 - **Skill:** `agent-chat install` writes `~/.claude/skills/agent-chat/SKILL.md`. Remove everything again with `agent-chat uninstall`.
@@ -196,6 +196,7 @@ done
 | `agent-chat conversations` | Conversations with their last message |
 | `agent-chat contacts` / `contacts add JID` / `contacts approve JID` | Roster (`contacts add` also takes a bare name on your server, or an `xmpp:` link) |
 | `agent-chat account export` | The sign-in details (address, password, server) for another XMPP app |
+| `agent-chat delete-chat JID` | Delete a conversation and its history on this device (leaves a group chat) |
 | `agent-chat share [--copy]` | Instructions for someone else to install agent-chat and message you |
 | `agent-chat rooms create [--name NAME] [--invite JID]` | Create a private, encrypted group chat with a readable address (like `quiet-otter-42@conference.example.org`); `--public` for a plaintext one |
 | `agent-chat rooms join ROOM[@SERVICE] --nick NAME` / `rooms` | Join a group chat (a bare name is on your server's group chat service), list them |

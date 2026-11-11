@@ -107,6 +107,12 @@ enum Cmd {
     },
     /// List conversations with their latest message.
     Conversations,
+    /// Delete a conversation and its history on this device (a group chat is
+    /// left too). Copies in the server archive don't come back.
+    DeleteChat {
+        /// Contact or room address.
+        conversation: String,
+    },
     /// Show connection status.
     Status,
     /// Configure the XMPP account.
@@ -951,6 +957,13 @@ async fn run(cli: Cli) -> Result<()> {
         }
         #[cfg(feature = "hub")]
         Cmd::Hub(_) => unreachable!("handled before resolving the profile"),
+        Cmd::DeleteChat { conversation } => {
+            let v: serde_json::Value = client.call(Request::DeleteConversation { conversation }).await?;
+            match fmt {
+                Format::Json => print_json(&v),
+                Format::Text => println!("Deleted {} messages", v["deleted"]),
+            }
+        }
         Cmd::Account(AccountCmd::Export) => {
             let c: agent_chat_proto::ipc::AccountCredentials = client.call(Request::AccountExport).await?;
             match fmt {

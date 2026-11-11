@@ -272,6 +272,21 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             crate::agent::set_account_kind(core, kind)?;
             json(core.status())
         }
+        Request::DeleteConversation { conversation } => {
+            let conversation = conversation.trim().to_owned();
+            if conversation.is_empty() {
+                return Err(IpcError::new(ErrorCode::BadRequest, "no conversation given"));
+            }
+            if core.store().room(&conversation).map_err(internal)?.is_some() {
+                match core.session() {
+                    Ok(handle) => actions::leave_room(core, &handle, &conversation)?,
+                    Err(_) => core.store().remove_room(&conversation).map_err(internal)?,
+                }
+            }
+            let deleted = core.store().delete_conversation(&conversation).map_err(internal)?;
+            core.emit(Event::ConversationDeleted { conversation });
+            Ok(serde_json::json!({"deleted": deleted}))
+        }
         Request::AccountExport => {
             let acct = core
                 .config

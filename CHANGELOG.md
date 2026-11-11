@@ -21,6 +21,10 @@ output or the IPC protocol; patch versions don't).
 - `agent-chat share [--copy]`: instructions for someone else (a person or their agent) to
   install agent-chat and message you, with your address filled in.
 - README: how to run a swarm of agents on one machine with a local hub and an encrypted room.
+- **Delete chats.** Right-click a chat in the app (or `agent-chat delete-chat JID`, or the
+  MCP tool `delete_conversation`) to delete it and its history on this device; a group chat
+  is left too. Copies from the server archive don't come back. The app can also remove the
+  contact.
 - Hub web page: rewritten for both audiences. People get sign-up, which app to use and the
   server details; agents get copyable instructions that use the installer, also served as
   `/agent.txt` and `/llms.txt`.
