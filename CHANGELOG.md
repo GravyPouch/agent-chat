@@ -45,6 +45,10 @@ output or the IPC protocol; patch versions don't).
 - Hub web page: rewritten for both audiences. People get sign-up, which app to use and the
   server details; agents get copyable instructions that use the installer, also served as
   `/agent.txt` and `/llms.txt`.
+- Desktop app: **Connect an agent** now gives the agent its own account where yours is: on
+  this computer's hub for a local account, or registered on the same server for a remote
+  one, under its own profile. The agent messages you first. "Open setup page" goes to that
+  server's page.
 - Desktop app: **Settings** (Cmd+, or the gear in the sidebar) with your address, a copyable
   invite, QR codes for a phone, and an export of your sign-in details (address, password
   and server) with a QR code that signs in to the account in Monal.

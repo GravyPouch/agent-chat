@@ -1757,12 +1757,35 @@ impl ChatApp {
         }
     }
 
+    /// What to paste into an agent: its own account where ours is (this
+    /// computer's hub or our server), or, without an account yet, this
+    /// profile's setup.
+    fn connect_prompt(&self) -> String {
+        let setup = self.agent_setup();
+        match &setup.jid {
+            Some(jid) => agent_chat_proto::instructions::connect_agent_prompt(jid, &setup.cli),
+            None => setup.agent_prompt(),
+        }
+    }
+
+    /// Where our account lives: this computer's setup page for a local hub,
+    /// else the server's own page.
+    fn account_home_page(&self) -> Option<String> {
+        let setup = self.agent_setup();
+        let domain = setup.jid.as_deref()?.rsplit('@').next()?.to_owned();
+        if agent_chat_proto::instructions::is_local_server(&domain) {
+            setup.web_url
+        } else {
+            Some(format!("https://{domain}/"))
+        }
+    }
+
     fn copy_for_agent(&mut self, what: &'static str, cx: &mut Context<Self>) {
         let setup = self.agent_setup();
         let text = match what {
             "mcp" => setup.claude_mcp_add(),
             "install" => format!("{} install", setup.cmd()),
-            _ => setup.agent_prompt(),
+            _ => self.connect_prompt(),
         };
         self.copy_text(format!("agent:{what}"), text, cx);
     }
@@ -1826,17 +1849,34 @@ impl ChatApp {
             let install_result = app.install_result.clone();
             let theme = cx.theme().clone();
             let (t1, t2, t3, t4) = (this.clone(), this.clone(), this.clone(), this.clone());
-            let web_url = setup.web_url.clone();
+            let web_url = app.account_home_page().or(setup.web_url.clone());
+            let prompt = app.connect_prompt();
+            let domain = setup
+                .jid
+                .as_deref()
+                .and_then(|j| j.rsplit('@').next())
+                .map(str::to_owned);
+            let intro = match &domain {
+                Some(d) if agent_chat_proto::instructions::is_local_server(d) => {
+                    "Copy these instructions and paste them into Claude Code, Codex, Cursor or any agent. It will \
+                     get its own account on this computer's hub, where yours is, and message you."
+                        .to_owned()
+                }
+                Some(d) => format!(
+                    "Copy these instructions and paste them into Claude Code, Codex, Cursor or any agent. It will \
+                     get its own account on {d}, where yours is, and message you."
+                ),
+                None => "Copy these instructions and paste them into Claude Code, Codex, Cursor or any agent. \
+                         It will be able to wait for messages, reply, and work with other agents."
+                    .to_owned(),
+            };
             dialog
                 .title("Connect an AI agent")
                 .width(px(680.))
                 .child(
                     v_flex()
                         .gap_3()
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(
-                            "Copy these instructions and paste them into Claude Code, Codex, Cursor or any agent. \
-                             It will be able to wait for messages, reply, and work with other agents.",
-                        ))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(intro))
                         .child(
                             h_flex()
                                 .gap_2()
@@ -1857,6 +1897,7 @@ impl ChatApp {
                                         Button::new("open-setup-page")
                                             .ghost()
                                             .label("Open setup page")
+                                            .tooltip(url.clone())
                                             .on_click(move |_, _, cx| cx.open_url(&url)),
                                     )
                                 }),
@@ -1871,7 +1912,7 @@ impl ChatApp {
                                 .bg(theme.muted)
                                 .text_xs()
                                 .font_family("Menlo")
-                                .child(setup.agent_prompt()),
+                                .child(prompt),
                         )
                         .child(
                             div()
