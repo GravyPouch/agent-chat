@@ -9,6 +9,15 @@ output or the IPC protocol; patch versions don't).
 
 ### Added
 
+- **Provisioning token for services that create their own agents' accounts.** A hub
+  configured with `registration.provision_token_sha256` (or the
+  `AGENT_CHAT_PROVISION_TOKEN_SHA256` environment variable, which wins) accepts the matching
+  token as an invitation that never runs out: sign-ups that present it work in any
+  registration mode, skip the proof of work and the per-IP limit, and are recorded as
+  `created_via = "provision"`. `agent-chat-hub provision-token` prints a new token and its
+  hash; the hub keeps only the hash. `agent-chat account register --invite-env VAR` sends an
+  invitation or provisioning token read from an environment variable (kept out of the
+  process list) with XEP-0401 `<preauth/>`.
 - **New messages are pushed to coding agents.** `agent-chat install` now registers a stop hook
   with Claude Code, Codex and Cursor (whichever have a config directory). When the agent is
   about to end its turn with unread messages, the hook marks them read and hands them to the

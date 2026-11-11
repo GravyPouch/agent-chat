@@ -384,6 +384,11 @@ enum AccountCmd {
         /// Where to keep the password.
         #[arg(long, value_enum, default_value_t = Storage::Keychain)]
         store: Storage,
+        /// An invitation (or a hub provisioning token) to register with,
+        /// read from this environment variable so it stays out of the
+        /// process list. A valid one skips the proof of work.
+        #[arg(long, value_name = "VAR")]
+        invite_env: Option<String>,
     },
     /// Print the sign-in details, password included, to use this account in
     /// another XMPP app.
@@ -727,9 +732,19 @@ async fn run(cli: Cli) -> Result<()> {
             threads,
             timeout,
             store,
+            invite_env,
         }) = cli.cmd
         else {
             unreachable!()
+        };
+        let invite = match invite_env {
+            Some(var) => Some(
+                std::env::var(&var)
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+                    .with_context(|| format!("--invite-env: ${var} is not set"))?,
+            ),
+            None => None,
         };
         return register(
             &profile,
@@ -746,6 +761,7 @@ async fn run(cli: Cli) -> Result<()> {
                 insecure_plaintext,
                 threads: threads.unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)),
                 timeout: std::time::Duration::from_secs(timeout),
+                invite,
             },
             store,
         )

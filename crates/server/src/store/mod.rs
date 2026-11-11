@@ -100,6 +100,8 @@ pub enum CreatedVia {
     Open,
     /// Imported from another server (Prosody).
     Import,
+    /// Created with the provisioning token.
+    Provision,
 }
 
 impl CreatedVia {
@@ -110,6 +112,7 @@ impl CreatedVia {
             CreatedVia::Pow => "pow",
             CreatedVia::Open => "open",
             CreatedVia::Import => "import",
+            CreatedVia::Provision => "provision",
         }
     }
 
@@ -120,6 +123,7 @@ impl CreatedVia {
             "pow" => CreatedVia::Pow,
             "open" => CreatedVia::Open,
             "import" => CreatedVia::Import,
+            "provision" => CreatedVia::Provision,
             other => anyhow::bail!("unknown creation method {other:?}"),
         })
     }

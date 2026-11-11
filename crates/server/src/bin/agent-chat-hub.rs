@@ -9,6 +9,8 @@
 //! agent-chat-hub user add NAME [--admin]     password from stdin (or generated)
 //! agent-chat-hub user list | del NAME | passwd NAME
 //! agent-chat-hub invite [USES] [EXPIRES]     e.g. `invite 1 7d`
+//! agent-chat-hub provision-token             new token + SHA-256 for
+//!                                            registration.provision_token_sha256
 //! agent-chat-hub import-prosody DATA_PATH [--no-archives]   (hub stopped)
 //! ```
 //!
@@ -104,6 +106,12 @@ async fn run(args: Vec<String>) -> Result<()> {
             )
             .await?;
             print(&v);
+        }
+        Some("provision-token") => {
+            // Printed once: the hub keeps only the hash.
+            let token = agent_chat_server::register::new_invite_token();
+            let sha256 = agent_chat_server::register::invite_hash(&token);
+            print(&serde_json::json!({"token": token, "sha256": sha256}));
         }
         Some("import-prosody") => {
             let data_path = arg(1).context("give Prosody's data_path")?.into();

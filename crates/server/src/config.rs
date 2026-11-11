@@ -102,7 +102,17 @@ pub struct Registration {
     /// Browser difficulty: JavaScript hashes far slower than native code.
     pub web_pow_bits: u32,
     pub web_pow_count: u32,
+    /// SHA-256 (hex) of a provisioning token. A sign-up that presents this
+    /// token as its invitation creates an account in any registration mode,
+    /// without a proof of work or the per-IP limit, and never runs out: for
+    /// a service that creates accounts for its own agents. The environment
+    /// variable `AGENT_CHAT_PROVISION_TOKEN_SHA256` overrides it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provision_token_sha256: Option<String>,
 }
+
+/// Overrides `registration.provision_token_sha256`.
+pub const PROVISION_TOKEN_ENV: &str = "AGENT_CHAT_PROVISION_TOKEN_SHA256";
 
 impl Default for Registration {
     fn default() -> Self {
@@ -127,6 +137,7 @@ impl Default for Registration {
             web: false,
             web_pow_bits: 22,
             web_pow_count: 8,
+            provision_token_sha256: None,
         }
     }
 }
@@ -445,6 +456,11 @@ impl Config {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let mut cfg: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         cfg.domain = normalize_domain(&cfg.domain).with_context(|| format!("in {}", path.display()))?;
+        if let Ok(hash) = std::env::var(PROVISION_TOKEN_ENV)
+            && !hash.trim().is_empty()
+        {
+            cfg.registration.provision_token_sha256 = Some(hash.trim().to_owned());
+        }
         cfg.validate().with_context(|| format!("in {}", path.display()))?;
         Ok(cfg)
     }
@@ -506,6 +522,11 @@ impl Config {
         }
         if r.min_password_length == 0 {
             bail!("registration.min_password_length must be at least 1");
+        }
+        if let Some(h) = &r.provision_token_sha256
+            && (h.len() != 64 || !h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        {
+            bail!("registration.provision_token_sha256 must be 64 lowercase hex digits (a SHA-256)");
         }
         for p in &self.http.trusted_proxies {
             if parse_proxy(p).is_none() {

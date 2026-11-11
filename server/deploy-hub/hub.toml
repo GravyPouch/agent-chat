@@ -39,6 +39,9 @@ pow_max_bits = 31
 pow_ttl = "1h"
 max_per_ip = 5
 per_ip_period = "1h"
+# A provisioning token (`agent-chat-hub provision-token`) skips the proof of
+# work and this limit. Set its hash with the AGENT_CHAT_PROVISION_TOKEN_SHA256
+# environment variable, not here: this file is only copied on the first start.
 # Web sign-up on the page. The page is public over HTTPS: the certificate
 # service (server/deploy/certificates.py) forwards it from port 5280.
 web = true

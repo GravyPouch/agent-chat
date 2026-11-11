@@ -526,6 +526,83 @@ fn account_register_solves_the_hubs_proof_of_work() {
     assert_eq!(created["created_via"], "pow");
 }
 
+/// A hub provisioning token: `account register --invite-env` sends it with
+/// `<preauth/>`, so a service can create many accounts from one address
+/// without the proof of work or the per-IP limit. A wrong token is refused.
+#[test]
+fn account_register_with_the_provisioning_token() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    let port = free_port();
+    env.json(&[
+        "hub",
+        "init",
+        "--domain",
+        "hubtest.local",
+        "--listen",
+        &format!("127.0.0.1:{port}"),
+    ]);
+    let token = agent_chat_server::register::new_invite_token();
+    let paths = agent_chat_server::HubPaths::at(env.hub_dir());
+    let mut cfg = agent_chat_server::Config::load(paths.config()).unwrap();
+    cfg.registration.mode = Some(agent_chat_server::config::RegistrationMode::Pow);
+    cfg.registration.exempt_loopback = false;
+    // Far too hard to solve within the test: only the token gets through.
+    cfg.registration.pow_bits = 40;
+    cfg.registration.pow_max_bits = 40;
+    cfg.registration.max_per_ip = 1;
+    cfg.registration.provision_token_sha256 = Some(agent_chat_server::register::invite_hash(&token));
+    std::fs::write(paths.config(), cfg.to_toml().unwrap()).unwrap();
+    env.json(&["hub", "start"]);
+    let register = |profile: &str, secret: &str| {
+        env.cmd(&[
+            "--profile",
+            profile,
+            "account",
+            "register",
+            "--server",
+            "hubtest.local",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--insecure-plaintext",
+            "--store",
+            "config",
+            "--timeout",
+            "60",
+            "--invite-env",
+            "TEST_PROVISION_TOKEN",
+        ])
+        .env("TEST_PROVISION_TOKEN", secret)
+        .output()
+        .unwrap()
+    };
+    let mut jids = vec![];
+    for profile in ["bot1", "bot2", "bot3"] {
+        let r = ok_json(register(profile, &token), &["account register", profile]);
+        assert!(r["pow"].is_null(), "no proof of work with the token: {r}");
+        jids.push(r["jid"].as_str().unwrap().to_owned());
+    }
+    let users = env.json(&["hub", "user", "list"]);
+    for jid in &jids {
+        let u = users
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["jid"] == jid.as_str())
+            .unwrap();
+        assert_eq!(u["created_via"], "provision");
+    }
+    let wrong = register("bot4", &agent_chat_server::register::new_invite_token());
+    assert_eq!(wrong.status.code(), Some(5), "refused: {wrong:?}");
+    wait_for_state(&env, "bot1", "online", Duration::from_secs(30));
+}
+
 /// `hub init --public`: certificate files (absent at first: a temporary
 /// certificate), PoW registration, the web page with sign-up.
 #[test]

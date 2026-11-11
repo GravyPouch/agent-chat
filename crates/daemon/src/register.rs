@@ -24,6 +24,7 @@ use crate::omemo::xml::escape;
 pub const NS_POW: &str = "urn:xmpp:ibr-pow:0";
 const NS_REGISTER: &str = "jabber:iq:register";
 const NS_DATA: &str = "jabber:x:data";
+const NS_PARS: &str = "urn:xmpp:pars:0";
 
 fn pow_field(name: &str) -> String {
     format!("{{{NS_POW}}}{name}")
@@ -42,6 +43,9 @@ pub struct RegisterOptions {
     pub threads: usize,
     /// Budget for the whole operation.
     pub timeout: Duration,
+    /// An invitation token (XEP-0445) or a hub's provisioning token, sent
+    /// with `<preauth/>` before the form. A valid one skips the puzzle.
+    pub invite: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -262,7 +266,28 @@ async fn connect(opts: &RegisterOptions) -> Result<Stream, RegisterError> {
     if !features.in_band_registration {
         return Err(RegisterError::NotOffered);
     }
+    let mut stream = stream;
+    if let Some(token) = opts.invite.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        preauth(&mut stream, &jid, token).await?;
+    }
     Ok(stream)
+}
+
+/// Present an invitation on this stream (XEP-0401 `<preauth/>`).
+async fn preauth(stream: &mut Stream, domain: &Jid, token: &str) -> Result<(), RegisterError> {
+    let attr = |n: &str| xmpp_parsers::minidom::rxml::NcName::try_from(n).expect("valid attribute name");
+    let set = Iq::Set {
+        from: None,
+        to: Some(domain.clone()),
+        id: uuid::Uuid::new_v4().to_string(),
+        payload: Element::builder("preauth", NS_PARS).attr(attr("token"), token).build(),
+    };
+    match iq(stream, set).await? {
+        Iq::Result { .. } => Ok(()),
+        _ => Err(RegisterError::Policy(
+            "the server did not accept the invitation (unknown, used up or expired)".into(),
+        )),
+    }
 }
 
 async fn finish<Io>(

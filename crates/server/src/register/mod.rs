@@ -312,8 +312,22 @@ impl Registrar {
         Ok(t)
     }
 
-    /// Validate an invitation without using it.
+    /// Whether `token` is the provisioning token (constant time).
+    pub fn provisioned(&self, token: &str) -> bool {
+        let Some(want) = &self.cfg.provision_token_sha256 else {
+            return false;
+        };
+        if token.trim().is_empty() {
+            return false;
+        }
+        bool::from(invite_hash(token).as_bytes().ct_eq(want.as_bytes()))
+    }
+
+    /// Validate an invitation (or the provisioning token) without using it.
     pub async fn invite_valid(&self, token: &str) -> bool {
+        if self.provisioned(token) {
+            return true;
+        }
         self.store
             .invite_valid(&invite_hash(token), now_ms())
             .await
@@ -322,7 +336,9 @@ impl Registrar {
 
     /// Create an account (XEP-0077 set, or web sign-up).
     pub async fn register(&self, req: Request) -> Result<Account, RegError> {
+        let provisioned = req.invite.as_deref().is_some_and(|t| self.provisioned(t));
         let invited = match &req.invite {
+            Some(_) if provisioned => true,
             Some(t) if self.invite_valid(t).await => true,
             Some(_) => return Err(RegError::BadInvite),
             None => false,
@@ -376,7 +392,7 @@ impl Registrar {
         }
         // Prosody's registration_throttle_max: after the proof, like mod_register_limits.
         let prefix = self.prefix(req.ip);
-        if !self.exempt(req.ip) {
+        if !self.exempt(req.ip) && !provisioned {
             let mut st = self.state.lock().unwrap();
             let period = self.cfg.per_ip_period.0.as_secs() as i64;
             let list = st.per_ip.entry(prefix.clone()).or_default();
@@ -385,7 +401,9 @@ impl Registrar {
                 return Err(RegError::Throttled);
             }
         }
-        let via = if invited {
+        let via = if provisioned {
+            CreatedVia::Provision
+        } else if invited {
             CreatedVia::Invite
         } else if proof.is_some() {
             CreatedVia::Pow
@@ -427,6 +445,7 @@ impl Registrar {
             }
         };
         if invited
+            && !provisioned
             && let Some(t) = &req.invite
             && !self.store.invite_use(&invite_hash(t), now_ms()).await.unwrap_or(false)
         {
@@ -434,7 +453,7 @@ impl Registrar {
         }
         {
             let mut st = self.state.lock().unwrap();
-            if !self.exempt(req.ip) {
+            if !self.exempt(req.ip) && !provisioned {
                 st.per_ip.entry(prefix.clone()).or_default().push(now);
             }
             if let Some(t) = &proof {
@@ -713,5 +732,63 @@ mod tests {
         assert!(f.contains("{urn:xmpp:ibr-pow:0}challenge") && !f.contains("<username"));
         let f = String::from(&p.form_query("127.0.0.1".parse().unwrap(), false));
         assert!(!f.contains("ibr-pow") && f.contains("<username"));
+    }
+
+    #[tokio::test]
+    async fn provisioning_token_creates_any_number_of_accounts() {
+        let token = new_invite_token();
+        let cfg = Registration {
+            provision_token_sha256: Some(invite_hash(&token)),
+            ..low()
+        };
+        let ip = "203.0.113.20";
+        for mode in [
+            RegistrationMode::Pow,
+            RegistrationMode::Invite,
+            RegistrationMode::Closed,
+        ] {
+            let (_d, r) = registrar(mode, cfg.clone()).await;
+            assert!(r.invite_valid(&token).await);
+            assert!(!r.pow_required(ip.parse().unwrap(), true));
+            // Far past max_per_ip = 2, from one address, without a puzzle.
+            for i in 0..20 {
+                let mut q = req(&format!("agent{i}"), None, None, ip);
+                q.invite = Some(token.clone());
+                assert_eq!(r.register(q).await.unwrap().created_via, CreatedVia::Provision);
+            }
+            // A wrong token is refused, and nothing else changes.
+            let mut q = req("wrong", None, None, ip);
+            q.invite = Some(new_invite_token());
+            assert_eq!(r.register(q).await.unwrap_err(), RegError::BadInvite);
+            assert!(!r.provisioned(""));
+            assert!(!r.provisioned(&new_invite_token()));
+        }
+        // Provisioned sign-ups don't count toward the per-IP limit of others.
+        let (_d, r) = registrar(RegistrationMode::Pow, cfg).await;
+        for i in 0..3 {
+            let mut q = req(&format!("bot{i}"), None, None, ip);
+            q.invite = Some(token.clone());
+            r.register(q).await.unwrap();
+        }
+        assert_eq!(
+            r.register(req("plain", None, None, ip)).await.unwrap_err().code(),
+            "pow-required"
+        );
+        for user in ["p1", "p2"] {
+            let c = r.challenge(ip.parse().unwrap(), Channel::Xmpp);
+            let sol = solve(&c, "hub.example", user);
+            r.register(req(user, Some(&c), Some(sol), ip)).await.unwrap();
+        }
+        let c = r.challenge(ip.parse().unwrap(), Channel::Xmpp);
+        let sol = solve(&c, "hub.example", "p3");
+        assert_eq!(
+            r.register(req("p3", Some(&c), Some(sol), ip)).await.unwrap_err(),
+            RegError::Throttled
+        );
+        // Without a configured hash the token is just an unknown invitation.
+        let (_d, plain) = registrar(RegistrationMode::Pow, low()).await;
+        let mut q = req("nobody", None, None, ip);
+        q.invite = Some(token);
+        assert_eq!(plain.register(q).await.unwrap_err(), RegError::BadInvite);
     }
 }
