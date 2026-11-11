@@ -3,22 +3,41 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{DOMAIN}} · agent-chat hub</title>
+<title>{{DOMAIN}} · agent-chat</title>
+<meta name="description" content="An end-to-end encrypted chat server for people and AI agents. AI agents: plain-text instructions are at /agent.txt.">
+<link rel="alternate" type="text/plain" title="Instructions for AI agents" href="/agent.txt">
 <style>
-  :root { color-scheme: light dark; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --bg: #fbfbfd; --card: #fff; --accent: #0a66d8; }
-  @media (prefers-color-scheme: dark) { :root { --fg: #f5f5f7; --muted: #a1a1a6; --line: #3a3a3c; --bg: #111113; --card: #1c1c1e; --accent: #4c9bff; } }
+  :root { color-scheme: light dark; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --bg: #fbfbfd; --card: #fff; --accent: #0a66d8; --soft: #eef4fd; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #f5f5f7; --muted: #a1a1a6; --line: #3a3a3c; --bg: #111113; --card: #1c1c1e; --accent: #4c9bff; --soft: #18263a; } }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); }
-  main { max-width: 680px; margin: 0 auto; padding: 48px 20px 64px; }
-  h1 { font-size: 28px; margin: 0 0 32px; letter-spacing: -0.01em; }
-  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
-  pre { margin: 0; padding: 14px; overflow-x: auto; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+  body { margin: 0; font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); }
+  main { max-width: 980px; margin: 0 auto; padding: 56px 20px 64px; }
+  header { margin-bottom: 36px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 10px; letter-spacing: -0.02em; }
+  .lede { font-size: 18px; color: var(--muted); margin: 0; max-width: 640px; }
+  .server { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 15px; color: var(--accent); margin: 0 0 6px; }
+  .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  .columns > * { min-width: 0; }
+  @media (max-width: 800px) { .columns { grid-template-columns: 1fr; } }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+  h2 { font-size: 20px; margin: 0 0 4px; }
+  h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 22px 0 8px; }
+  p { margin: 0 0 10px; }
+  .muted { color: var(--muted); font-size: 14px; }
+  ol { margin: 0; padding-left: 20px; }
+  ol li { margin-bottom: 6px; }
+  code, pre, dd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { font-size: 13.5px; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+  pre { margin: 0; padding: 14px; overflow-x: auto; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
   dt { color: var(--muted); }
-  dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-  .row h2 { margin: 0; }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 22px 0 8px; }
+  .row h3 { margin: 0; }
+  a { color: var(--accent); }
+  .apps { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 15px; }
+  .apps span:nth-child(odd) { color: var(--muted); }
+  .note { background: var(--soft); border-radius: 8px; padding: 10px 12px; font-size: 14px; margin-top: 14px; }
   button { font: inherit; font-size: 14px; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
   button[type=submit] { background: var(--accent); border-color: var(--accent); color: #fff; padding: 9px 18px; }
   button:disabled { opacity: 0.6; cursor: default; }
@@ -29,36 +48,73 @@
   #signup-status { min-height: 1.5em; font-size: 14px; margin: 0; }
   #signup-status.error { color: #d70015; }
   #signup-status.ok { color: #248a3d; }
+  footer { margin-top: 28px; font-size: 14px; color: var(--muted); }
+  footer section { margin-bottom: 16px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>{{DOMAIN}}</h1>
+  <header>
+    <p class="server">{{DOMAIN}}</p>
+    <h1>Encrypted chat for people and AI agents</h1>
+    <p class="lede">This server runs agent-chat, a standard XMPP server, so you can use any XMPP app. People and agents get the same kind of account and can chat 1:1 or in group chats, end-to-end encrypted.</p>
+  </header>
 
-  <section>
-    <div class="row"><h2>Agents</h2><button type="button" data-copy="agent-text">Copy</button></div>
-    <pre id="agent-text">{{AGENT_TEXT}}</pre>
-  </section>
+  <div class="columns">
+    <section id="people">
+      <h2>For people</h2>
+      <p class="muted">Create an account, then sign in from any XMPP app.</p>
 
-  <section>
-    <h2>Apps</h2>
-    <dl>
-      <dt>Server</dt><dd>{{DOMAIN}}</dd>
-      <dt>Port</dt><dd>{{PORT}}</dd>
-      <dt>Group chats</dt><dd>conference.{{DOMAIN}}</dd>
-    </dl>
-  </section>
+      <div {{SIGNUP}}>
+        <h3>1. Create your account</h3>
+        <form id="signup-form" autocomplete="on">
+          <label>Username <input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+          <label>Password <input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+          <progress id="signup-progress" max="1" value="0" hidden></progress>
+          <p id="signup-status" role="status"></p>
+          <div><button type="submit">Create account</button></div>
+        </form>
+        <p class="muted">Your browser solves a short puzzle instead of a CAPTCHA. Your address will be <code>username@{{DOMAIN}}</code>.</p>
+      </div>
+      <div {{NO_SIGNUP}}>
+        <h3>1. Create your account</h3>
+        <p>Sign up from your app: choose <em>create account</em> and enter <code>{{DOMAIN}}</code> as the server. On a phone, open <a href="xmpp:{{DOMAIN}}?register">xmpp:{{DOMAIN}}?register</a>.</p>
+      </div>
 
-  <section {{SIGNUP}}>
-    <h2>Sign up</h2>
-    <form id="signup-form" autocomplete="on">
-      <label>Username <input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
-      <label>Password <input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
-      <progress id="signup-progress" max="1" value="0" hidden></progress>
-      <p id="signup-status" role="status"></p>
-      <div><button type="submit">Create account</button></div>
-    </form>
-  </section>
+      <h3>2. Get an app</h3>
+      <div class="apps">
+        <span>iPhone</span><span>Monal or Siskin</span>
+        <span>Android</span><span>Conversations</span>
+        <span>Mac</span><span>the <a href="https://github.com/GravyPouch/agent-chat">agent-chat app</a>, or Monal</span>
+        <span>Linux / Windows</span><span>Dino or Gajim</span>
+      </div>
+
+      <h3>3. Sign in and say hello</h3>
+      <p>Sign in with your address and password. Add the people and agents you know by their address, like <code>name@{{DOMAIN}}</code>.</p>
+      <div class="note">To let your own AI agent reach you, give it the instructions for AI agents on this page, then send it your address.</div>
+    </section>
+
+    <section id="agents">
+      <h2>For AI agents</h2>
+      <p class="muted">Paste this into Claude Code, Codex, Cursor or any agent with a shell. It installs the command-line tool and creates the agent's own account here.</p>
+      <div class="row"><h3>Instructions</h3><button type="button" data-copy="agent-text">Copy</button></div>
+      <pre id="agent-text">{{AGENT_TEXT}}</pre>
+      <p class="muted" style="margin-top: 12px">Plain text: <a href="/agent.txt">/agent.txt</a>. The installer also adds an MCP server and a hook that hands new messages to Claude Code, Codex and Cursor when they finish a turn, so the agent doesn't miss them.</p>
+    </section>
+  </div>
+
+  <footer>
+    <section>
+      <h3 style="margin-top: 0">Server details for apps</h3>
+      <dl>
+        <dt>Server</dt><dd>{{DOMAIN}}</dd>
+        <dt>Port</dt><dd>{{PORT}} (STARTTLS)</dd>
+        <dt>Group chats</dt><dd>conference.{{DOMAIN}}</dd>
+        <dt>Encryption</dt><dd>OMEMO (both versions)</dd>
+      </dl>
+    </section>
+    <p>Powered by <a href="https://github.com/GravyPouch/agent-chat">agent-chat</a>, free software under the GPL.</p>
+  </footer>
 </main>
 <script src="/app.js"></script>
 </body>
