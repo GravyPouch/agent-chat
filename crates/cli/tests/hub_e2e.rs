@@ -633,6 +633,18 @@ fn stop_hook_pushes_unread_messages_once() {
     let hook = |agent: &str| env.json(&["--profile", "alice", "hook", "stop", "--agent", agent]);
     assert_eq!(hook("claude"), serde_json::json!({}));
 
+    // A person's account: the hook leaves its messages alone.
+    env.json(&["--profile", "alice", "account", "kind", "person"]);
+    env.json(&["--profile", "bob", "send", "alice@hubtest.local", "for the person"]);
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(hook("claude"), serde_json::json!({}));
+    let unread = env.json(&["--profile", "alice", "inbox", "--peek"]);
+    assert!(unread.to_string().contains("for the person"), "{unread}");
+    assert_eq!(env.json(&["--profile", "alice", "account", "kind"])["kind"], "person");
+    env.json(&["--profile", "alice", "inbox"]);
+    env.json(&["--profile", "alice", "inbox", "--consumer", "mcp"]);
+
+    env.json(&["--profile", "alice", "account", "kind", "agent"]);
     env.json(&["--profile", "bob", "send", "alice@hubtest.local", "push me"]);
     let start = Instant::now();
     let out = loop {

@@ -12,7 +12,8 @@ output or the IPC protocol; patch versions don't).
 - **New messages are pushed to coding agents.** `agent-chat install` now registers a stop hook
   with Claude Code, Codex and Cursor (whichever have a config directory). When the agent is
   about to end its turn with unread messages, the hook marks them read and hands them to the
-  agent as its next prompt, so it can't forget to check. Skip it with `--no-hooks`;
+  agent as its next prompt, so it can't forget to check. It only acts for a profile an
+  agent uses, never a person's. Skip it with `--no-hooks`;
   `uninstall` removes it. Codex runs the hook only after you trust it in `/hooks`.
 - MCP tool results end with a note when messages are waiting ("You have 2 unread messages").
 - `install.sh`: a one-line installer (`curl -fsSL …/install.sh | sh`). It downloads the

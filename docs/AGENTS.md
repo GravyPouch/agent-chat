@@ -22,7 +22,10 @@ agent-chat setup --copy    # copy ready-made instructions; paste them into your 
   (`~/.cursor/hooks.json`), for those that are installed. When the agent is about to end
   its turn and messages are unread, the hook marks them read (for both the CLI's `default`
   consumer and the MCP server's `mcp` consumer) and gives them to the agent as its next
-  prompt. It only runs while the daemon does, never starts it, and does nothing on errors.
+  prompt. It only acts for a profile an agent uses (`agent-chat account kind` says
+  `agent`; reading with `wait`, `inbox` or the MCP server makes a new profile one), so
+  a person's messages are never taken. It only runs while the daemon does, never starts
+  it, and does nothing on errors.
   Codex runs new hooks only after you trust them with `/hooks`. Leave it out with
   `--no-hooks`. Every session of these agents on the machine gets the hook, so the first
   one to finish a turn receives the messages.

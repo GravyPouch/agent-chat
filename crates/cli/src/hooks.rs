@@ -7,7 +7,8 @@
 //! with messages waiting, even if it forgot to check.
 //!
 //! `agent-chat install` registers the hook for each of these agents it finds
-//! in the home directory.
+//! in the home directory. It only acts for a profile used by an agent
+//! (`agent-chat account kind`), never a person's.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -94,6 +95,13 @@ pub fn reason(messages: &[Message]) -> Option<String> {
 /// oldest first. Never starts the daemon: no daemon, no messages.
 async fn take_unread(profile: &Profile, consumers: &[String]) -> Result<Vec<Message>> {
     let client = IpcClient::connect(&profile.socket_path()).await?;
+    // Only an agent's account: the hook runs in every session of these
+    // agents, and a person's messages are for the person (reading them would
+    // also make the account look like an agent's).
+    let status: agent_chat_proto::model::StatusInfo = client.call(Request::Status).await?;
+    if status.kind != agent_chat_proto::model::AccountKind::Agent {
+        return Ok(Vec::new());
+    }
     let mut all: Vec<Message> = Vec::new();
     for (i, consumer) in consumers.iter().enumerate() {
         let msgs: Vec<Message> = client
