@@ -140,7 +140,18 @@ fn two_agents_chat_through_the_hub_and_survive_a_restart() {
     };
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
-    let init = env.json(&["hub", "init", "--domain", "hubtest.local", "--listen", &listen]);
+    // Its own web port: file upload would otherwise share 127.0.0.1:5280.
+    let http = format!("127.0.0.1:{}", free_port());
+    let init = env.json(&[
+        "hub",
+        "init",
+        "--domain",
+        "hubtest.local",
+        "--listen",
+        &listen,
+        "--http",
+        &http,
+    ]);
     assert_eq!(init["domain"], "hubtest.local");
     let started = env.json(&["hub", "start"]);
     assert_eq!(started["started"], true);
@@ -573,7 +584,8 @@ fn account_add_hub_creates_and_configures_an_account() {
         home: tempfile::tempdir().unwrap(),
     };
     let port = free_port();
-    env.json(&["hub", "init", "--listen", &format!("127.0.0.1:{port}")]);
+    let http = format!("127.0.0.1:{}", free_port());
+    env.json(&["hub", "init", "--listen", &format!("127.0.0.1:{port}"), "--http", &http]);
     // `--hub` starts the hub if needed and generates a password.
     let st = env.json(&[
         "--profile",

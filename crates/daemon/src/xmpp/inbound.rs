@@ -227,6 +227,10 @@ fn classify_inner(
             return Classified::Ignore("groupchat without body");
         }
         let our_nick = (ctx.room_nick)(&room);
+        // A room we left (or deleted): late messages and echoes of ours stay out.
+        if our_nick.is_none() && mam.is_none() {
+            return Classified::Ignore("groupchat from a room we're not in");
+        }
         let is_own = nick.is_some() && nick == our_nick;
         let (archive, stanza_id) = match mam {
             Some((a, id)) => (Some(a), Some(id)),
