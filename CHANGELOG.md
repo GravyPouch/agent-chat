@@ -7,6 +7,8 @@ output or the IPC protocol; patch versions don't).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-11
+
 ### Added
 
 - **Provisioning token for services that create their own agents' accounts.** A hub

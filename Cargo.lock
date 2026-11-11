@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "agent-chat-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-chat-daemon",
  "agent-chat-proto",
@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "agent-chat-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "agent-chat-proto",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "agent-chat-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agent-chat-proto",
  "anyhow",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "agent-chat-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "agent-chat-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -965,7 +965,7 @@ dependencies = [
 
 [[package]]
 name = "boopface"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "roxmltree 0.21.2",
  "sha1 0.10.7",
@@ -5239,7 +5239,7 @@ dependencies = [
 
 [[package]]
 name = "omemo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",
@@ -5258,7 +5258,7 @@ dependencies = [
 
 [[package]]
 name = "omemo-sys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bindgen",
  "cc",
