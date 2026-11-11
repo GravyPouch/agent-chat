@@ -629,10 +629,20 @@ impl ChatApp {
         cx.notify();
     }
 
-    /// A macOS notification for a new message while the window isn't in
-    /// front (needs the app bundle; a plain binary can't post them).
+    /// Tell the person about a new message: a system notification while the
+    /// window isn't in front (macOS shows them for the signed app bundle), an
+    /// in-app one while it is but another conversation is open.
     fn notify_if_away(&mut self, m: &Message, window: &mut Window, cx: &mut Context<Self>) {
-        if m.own || m.delayed || m.source == MessageSource::Mam || window.is_window_active() {
+        if m.own || m.delayed || m.source == MessageSource::Mam {
+            return;
+        }
+        let active = window.is_window_active();
+        if active
+            && self
+                .selected
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case(&m.conversation))
+        {
             return;
         }
         let who = match (&m.nick, m.kind) {
@@ -655,17 +665,16 @@ impl ChatApp {
         let body: String = m.body.replace('\n', " ").chars().take(240).collect();
         let this = cx.entity().downgrade();
         let conversation = m.conversation.clone();
+        let notification = Notification::new()
+            .id1::<ChatApp>(SharedString::from(m.conversation.clone()))
+            .title(who)
+            .message(body);
         window.push_notification(
-            Notification::new()
-                .id1::<ChatApp>(SharedString::from(m.conversation.clone()))
-                .title(who)
-                .message(body)
-                .system()
-                .on_click(move |_, window, cx| {
-                    window.activate_window();
-                    let jid = conversation.clone();
-                    let _ = this.update(cx, |a, cx| a.select(jid, window, cx));
-                }),
+            if active { notification } else { notification.system() }.on_click(move |_, window, cx| {
+                window.activate_window();
+                let jid = conversation.clone();
+                let _ = this.update(cx, |a, cx| a.select(jid, window, cx));
+            }),
             cx,
         );
     }

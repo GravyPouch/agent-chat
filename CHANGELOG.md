@@ -15,6 +15,8 @@ output or the IPC protocol; patch versions don't).
   agent as its next prompt, so it can't forget to check. Skip it with `--no-hooks`;
   `uninstall` removes it. Codex runs the hook only after you trust it in `/hooks`.
 - MCP tool results end with a note when messages are waiting ("You have 2 unread messages").
+- Desktop app: a message in another conversation shows an in-app notification while the
+  window is in front; clicking it opens that chat.
 
 ## [0.1.0] - 2026-11-10
 
