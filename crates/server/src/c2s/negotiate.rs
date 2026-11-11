@@ -560,9 +560,12 @@ async fn authenticate(
 }
 
 /// Throttle keys: the account, and the network prefix unless on loopback.
+/// Failed logins back off per account and, for public addresses, per
+/// network. Behind a proxy or on a LAN every client shares an address, so
+/// a per-network block would lock everyone out because of one bad client.
 fn throttle_keys(ctx: &HubCtx, username: &str, ch: &ChannelState) -> Vec<String> {
     let mut keys = vec![format!("acct:{}@{}", username, ctx.domain)];
-    if !ch.loopback {
+    if !ch.loopback && crate::util::is_public(ch.ip) {
         keys.push(format!("net:{}", ch.prefix));
     }
     keys
@@ -610,6 +613,7 @@ async fn scram_exchange(
     }
     let keys = throttle_keys(ctx, &username, ch);
     if !ctx.throttle.allowed(&keys) {
+        tracing::info!(user = %username, "login refused: too many failed attempts");
         return Ok(SaslOutcome::Failure(Failure::TemporaryAuthFailure));
     }
     let account = ctx.store.account(&ctx.domain, &username).await?;
@@ -683,6 +687,7 @@ async fn plain_exchange(ctx: &Arc<HubCtx>, initial: &[u8], ch: &ChannelState) ->
     }
     let keys = throttle_keys(ctx, &username, ch);
     if !ctx.throttle.allowed(&keys) {
+        tracing::info!(user = %username, "login refused: too many failed attempts");
         return Ok(SaslOutcome::Failure(Failure::TemporaryAuthFailure));
     }
     let account = ctx.store.account(&ctx.domain, &username).await?;
@@ -747,7 +752,11 @@ async fn plain_exchange(ctx: &Arc<HubCtx>, initial: &[u8], ch: &ChannelState) ->
 fn record_throttle(ctx: &HubCtx, keys: &[String], outcome: &SaslOutcome) {
     match outcome {
         SaslOutcome::Success { .. } => ctx.throttle.success(&keys[..1]),
-        SaslOutcome::Failure(f) if f.counts_as_guess() => ctx.throttle.failure(keys),
+        SaslOutcome::Failure(f) if f.counts_as_guess() => {
+            // Which account: so a client retrying a wrong password can be found.
+            tracing::info!(account = %keys[0].trim_start_matches("acct:"), "wrong password");
+            ctx.throttle.failure(keys)
+        }
         _ => {}
     }
 }

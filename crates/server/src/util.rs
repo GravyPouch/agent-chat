@@ -41,6 +41,30 @@ pub fn is_loopback(ip: IpAddr) -> bool {
     }
 }
 
+/// Whether an address is on the public internet. Private, shared (CGNAT),
+/// link-local and loopback addresses are a LAN or a proxy in front of the
+/// hub, where one address can stand for many people.
+pub fn is_public(ip: IpAddr) -> bool {
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+        v4 => v4,
+    };
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || (o[0] == 100 && (o[1] & 0xc0) == 64))
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            !(v6.is_loopback() || v6.is_unspecified() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
 /// The address prefix used in logs and per-network throttles:
 /// /24 for IPv4, /56 for IPv6 (§5.10).
 pub fn ip_prefix(ip: IpAddr) -> String {
@@ -62,6 +86,27 @@ pub fn ip_prefix(ip: IpAddr) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn public_addresses() {
+        let p = |s: &str| is_public(s.parse().unwrap());
+        assert!(p("8.8.8.8") && p("2606:4700::1111"));
+        for private in [
+            "172.18.0.5",
+            "10.1.2.3",
+            "192.168.1.9",
+            "100.64.0.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "fd12::1",
+            "fe80::1",
+            "::1",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(!p(private), "{private}");
+        }
+    }
+
     use super::*;
 
     #[test]
