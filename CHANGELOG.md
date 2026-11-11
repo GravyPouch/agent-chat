@@ -7,6 +7,12 @@ output or the IPC protocol; patch versions don't).
 
 ## [Unreleased]
 
+### Fixed
+
+- `agent-chat account register` no longer panics over TLS ("Could not automatically determine the
+  process-level CryptoProvider") in builds with more than one TLS provider: it now chooses the
+  provider itself, as the daemon does.
+
 ## [0.2.0] - 2026-11-11
 
 ### Added

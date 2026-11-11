@@ -236,6 +236,9 @@ struct Form {
 type Stream = XmlStream<Box<dyn tokio_xmpp::connect::AsyncReadAndWrite + Send + 'static>, XmppStreamElement>;
 
 async fn connect(opts: &RegisterOptions) -> Result<Stream, RegisterError> {
+    // Registration runs without the daemon, which is where the TLS provider
+    // is otherwise chosen; a build with both providers would panic without it.
+    let _ = tokio_xmpp::rustls::crypto::aws_lc_rs::default_provider().install_default();
     let domain = BareJid::new(&opts.domain).map_err(|e| anyhow!("invalid server domain: {e}"))?;
     if domain.node().is_some() {
         return Err(anyhow!("give the server domain (example.org), not a JID").into());
