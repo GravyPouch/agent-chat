@@ -226,7 +226,9 @@ impl ChatApp {
                                     .when_some(credentials_qr, |el, image| {
                                         el.child(
                                             v_flex().gap_1().items_center().child(img(image).size(px(150.))).child(
-                                                div().text_xs().text_color(muted).child("Scan to copy on a phone"),
+                                                div().w(px(170.)).text_xs().text_color(muted).text_center().child(
+                                                    "Sign in on a phone: in Monal, add an account and scan this",
+                                                ),
                                             ),
                                         )
                                     })
@@ -255,7 +257,11 @@ impl ChatApp {
 
     fn export_credentials(&mut self, cx: &mut Context<Self>) {
         self.call::<AccountCredentials>(Request::AccountExport, cx, |this, r, cx| {
-            this.settings.credentials_qr = r.as_ref().ok().map(|c| qr_image(&credentials_text(c)));
+            // Monal's login scanner reads this JSON (Settings › Add account › scan).
+            this.settings.credentials_qr = r
+                .as_ref()
+                .ok()
+                .map(|c| qr_image(&phone::login_qr_payload(&c.jid, &c.password)));
             this.settings.credentials = Some(r.map_err(|e| format!("Couldn't read the sign-in details: {e}")));
             cx.notify();
         });

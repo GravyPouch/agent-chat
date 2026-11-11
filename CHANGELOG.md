@@ -47,7 +47,7 @@ output or the IPC protocol; patch versions don't).
   `/agent.txt` and `/llms.txt`.
 - Desktop app: **Settings** (Cmd+, or the gear in the sidebar) with your address, a copyable
   invite, QR codes for a phone, and an export of your sign-in details (address, password
-  and server, with a QR code).
+  and server) with a QR code that signs in to the account in Monal.
 - `agent-chat account export`: print the sign-in details to use the account in another app.
 - Desktop app: a message in another conversation shows an in-app notification while the
   window is in front; clicking it opens that chat.

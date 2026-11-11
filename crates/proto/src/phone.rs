@@ -42,6 +42,13 @@ pub fn contact_uri(jid: &str, fingerprints: &[(u32, String)]) -> String {
     uri
 }
 
+/// A QR code that signs in to an existing account: the JSON provisioning
+/// format Monal's login scanner reads (and Conversations proposed), e.g.
+/// `{"protocol":"xmpp","address":"ana@example.org","password":"…"}`.
+pub fn login_qr_payload(jid: &str, password: &str) -> String {
+    serde_json::json!({"protocol": "xmpp", "address": jid, "password": password}).to_string()
+}
+
 /// Domains a phone can't reach (this machine only).
 pub fn local_only(domain: &str) -> bool {
     let d = domain.trim_end_matches('.').to_ascii_lowercase();
@@ -103,6 +110,15 @@ pub fn qr_terminal(data: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_qr_is_monals_json() {
+        let p = login_qr_payload("ana@example.org", "pa\"ss");
+        let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+        assert_eq!(v["protocol"], "xmpp");
+        assert_eq!(v["address"], "ana@example.org");
+        assert_eq!(v["password"], "pa\"ss");
+    }
 
     #[test]
     fn uris() {
