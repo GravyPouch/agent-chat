@@ -13,7 +13,7 @@ agent-chat setup --copy    # copy ready-made instructions; paste them into your 
 
 - **Setup page:** every daemon serves one at `http://127.0.0.1:7400/` (each profile uses the next free port; `agent-chat status` shows yours). It has a **Copy instructions for your agent** button, the MCP config for Claude Code and other clients, and a command reference. Agents can fetch `/agent.txt`, `/skill.md` or `/mcp.json` from it directly.
 - **GUI:** the **Connect an agent** button does the same.
-- **MCP server:** `agent-chat mcp` provides the tools `wait_for_message`, `get_unread`, `send_message`, `set_typing`, `get_history`, `download_attachment`, `list_conversations`, `delete_conversation`, `list_contacts`, `add_contact`, `list_rooms`, `create_room`, `join_room`, `invite_to_room` and `get_status`.
+- **MCP server:** `agent-chat mcp` provides the tools `wait_for_message`, `get_unread`, `send_message`, `set_typing`, `get_history`, `edit_message`, `delete_message`, `react`, `download_attachment`, `list_conversations`, `delete_conversation`, `list_contacts`, `add_contact`, `list_rooms`, `create_room`, `join_room`, `invite_to_room` and `get_status`.
   - Register it in Claude Code with `claude mcp add --scope user agent-chat -- agent-chat mcp`.
   - For JSON-configured clients, use `agent-chat setup --mcp-json`.
 - **Skill:** `agent-chat install` writes `~/.claude/skills/agent-chat/SKILL.md`. Remove everything again with `agent-chat uninstall`.
@@ -173,6 +173,24 @@ In private rooms every message is encrypted for all members' devices; public
 rooms are plaintext.
 `--require-encryption` fails (exit 4) instead of sending plaintext.
 `--plaintext` disables encryption.
+
+### Replies, corrections, reactions and deleting
+
+```sh
+agent-chat send bob@example.org --reply-to 42 "yes, ship it"   # reply to message 42, quoting it
+agent-chat edit 57 "corrected text"                            # replace the text of your message 57
+agent-chat delete 57 --for-everyone                            # unsend your message
+agent-chat delete 42                                           # remove a message from this device only
+agent-chat react 42 👍                                          # react; `react 42` with no emoji removes yours
+```
+
+These use XEP-0461, XEP-0308, XEP-0424 and XEP-0444, so other XMPP apps show them
+too. Messages carry the result: `reply_to` (the id of the quoted message, whose
+quote is removed from `body`), `edited: true` (the body is the latest text),
+`retracted: true` (deleted for everyone; the body is empty), `reactions`
+(`[{"emoji": "👍", "by": ["alice@example.org"]}]`) and, on your 1:1 messages,
+`seen: true` once the recipient's app showed them (XEP-0333). MCP: `send_message`
+takes `reply_to`, and `edit_message`, `delete_message` and `react` do the rest.
 
 ### Photos and files
 

@@ -146,6 +146,10 @@ them. Otherwise use the command line; every command prints one line of JSON:
   {cmd} send ADDRESS --file /path/to/photo.jpg
 - Received photos and files are downloaded for you: the message's
   \"attachment\" has \"name\", \"mime\" and \"path\" (the local file to open).
+- Reply to a specific message (quotes it), edit or delete yours, react:
+  {cmd} send ADDRESS --reply-to ID \"answer\"
+  {cmd} edit ID \"corrected text\"   /   {cmd} delete ID --for-everyone
+  {cmd} react ID 👍
 - Earlier messages in a conversation:
   {cmd} history ADDRESS --limit 20
 - Show that you're typing (in a room too), or stop:
@@ -243,6 +247,7 @@ echo \"long text\" | {cmd} send bob@example.org  # body from stdin
 
 | Task | Command |
 |---|---|
+| Reply, edit, delete, react | `{cmd} send ADDRESS --reply-to ID TEXT`, `edit ID TEXT`, `delete ID [--for-everyone]`, `react ID 👍` |
 | Send a photo or file | `{cmd} send ADDRESS --file PATH` (received ones arrive with `attachment.path`) |
 | History | `{cmd} history ADDRESS --limit 20` |
 | Conversations | `{cmd} conversations` |

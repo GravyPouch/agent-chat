@@ -4,7 +4,7 @@ use std::path::Path;
 
 use agent_chat_proto::model::{
     Attachment, ConversationSummary, Delivery, EncryptionInfo, EncryptionProtocol, Filter, Message, MessageKind,
-    MessageSource, Room, Trust,
+    MessageSource, Reaction, Room, Trust,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -84,6 +84,25 @@ ALTER TABLE messages ADD COLUMN att_mime TEXT;
 ALTER TABLE messages ADD COLUMN att_size INTEGER;
 ALTER TABLE messages ADD COLUMN att_path TEXT;
 "#,
+    r#"
+-- Corrections, retractions, replies, reactions and read markers.
+ALTER TABLE messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN retracted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN reply_to INTEGER;
+ALTER TABLE messages ADD COLUMN seen INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE reactions (
+    message_id  INTEGER NOT NULL,
+    sender      TEXT NOT NULL,
+    emoji       TEXT NOT NULL,
+    PRIMARY KEY (message_id, sender, emoji)
+) WITHOUT ROWID;
+-- Edits, retractions and reactions already applied (carbons and the archive
+-- repeat them).
+CREATE TABLE applied (
+    key  TEXT PRIMARY KEY
+) WITHOUT ROWID;
+"#,
 ];
 
 /// A message about to be stored, before it has a local id.
@@ -105,6 +124,8 @@ pub struct NewMessage {
     pub xmpp_id: Option<String>,
     pub encryption: Option<EncryptionInfo>,
     pub attachment: Option<agent_chat_proto::model::Attachment>,
+    /// Local id of the message this replies to.
+    pub reply_to: Option<i64>,
 }
 
 /// Identifiers used to detect duplicates, without the (possibly encrypted) body.
@@ -232,9 +253,9 @@ impl Store {
             "INSERT INTO messages (conversation, kind, sender, nick, body, timestamp, delayed,
                 source, own, archive, stanza_id, origin_id, xmpp_id,
                 enc_protocol, enc_device, enc_trust, enc_error,
-                att_url, att_name, att_mime, att_size, att_path)
+                att_url, att_name, att_mime, att_size, att_path, reply_to)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                     ?18, ?19, ?20, ?21, ?22)",
+                     ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 m.conversation,
                 m.kind.as_str(),
@@ -258,6 +279,7 @@ impl Store {
                 att.and_then(|a| a.mime.clone()),
                 att.and_then(|a| a.size.map(|s| s as i64)),
                 att.and_then(|a| a.path.clone()),
+                m.reply_to,
             ],
         )?;
         let id = self.conn.last_insert_rowid();
@@ -315,10 +337,140 @@ impl Store {
     }
 
     pub fn get_message(&self, id: i64) -> Result<Option<Message>> {
-        Ok(self
+        let m = self
             .conn
             .query_row(&format!("{SELECT_MESSAGE} WHERE id = ?1"), params![id], row_to_message)
-            .optional()?)
+            .optional()?;
+        Ok(match m {
+            Some(mut m) => {
+                self.fill_reactions(std::slice::from_mut(&mut m))?;
+                Some(m)
+            }
+            None => None,
+        })
+    }
+
+    /// Add the reactions to messages read from the table.
+    fn fill_reactions(&self, msgs: &mut [Message]) -> Result<()> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT emoji, sender FROM reactions WHERE message_id = ?1 ORDER BY emoji, sender")?;
+        for m in msgs.iter_mut() {
+            let rows = stmt.query_map(params![m.id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            let mut out: Vec<Reaction> = Vec::new();
+            for row in rows {
+                let (emoji, sender) = row?;
+                match out.iter_mut().find(|x| x.emoji == emoji) {
+                    Some(x) => x.by.push(sender),
+                    None => out.push(Reaction {
+                        emoji,
+                        by: vec![sender],
+                    }),
+                }
+            }
+            m.reactions = out;
+        }
+        Ok(())
+    }
+
+    /// The message an edit, retraction, reaction or reply points at: by the
+    /// room's stanza-id in group chats, else by origin-id or message id.
+    pub fn find_target(&self, conversation: &str, groupchat: bool, ref_id: &str) -> Result<Option<Message>> {
+        let sql = if groupchat {
+            "SELECT id FROM messages WHERE conversation = ?1 COLLATE NOCASE
+               AND (stanza_id = ?2 OR origin_id = ?2 OR xmpp_id = ?2) AND deleted = 0 ORDER BY id DESC LIMIT 1"
+        } else {
+            "SELECT id FROM messages WHERE conversation = ?1 COLLATE NOCASE
+               AND (origin_id = ?2 OR xmpp_id = ?2) AND deleted = 0 ORDER BY id DESC LIMIT 1"
+        };
+        let id: Option<i64> = self
+            .conn
+            .query_row(sql, params![conversation, ref_id], |r| r.get(0))
+            .optional()?;
+        match id {
+            Some(id) => self.get_message(id),
+            None => Ok(None),
+        }
+    }
+
+    /// The groupchat reference (stanza-id) and the 1:1 one, separately.
+    pub fn reference_ids(&self, id: i64) -> Result<(Option<String>, Option<String>, Option<String>)> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT stanza_id, origin_id, xmpp_id FROM messages WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
+            .unwrap_or((None, None, None)))
+    }
+
+    /// Record that an edit, retraction or reaction was applied; false if it
+    /// already was.
+    pub fn apply_once(&self, key: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .execute("INSERT OR IGNORE INTO applied (key) VALUES (?1)", params![key])?
+            > 0)
+    }
+
+    pub fn edit_message(&self, id: i64, body: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET body = ?2, edited = 1 WHERE id = ?1 AND retracted = 0",
+            params![id, body],
+        )?;
+        Ok(())
+    }
+
+    /// Deleted for everyone: the text and file are gone.
+    pub fn retract_message(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET body = '', retracted = 1, att_url = NULL, att_name = NULL,
+                att_mime = NULL, att_size = NULL, att_path = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        self.conn
+            .execute("DELETE FROM reactions WHERE message_id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Deleted on this device only. The row stays (hidden) so archive copies
+    /// are recognised and don't bring it back.
+    pub fn delete_message(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET body = '', deleted = 1, att_url = NULL, att_path = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        self.conn
+            .execute("DELETE FROM reactions WHERE message_id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// `sender`'s reactions to a message are now exactly `emojis` (XEP-0444).
+    pub fn set_reactions(&self, id: i64, sender: &str, emojis: &[String]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM reactions WHERE message_id = ?1 AND sender = ?2",
+            params![id, sender],
+        )?;
+        for e in emojis {
+            tx.execute(
+                "INSERT OR IGNORE INTO reactions (message_id, sender, emoji) VALUES (?1, ?2, ?3)",
+                params![id, sender, e],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The recipient saw our messages up to `id` (XEP-0333).
+    pub fn mark_seen(&self, conversation: &str, up_to_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET seen = 1 WHERE conversation = ?1 COLLATE NOCASE AND own = 1 AND id <= ?2",
+            params![conversation, up_to_id],
+        )?;
+        Ok(())
     }
 
     pub fn max_message_id(&self) -> Result<i64> {
@@ -331,7 +483,7 @@ impl Store {
     pub fn history(&self, conversation: &str, limit: u32, before_id: Option<i64>) -> Result<Vec<Message>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT * FROM ({SELECT_MESSAGE}
-               WHERE conversation = ?1 COLLATE NOCASE AND id < ?2
+               WHERE conversation = ?1 COLLATE NOCASE AND id < ?2 AND deleted = 0
                ORDER BY id DESC LIMIT ?3)
              ORDER BY id ASC"
         ))?;
@@ -339,17 +491,21 @@ impl Store {
             params![conversation, before_id.unwrap_or(i64::MAX), limit],
             row_to_message,
         )?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let mut out: Vec<Message> = rows.collect::<Result<_, _>>()?;
+        self.fill_reactions(&mut out)?;
+        Ok(out)
     }
 
     pub fn conversations(&self) -> Result<Vec<ConversationSummary>> {
         let mut stmt = self.conn.prepare(
             "SELECT m.conversation, MAX(m.id),
                     (SELECT COUNT(*) FROM messages u
-                      WHERE u.conversation = m.conversation AND u.own = 0
+                      WHERE u.conversation = m.conversation AND u.own = 0 AND u.deleted = 0
+                        AND u.retracted = 0
                         AND u.id > COALESCE((SELECT last_id FROM read_markers r
                                              WHERE r.conversation = m.conversation), 0))
-             FROM messages m GROUP BY m.conversation ORDER BY MAX(m.id) DESC",
+             FROM messages m WHERE m.deleted = 0
+             GROUP BY m.conversation ORDER BY MAX(m.id) DESC",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
@@ -415,7 +571,7 @@ impl Store {
         let start = self.consumer_start(d)?;
         let mut stmt = self.conn.prepare(&format!(
             "{SELECT_MESSAGE}
-             WHERE id > ?1 AND (?2 OR own = 0)
+             WHERE id > ?1 AND (?2 OR own = 0) AND deleted = 0 AND retracted = 0
                AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.consumer = ?3 AND d.message_id = messages.id)
              ORDER BY id ASC"
         ))?;
@@ -554,7 +710,7 @@ fn message_trusted(m: &Message) -> bool {
 
 const SELECT_MESSAGE: &str = "SELECT id, conversation, kind, sender, nick, body, timestamp, delayed,
     source, own, enc_protocol, enc_device, enc_trust, enc_error,
-    att_url, att_name, att_mime, att_size, att_path FROM messages";
+    att_url, att_name, att_mime, att_size, att_path, edited, retracted, reply_to, seen FROM messages";
 
 fn row_to_message(r: &Row<'_>) -> rusqlite::Result<Message> {
     let kind: String = r.get(2)?;
@@ -599,6 +755,11 @@ fn row_to_message(r: &Row<'_>) -> rusqlite::Result<Message> {
             }),
             None => None,
         },
+        edited: r.get(19)?,
+        retracted: r.get(20)?,
+        reply_to: r.get(21)?,
+        reactions: vec![],
+        seen: r.get(22)?,
     })
 }
 
@@ -623,6 +784,7 @@ mod tests {
             xmpp_id: None,
             encryption: None,
             attachment: None,
+            reply_to: None,
         }
     }
 

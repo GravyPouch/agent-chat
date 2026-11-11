@@ -751,3 +751,121 @@ fn files_are_uploaded_encrypted_and_downloaded() {
         "ciphertext with the GCM tag"
     );
 }
+
+/// Poll `history` until `pred` holds for the conversation's messages.
+fn history_until(
+    env: &Env,
+    profile: &str,
+    conversation: &str,
+    what: &str,
+    pred: impl Fn(&[Value]) -> bool,
+) -> Vec<Value> {
+    let start = Instant::now();
+    loop {
+        let h = env.json(&["--profile", profile, "history", conversation]);
+        let msgs = h.as_array().unwrap().clone();
+        if pred(&msgs) {
+            return msgs;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "{profile}: never saw {what}: {h}"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Replies, corrections, reactions, deleting for everyone and locally, in an
+/// encrypted 1:1 chat.
+#[test]
+fn reply_edit_react_and_delete() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    hub_with_profiles(&env, &[("alice", "alice-password-123"), ("bob", "bob-password-4567")]);
+    let (alice, bob) = ("alice@hubtest.local", "bob@hubtest.local");
+    let got = exchange(&env, "bob", "alice", alice, "hello");
+    let a_id = got["id"].as_i64().unwrap().to_string();
+    let b_id = env.json(&["--profile", "bob", "history", alice]).as_array().unwrap()[0]["id"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+
+    // Alice replies; Bob sees the reply without the quote, pointing at his message.
+    env.json(&["--profile", "alice", "send", bob, "--reply-to", &a_id, "hi back"]);
+    let h = history_until(&env, "bob", alice, "the reply", |m| m.len() == 2);
+    assert_eq!(h[1]["body"], "hi back", "{h:?}");
+    assert_eq!(h[1]["reply_to"].to_string(), b_id, "{h:?}");
+
+    // Bob corrects his message.
+    env.json(&["--profile", "bob", "edit", &b_id, "hello there"]);
+    let h = history_until(&env, "alice", bob, "the correction", |m| m[0]["body"] == "hello there");
+    assert_eq!(h[0]["edited"], true);
+
+    // Alice reacts.
+    env.json(&["--profile", "alice", "react", &a_id, "👍"]);
+    let h = history_until(&env, "bob", alice, "the reaction", |m| !m[0]["reactions"].is_null());
+    assert_eq!(h[0]["reactions"], serde_json::json!([{"emoji": "👍", "by": [alice]}]));
+
+    // Bob deletes his message for everyone.
+    env.json(&["--profile", "bob", "delete", &b_id, "--for-everyone"]);
+    let h = history_until(&env, "alice", bob, "the retraction", |m| m[0]["retracted"] == true);
+    assert_eq!(h[0]["body"], "");
+
+    // Alice deletes her reply on her device only.
+    let reply = h[1]["id"].as_i64().unwrap().to_string();
+    env.json(&["--profile", "alice", "delete", &reply]);
+    let h = env.json(&["--profile", "alice", "history", bob]);
+    assert_eq!(h.as_array().unwrap().len(), 1, "{h}");
+    assert_eq!(
+        env.json(&["--profile", "bob", "history", alice])
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+/// In a group chat, actions refer to messages by the room's stanza-id.
+#[test]
+fn group_chat_edit_and_react() {
+    if !hub_server_selected() {
+        return;
+    }
+    let env = Env {
+        home: tempfile::tempdir().unwrap(),
+    };
+    hub_with_profiles(&env, &[("alice", "alice-password-123"), ("bob", "bob-password-4567")]);
+    let room = env.json(&["--profile", "alice", "rooms", "create", "--name", "edits", "--public"]);
+    let jid = room["jid"].as_str().unwrap().to_owned();
+    env.json(&["--profile", "bob", "rooms", "join", &jid]);
+    std::thread::sleep(Duration::from_secs(1));
+    env.json(&["--profile", "bob", "send", &jid, "draft"]);
+    let h = history_until(&env, "alice", &jid, "bob's message", |m| {
+        m.iter().any(|x| x["body"] == "draft")
+    });
+    let a_id = h.iter().find(|x| x["body"] == "draft").unwrap()["id"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+    let b = history_until(&env, "bob", &jid, "the reflection", |m| {
+        m.iter().any(|x| x["body"] == "draft")
+    });
+    let b_id = b.iter().find(|x| x["body"] == "draft").unwrap()["id"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+
+    env.json(&["--profile", "bob", "edit", &b_id, "final"]);
+    history_until(&env, "alice", &jid, "the correction", |m| {
+        m.iter().any(|x| x["body"] == "final" && x["edited"] == true)
+    });
+    env.json(&["--profile", "alice", "react", &a_id, "🎉"]);
+    history_until(&env, "bob", &jid, "the reaction", |m| {
+        m.iter()
+            .any(|x| x["body"] == "final" && x["reactions"][0]["emoji"] == "🎉")
+    });
+}

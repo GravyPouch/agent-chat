@@ -84,7 +84,7 @@ async fn handle_connection(core: Arc<Core>, stream: UnixStream) {
                 loop {
                     match events.recv().await {
                         Ok(event) => {
-                            if etx.send(ServerFrame::Event { event }).is_err() {
+                            if etx.send(ServerFrame::Event { event: Box::new(event) }).is_err() {
                                 break;
                             }
                         }
@@ -136,10 +136,15 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             body,
             room,
             encryption,
+            reply_to,
         } => {
             crate::agent::note_activity(core);
             let handle = core.session()?;
-            json(actions::send_message(core, &handle, &to, body, room, encryption).await?)
+            let extras = actions::SendExtras {
+                reply_to,
+                ..Default::default()
+            };
+            json(actions::send_message_with(core, &handle, &to, body, room, encryption, extras).await?)
         }
         Request::Inbox {
             delivery,
@@ -194,6 +199,11 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
         Request::Conversations => json(core.store().conversations().map_err(internal)?),
         Request::MarkRead { conversation, up_to_id } => {
             core.store().mark_read(&conversation, up_to_id).map_err(internal)?;
+            // XEP-0333: tell the contact (1:1 chats only).
+            if let Ok(handle) = core.session() {
+                let core = core.clone();
+                tokio::spawn(async move { actions::send_displayed(&core, &handle, &conversation, up_to_id).await });
+            }
             Ok(Value::Null)
         }
         Request::Contacts => json(ContactList {
@@ -272,6 +282,10 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             crate::agent::set_account_kind(core, kind)?;
             json(core.status())
         }
+        Request::Edit { id, body } => json(actions::edit_message(core, &core.session()?, id, body).await?),
+        Request::Retract { id } => json(actions::retract_message(core, &core.session()?, id).await?),
+        Request::DeleteMessage { id } => json(actions::delete_message(core, id)?),
+        Request::React { id, emojis } => json(actions::react(core, &core.session()?, id, emojis).await?),
         Request::SendFile {
             to,
             path,

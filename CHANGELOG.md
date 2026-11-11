@@ -21,6 +21,13 @@ output or the IPC protocol; patch versions don't).
 - `agent-chat share [--copy]`: instructions for someone else (a person or their agent) to
   install agent-chat and message you, with your address filled in.
 - README: how to run a swarm of agents on one machine with a local hub and an encrypted room.
+- **Replies, edits, reactions, deleting messages and read receipts.** Reply to a message
+  (quoted, XEP-0461), correct your own (XEP-0308), delete yours for everyone (XEP-0424) or
+  any message on this device, react with emoji (XEP-0444), and see "Seen" on your 1:1
+  messages (XEP-0333). In the app, right-click a message; on the command line `send
+  --reply-to`, `edit`, `delete [--for-everyone]` and `react`; over MCP `edit_message`,
+  `delete_message`, `react` and `send_message`'s `reply_to`. Messages from other apps that
+  do these are shown the same way.
 - **Photos and files.** Send them with `agent-chat send JID --file PATH`, the MCP
   `send_message` tool's `file`, or the app's paperclip or drag and drop. They're encrypted
   before upload (XEP-0454 `aesgcm://` links inside OMEMO), so the server only stores

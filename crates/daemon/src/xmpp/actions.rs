@@ -727,12 +727,54 @@ pub async fn send_message(
     room: Option<bool>,
     mode: EncryptionMode,
 ) -> Result<Message, IpcError> {
-    send_message_with(core, handle, to, body, room, mode, None, None).await
+    send_message_with(core, handle, to, body, room, mode, SendExtras::default()).await
 }
 
-/// [`send_message`] with a shared file: `oob` adds an XEP-0066 link (for
-/// plaintext links), `attachment` is stored with our copy.
-#[allow(clippy::too_many_arguments)]
+/// What a message can carry besides its text.
+#[derive(Default)]
+pub struct SendExtras {
+    /// An XEP-0066 link (plaintext file links).
+    pub oob: Option<String>,
+    /// Stored with our copy.
+    pub attachment: Option<agent_chat_proto::model::Attachment>,
+    /// The local id of the message this replies to (XEP-0461).
+    pub reply_to: Option<i64>,
+}
+
+pub const NS_REPLY: &str = "urn:xmpp:reply:0";
+pub const NS_FALLBACK: &str = "urn:xmpp:fallback:0";
+pub const NS_CORRECT: &str = "urn:xmpp:message-correct:0";
+pub const NS_RETRACT: &str = "urn:xmpp:message-retract:1";
+pub const NS_REACTIONS: &str = "urn:xmpp:reactions:0";
+pub const NS_MARKERS: &str = "urn:xmpp:chat-markers:0";
+
+/// An element with attributes.
+pub fn el(name: &str, ns: &str, attrs: &[(&str, &str)]) -> Element {
+    let mut b = Element::builder(name, ns);
+    for (k, v) in attrs {
+        b = b.attr(
+            xmpp_parsers::minidom::rxml::NcName::try_from(*k).expect("valid attribute name"),
+            *v,
+        );
+    }
+    b.build()
+}
+
+/// How a quoted message reads in a reply's fallback.
+fn quote_of(m: &Message) -> String {
+    let text = match &m.attachment {
+        Some(a) if a.is_image() => "Photo".to_owned(),
+        Some(a) => a.name.clone(),
+        None => m.body.lines().next().unwrap_or("").chars().take(120).collect(),
+    };
+    let who = m
+        .nick
+        .clone()
+        .unwrap_or_else(|| m.from.split('@').next().unwrap_or("").to_owned());
+    format!("> {who}: {text}\n")
+}
+
+/// [`send_message`] with a shared file or a reply.
 pub async fn send_message_with(
     core: &Arc<Core>,
     handle: &SessionHandle,
@@ -740,9 +782,13 @@ pub async fn send_message_with(
     body: String,
     room: Option<bool>,
     mode: EncryptionMode,
-    oob: Option<String>,
-    attachment: Option<agent_chat_proto::model::Attachment>,
+    extras: SendExtras,
 ) -> Result<Message, IpcError> {
+    let SendExtras {
+        oob,
+        attachment,
+        reply_to,
+    } = extras;
     if body.is_empty() {
         return Err(IpcError::new(ErrorCode::BadRequest, "message body is empty"));
     }
@@ -780,11 +826,42 @@ pub async fn send_message_with(
         // XEP-0085: a message ends "composing"; say so explicitly.
         msg = msg.with_payload(xmpp_parsers::chatstates::ChatState::Active);
     }
+    if kind == MessageKind::Chat {
+        // XEP-0333: ask for a "displayed" marker.
+        msg.payloads.push(el("markable", NS_MARKERS, &[]));
+    }
+    // XEP-0461 reply, with an XEP-0428 fallback quote for other clients.
+    let mut wire_body = body.clone();
+    let mut reply_target = None;
+    if let Some(rid) = reply_to {
+        let target = core
+            .store()
+            .get_message(rid)
+            .map_err(internal)?
+            .ok_or_else(|| IpcError::new(ErrorCode::NotFound, format!("no message {rid} to reply to")))?;
+        let (stanza_id, origin_id, xmpp_id) = core.store().reference_ids(rid).map_err(internal)?;
+        let reference = if kind == MessageKind::Groupchat {
+            stanza_id.or(origin_id).or(xmpp_id)
+        } else {
+            origin_id.or(xmpp_id)
+        };
+        if let Some(reference) = reference {
+            let quote = quote_of(&target);
+            let end = quote.chars().count().to_string();
+            let mut fallback = el("fallback", NS_FALLBACK, &[("for", NS_REPLY)]);
+            fallback.append_child(el("body", NS_FALLBACK, &[("start", "0"), ("end", &end)]));
+            msg.payloads
+                .push(el("reply", NS_REPLY, &[("to", &target.from), ("id", &reference)]));
+            msg.payloads.push(fallback);
+            wire_body = format!("{quote}{body}");
+            reply_target = Some(rid);
+        }
+    }
 
     // End-to-end encryption.
     let mut encryption = None;
     if mode != EncryptionMode::Plaintext {
-        match crate::omemo::xmpp::encrypt_outgoing(core, handle, kind, &to_bare, &body).await {
+        match crate::omemo::xmpp::encrypt_outgoing(core, handle, kind, &to_bare, &wire_body).await {
             Ok(Some((payloads, info))) => {
                 for p in payloads {
                     msg.payloads.push(p);
@@ -814,7 +891,7 @@ pub async fn send_message_with(
         }
     }
     if encryption.is_none() {
-        msg.bodies.insert(Lang::default(), body.clone());
+        msg.bodies.insert(Lang::default(), wire_body.clone());
         if let Some(url) = &oob {
             let mut x = Element::builder("x", "jabber:x:oob").build();
             x.append_child(Element::builder("url", "jabber:x:oob").append(url.as_str()).build());
@@ -849,6 +926,7 @@ pub async fn send_message_with(
             xmpp_id: Some(id),
             encryption,
             attachment,
+            reply_to: reply_target,
         })
         .map_err(internal)?
         .ok_or_else(|| internal("message id collision"))?;
@@ -856,6 +934,205 @@ pub async fn send_message_with(
         .send(msg)
         .map_err(|e| IpcError::new(ErrorCode::NotConnected, e.to_string()))?;
     Ok(stored)
+}
+
+/// A message that acts on `target` (a correction, retraction, reaction or
+/// marker), sent to its conversation. `body`, if any, is encrypted when the
+/// conversation is.
+async fn send_action(
+    core: &Arc<Core>,
+    handle: &SessionHandle,
+    target: &Message,
+    body: Option<&str>,
+    payloads: Vec<Element>,
+) -> Result<(), IpcError> {
+    let to_jid = Jid::new(&target.conversation).map_err(internal)?;
+    let to_bare = to_jid.to_bare().to_string();
+    let mut msg = match target.kind {
+        MessageKind::Groupchat => XMessage::groupchat(Some(BareJid::new(&to_bare).map_err(internal)?.into())),
+        _ => XMessage::chat(Some(to_jid.clone())),
+    };
+    let id = uuid::Uuid::new_v4().to_string();
+    msg.id = Some(MessageId(id.clone()));
+    msg = msg.with_payload(OriginId { id });
+    if let Some(body) = body {
+        let mut encrypted = false;
+        if target.encryption.is_some() {
+            match crate::omemo::xmpp::encrypt_outgoing(core, handle, target.kind, &to_bare, body).await {
+                Ok(Some((p, _))) => {
+                    msg.payloads.extend(p);
+                    msg.bodies
+                        .insert(Lang::default(), crate::omemo::FALLBACK_BODY.to_owned());
+                    encrypted = true;
+                }
+                _ => {
+                    return Err(IpcError::new(
+                        ErrorCode::EncryptionUnavailable,
+                        "couldn't encrypt the correction for this encrypted chat",
+                    ));
+                }
+            }
+        }
+        if !encrypted {
+            msg.bodies.insert(Lang::default(), body.to_owned());
+        }
+    }
+    msg.payloads.extend(payloads);
+    msg.payloads.push(Element::builder("store", "urn:xmpp:hints").build());
+    handle
+        .send(msg)
+        .map_err(|e| IpcError::new(ErrorCode::NotConnected, e.to_string()))
+}
+
+fn message_or_404(core: &Core, id: i64) -> Result<Message, IpcError> {
+    core.store()
+        .get_message(id)
+        .map_err(internal)?
+        .ok_or_else(|| IpcError::new(ErrorCode::NotFound, format!("no message {id}")))
+}
+
+/// The reference for retractions, reactions and replies: the room's
+/// stanza-id in group chats, else the origin-id.
+fn reference_for(core: &Core, m: &Message) -> Result<String, IpcError> {
+    let (stanza_id, origin_id, xmpp_id) = core.store().reference_ids(m.id).map_err(internal)?;
+    let r = if m.kind == MessageKind::Groupchat {
+        stanza_id.or(origin_id).or(xmpp_id)
+    } else {
+        origin_id.or(xmpp_id)
+    };
+    r.ok_or_else(|| {
+        IpcError::new(
+            ErrorCode::BadRequest,
+            format!("message {} can't be referred to yet", m.id),
+        )
+    })
+}
+
+fn updated(core: &Core, id: i64) -> Result<Message, IpcError> {
+    let m = message_or_404(core, id)?;
+    core.emit(Event::MessageUpdated(m.clone()));
+    Ok(m)
+}
+
+/// XEP-0308: replace the text of one of our messages.
+pub async fn edit_message(
+    core: &Arc<Core>,
+    handle: &SessionHandle,
+    id: i64,
+    body: String,
+) -> Result<Message, IpcError> {
+    let m = message_or_404(core, id)?;
+    if !m.own || m.retracted {
+        return Err(IpcError::new(
+            ErrorCode::BadRequest,
+            "only your own messages can be edited",
+        ));
+    }
+    if body.trim().is_empty() {
+        return Err(IpcError::new(ErrorCode::BadRequest, "the new text is empty"));
+    }
+    let (_, origin_id, xmpp_id) = core.store().reference_ids(id).map_err(internal)?;
+    let original = xmpp_id.or(origin_id).ok_or_else(|| internal("message has no id"))?;
+    send_action(
+        core,
+        handle,
+        &m,
+        Some(&body),
+        vec![el("replace", NS_CORRECT, &[("id", &original)])],
+    )
+    .await?;
+    core.store().edit_message(id, &body).map_err(internal)?;
+    updated(core, id)
+}
+
+/// XEP-0424: delete one of our messages for everyone.
+pub async fn retract_message(core: &Arc<Core>, handle: &SessionHandle, id: i64) -> Result<Message, IpcError> {
+    let m = message_or_404(core, id)?;
+    if !m.own {
+        return Err(IpcError::new(
+            ErrorCode::BadRequest,
+            "only your own messages can be deleted for everyone",
+        ));
+    }
+    let reference = reference_for(core, &m)?;
+    send_action(
+        core,
+        handle,
+        &m,
+        None,
+        vec![el("retract", NS_RETRACT, &[("id", &reference)])],
+    )
+    .await?;
+    core.store().retract_message(id).map_err(internal)?;
+    updated(core, id)
+}
+
+/// Delete a message on this device only.
+pub fn delete_message(core: &Core, id: i64) -> Result<Message, IpcError> {
+    message_or_404(core, id)?;
+    core.store().delete_message(id).map_err(internal)?;
+    updated(core, id)
+}
+
+/// XEP-0444: our reactions to a message become `emojis` (empty removes them).
+pub async fn react(
+    core: &Arc<Core>,
+    handle: &SessionHandle,
+    id: i64,
+    emojis: Vec<String>,
+) -> Result<Message, IpcError> {
+    let m = message_or_404(core, id)?;
+    let reference = reference_for(core, &m)?;
+    let mut payload = el("reactions", NS_REACTIONS, &[("id", &reference)]);
+    let mut list: Vec<String> = Vec::new();
+    for e in emojis
+        .into_iter()
+        .map(|e| e.trim().to_owned())
+        .filter(|e| !e.is_empty())
+    {
+        if !list.contains(&e) && e.chars().count() <= 8 {
+            list.push(e);
+        }
+    }
+    for e in &list {
+        let mut r = Element::builder("reaction", NS_REACTIONS).build();
+        r.append_text(e);
+        payload.append_child(r);
+    }
+    send_action(core, handle, &m, None, vec![payload]).await?;
+    let me = match m.kind {
+        MessageKind::Groupchat => format!(
+            "{}/{}",
+            m.conversation,
+            core.joined_room_nick(&m.conversation).unwrap_or_default()
+        ),
+        _ => handle.own.to_string(),
+    };
+    core.store().set_reactions(id, &me, &list).map_err(internal)?;
+    updated(core, id)
+}
+
+/// XEP-0333: tell a contact we've seen their messages up to `up_to_id`.
+pub async fn send_displayed(core: &Arc<Core>, handle: &SessionHandle, conversation: &str, up_to_id: i64) {
+    let last = core
+        .store()
+        .history(conversation, 50, Some(up_to_id + 1))
+        .ok()
+        .and_then(|h| h.into_iter().rev().find(|m| !m.own && m.kind == MessageKind::Chat));
+    let Some(m) = last else { return };
+    let Ok((_, origin_id, xmpp_id)) = core.store().reference_ids(m.id) else {
+        return;
+    };
+    // Markers refer to the message's id attribute.
+    let Some(id) = xmpp_id.or(origin_id) else { return };
+    let _ = send_action(
+        core,
+        handle,
+        &m,
+        None,
+        vec![el("displayed", NS_MARKERS, &[("id", &id)])],
+    )
+    .await;
 }
 
 /// XEP-0085: tell a contact or a joined room we're typing (or stopped).

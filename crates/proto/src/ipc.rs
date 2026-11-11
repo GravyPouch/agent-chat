@@ -42,6 +42,9 @@ pub enum Request {
         room: Option<bool>,
         #[serde(default)]
         encryption: EncryptionMode,
+        /// Reply to this message (its local id).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<i64>,
     },
     /// Unread messages for a consumer. Result: `Vec<Message>`.
     Inbox {
@@ -179,6 +182,15 @@ pub enum Request {
     /// Download (and decrypt) a message's attachment. Result: [`Message`]
     /// with `attachment.path` set.
     Download { id: i64 },
+    /// Replace the text of one of our messages (XEP-0308). Result: [`Message`].
+    Edit { id: i64, body: String },
+    /// Delete one of our messages for everyone (XEP-0424). Result: [`Message`].
+    Retract { id: i64 },
+    /// Delete a message on this device only. Result: [`Message`].
+    DeleteMessage { id: i64 },
+    /// Our reactions to a message become `emojis`; empty removes them
+    /// (XEP-0444). Result: [`Message`].
+    React { id: i64, emojis: Vec<String> },
     /// Delete a conversation and its history on this device (a group chat is
     /// left too). Archived copies don't come back. Result: `{"deleted": N}`.
     DeleteConversation { conversation: String },
@@ -282,6 +294,13 @@ pub struct ContactList {
 pub enum Event {
     /// A message was stored (inbound or outbound).
     Message(Message),
+    /// A stored message changed: edited, retracted, deleted, reacted to.
+    MessageUpdated(Message),
+    /// The recipient saw our messages in a 1:1 chat up to this id.
+    MessagesSeen {
+        conversation: String,
+        up_to_id: i64,
+    },
     Status(StatusInfo),
     Presence {
         jid: String,
@@ -365,7 +384,7 @@ pub enum ServerFrame {
         error: Option<IpcError>,
     },
     Event {
-        event: Event,
+        event: Box<Event>,
     },
 }
 
@@ -388,6 +407,7 @@ mod tests {
                 body: "hi".into(),
                 room: None,
                 encryption: EncryptionMode::Auto,
+                reply_to: None,
             },
         };
         let json = serde_json::to_string(&frame).unwrap();
@@ -561,14 +581,14 @@ mod tests {
                 error: Some(IpcError::new(ErrorCode::NotConnected, "offline")),
             },
             ServerFrame::Event {
-                event: Event::ContactsChanged,
+                event: Box::new(Event::ContactsChanged),
             },
             ServerFrame::Event {
-                event: Event::ChatState {
+                event: Box::new(Event::ChatState {
                     jid: "bob@example.org".into(),
                     state: ChatState::Composing,
                     nick: None,
-                },
+                }),
             },
         ];
         for f in frames {

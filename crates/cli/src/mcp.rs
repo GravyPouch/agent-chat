@@ -62,6 +62,7 @@ fn tools() -> Value {
                     "to": {"type": "string", "description": "Contact or room address."},
                     "text": {"type": "string", "description": "The message; with `file`, an optional caption."},
                     "file": {"type": "string", "description": "Absolute path of a photo or file to send (encrypted end to end)."},
+                    "reply_to": {"type": "integer", "description": "Reply to this message (its id), quoting it."},
                     "require_encryption": {"type": "boolean", "description": "Fail instead of sending plaintext."}
                 },
                 "required": ["to"]
@@ -90,6 +91,21 @@ fn tools() -> Value {
                 },
                 "required": ["conversation"]
             }
+        },
+        {
+            "name": "edit_message",
+            "description": "Replace the text of one of your sent messages.",
+            "inputSchema": {"type": "object", "properties": {"id": {"type": "integer"}, "text": {"type": "string"}}, "required": ["id", "text"]}
+        },
+        {
+            "name": "delete_message",
+            "description": "Delete a message on this device, or (for_everyone) one of your own for everyone.",
+            "inputSchema": {"type": "object", "properties": {"id": {"type": "integer"}, "for_everyone": {"type": "boolean"}}, "required": ["id"]}
+        },
+        {
+            "name": "react",
+            "description": "React to a message with emoji; an empty list removes your reactions.",
+            "inputSchema": {"type": "object", "properties": {"id": {"type": "integer"}, "emojis": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "emojis"]}
         },
         {
             "name": "download_attachment",
@@ -224,6 +240,7 @@ async fn call_tool(client: &IpcClient, consumer: &str, name: &str, args: &Value)
                         body: text.ok_or("missing argument `text` (or `file`)")?,
                         room: None,
                         encryption,
+                        reply_to: args.get("reply_to").and_then(Value::as_i64),
                     })
                     .await
                     .map_err(remote);
@@ -244,11 +261,32 @@ async fn call_tool(client: &IpcClient, consumer: &str, name: &str, args: &Value)
                     body,
                     room: None,
                     encryption,
+                    reply_to: None,
                 })
                 .await
                 .map_err(remote)?;
             return Ok(json!([sent, caption]));
         }
+        "edit_message" => Request::Edit {
+            id: args.get("id").and_then(Value::as_i64).ok_or("missing argument `id`")?,
+            body: require(args, "text")?,
+        },
+        "delete_message" => {
+            let id = args.get("id").and_then(Value::as_i64).ok_or("missing argument `id`")?;
+            if args.get("for_everyone").and_then(Value::as_bool).unwrap_or(false) {
+                Request::Retract { id }
+            } else {
+                Request::DeleteMessage { id }
+            }
+        }
+        "react" => Request::React {
+            id: args.get("id").and_then(Value::as_i64).ok_or("missing argument `id`")?,
+            emojis: args
+                .get("emojis")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                .unwrap_or_default(),
+        },
         "download_attachment" => Request::Download {
             id: args.get("id").and_then(Value::as_i64).ok_or("missing argument `id`")?,
         },

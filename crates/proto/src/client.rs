@@ -85,7 +85,7 @@ impl IpcClient {
                         }
                     }
                     ServerFrame::Event { event } => {
-                        let _ = events_tx.send(event);
+                        let _ = events_tx.send(*event);
                     }
                 }
             }

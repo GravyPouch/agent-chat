@@ -145,6 +145,8 @@ pub struct ChatApp {
     delete_remove_contact: bool,
     /// Attachments being downloaded (message ids).
     downloading: std::collections::HashSet<i64>,
+    /// The composer replies to this message, or edits it.
+    compose_mode: Option<ComposeMode>,
     /// The animated face of the open 1:1 chat.
     face: Option<Entity<AnimatedFace>>,
     /// We told this contact or room we're typing (XEP-0085 "composing").
@@ -156,6 +158,16 @@ pub struct ChatApp {
     paused_timer: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// What the composer's next send does besides sending.
+#[derive(Clone)]
+enum ComposeMode {
+    Reply(Message),
+    Edit(Message),
+}
+
+/// Quick reactions in the message menu.
+const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 
 /// Static avatar sizes (GPUI Kit's small and medium avatar sizes).
 const FACE_SMALL: u32 = 24;
@@ -312,6 +324,7 @@ impl ChatApp {
             settings: Default::default(),
             delete_remove_contact: false,
             downloading: Default::default(),
+            compose_mode: None,
             face: None,
             composing_to: None,
             typing: HashMap::new(),
@@ -626,6 +639,25 @@ impl ChatApp {
             }
             Event::ContactsChanged | Event::SubscriptionRequest(_) => self.reload_contacts(cx),
             Event::RoomsChanged | Event::RoomInvite(_) => self.reload_rooms(cx),
+            Event::MessageUpdated(m) => {
+                if let Some(slot) = Rc::make_mut(&mut self.messages).iter_mut().find(|x| x.id == m.id) {
+                    *slot = m;
+                }
+                self.reload_conversations(cx);
+            }
+            Event::MessagesSeen { conversation, up_to_id } => {
+                if self
+                    .selected
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(&conversation))
+                {
+                    for m in Rc::make_mut(&mut self.messages).iter_mut() {
+                        if m.own && m.id <= up_to_id {
+                            m.seen = true;
+                        }
+                    }
+                }
+            }
             Event::ConversationDeleted { conversation } => {
                 if self
                     .selected
@@ -878,6 +910,20 @@ impl ChatApp {
         self.paused_timer = None;
         self.composing_to = None;
         self.composer.update(cx, |s, cx| s.set_value("", window, cx));
+        let mode = self.compose_mode.take();
+        if let Some(ComposeMode::Edit(m)) = mode {
+            self.call::<Message>(Request::Edit { id: m.id, body }, cx, |this, r, cx| {
+                if let Err(e) = r {
+                    this.error = Some(format!("Not edited: {e}"));
+                    cx.notify();
+                }
+            });
+            return;
+        }
+        let reply_to = match mode {
+            Some(ComposeMode::Reply(m)) => Some(m.id),
+            _ => None,
+        };
         self.face_signal(&to, Signal::Sending, cx);
         let face_jid = to.clone();
         self.call::<Message>(
@@ -886,6 +932,7 @@ impl ChatApp {
                 body: body.clone(),
                 room: None,
                 encryption: EncryptionMode::Auto,
+                reply_to,
             },
             cx,
             move |this, r, cx| match r {
@@ -897,6 +944,79 @@ impl ChatApp {
                 }
             },
         );
+    }
+
+    /// Our identity in the open conversation, as reactions record it.
+    fn me_in(&self, conversation: &str) -> String {
+        match self.rooms.iter().find(|r| r.jid.eq_ignore_ascii_case(conversation)) {
+            Some(r) => format!("{}/{}", r.jid, r.nick),
+            None => self.status.as_ref().and_then(|s| s.account.clone()).unwrap_or_default(),
+        }
+    }
+
+    /// Add or remove one of our reactions.
+    fn toggle_reaction(&mut self, m: &Message, emoji: &str, cx: &mut Context<Self>) {
+        let me = self.me_in(&m.conversation);
+        let mut mine: Vec<String> = m
+            .reactions
+            .iter()
+            .filter(|r| r.by.iter().any(|b| b.eq_ignore_ascii_case(&me)))
+            .map(|r| r.emoji.clone())
+            .collect();
+        if let Some(i) = mine.iter().position(|e| e == emoji) {
+            mine.remove(i);
+        } else {
+            mine.push(emoji.to_owned());
+        }
+        self.call::<Message>(Request::React { id: m.id, emojis: mine }, cx, |this, r, cx| {
+            if let Err(e) = r {
+                this.error = Some(format!("Couldn't react: {e}"));
+                cx.notify();
+            }
+        });
+    }
+
+    fn start_reply(&mut self, m: Message, window: &mut Window, cx: &mut Context<Self>) {
+        self.compose_mode = Some(ComposeMode::Reply(m));
+        self.composer.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
+    fn start_edit(&mut self, m: Message, window: &mut Window, cx: &mut Context<Self>) {
+        let text = m.body.clone();
+        self.compose_mode = Some(ComposeMode::Edit(m));
+        let end = text.len();
+        self.composer.update(cx, |s, cx| {
+            s.set_value(text, window, cx);
+            s.focus(window, cx);
+            // The caret goes after the text, ready to type.
+            s.set_selected_range(end..end, cx);
+        });
+        cx.notify();
+    }
+
+    fn delete_message(&mut self, id: i64, for_everyone: bool, cx: &mut Context<Self>) {
+        let req = if for_everyone {
+            Request::Retract { id }
+        } else {
+            Request::DeleteMessage { id }
+        };
+        self.call::<Message>(req, cx, move |this, r, cx| match r {
+            Ok(_) if !for_everyone => {
+                // Gone from this device: drop it from the view.
+                if let Some(ix) = this.messages.iter().position(|m| m.id == id) {
+                    Rc::make_mut(&mut this.messages).remove(ix);
+                    let n = this.messages.len();
+                    this.scroller.update(cx, |s, cx| s.reset(n, cx));
+                }
+                this.reload_conversations(cx);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                this.error = Some(format!("Couldn't delete: {e}"));
+                cx.notify();
+            }
+        });
     }
 
     /// Download the open chat's photos and files, so they can be shown.
@@ -2707,8 +2827,10 @@ impl ChatApp {
         let theme = cx.theme().clone();
         let is_room = self.rooms.iter().any(|r| r.jid.eq_ignore_ascii_case(&jid));
         let messages = self.messages.clone();
+        let this = cx.entity().downgrade();
+        let me: SharedString = self.me_in(&jid).into();
         let scroller = MessageScroller::new("messages", self.scroller.clone(), move |ix, _, cx| {
-            render_message(&messages, ix, is_room, cx)
+            render_message(&messages, ix, is_room, &me, this.clone(), cx)
         })
         .with_bottom_fade(theme.background);
         let typing = self.typing_line(&jid);
@@ -2735,6 +2857,46 @@ impl ChatApp {
                     .truncate()
                     .when_some(typing, |el, t| el.child(t)),
             )
+            .when_some(self.compose_mode.clone(), |el, mode| {
+                let (label, m) = match mode {
+                    ComposeMode::Reply(m) => ("Replying to", m),
+                    ComposeMode::Edit(m) => ("Editing", m),
+                };
+                let who = if m.own {
+                    "your message".to_owned()
+                } else {
+                    m.nick.clone().unwrap_or_else(|| local_part(&m.from))
+                };
+                el.child(
+                    h_flex()
+                        .px_4()
+                        .pt_2()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(Icon::new(LucideIcon::Reply).xsmall())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(format!("{label} {who}: {}", preview_text(&m).replace('\n', " "))),
+                        )
+                        .child(
+                            Button::new("cancel-compose-mode")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Close)
+                                .tooltip("Cancel")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if matches!(this.compose_mode.take(), Some(ComposeMode::Edit(_))) {
+                                        this.composer.update(cx, |s, cx| s.set_value("", window, cx));
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .child(
                 h_flex()
                     .items_end()
@@ -2774,6 +2936,9 @@ fn typing_label(names: &[String]) -> Option<String> {
 
 /// What a message says in a preview: its text, or what it shares.
 fn preview_text(m: &Message) -> String {
+    if m.retracted {
+        return "Message deleted".into();
+    }
     match &m.attachment {
         Some(a) if a.is_image() => "Photo".into(),
         Some(a) => format!("File: {}", a.name),
@@ -2798,7 +2963,11 @@ fn render_attachment(id: i64, a: Attachment, cx: &mut App) -> AnyElement {
                         .object_fit(ObjectFit::Contain)
                         .rounded_md(),
                 )
-                .on_click(move |_, _, cx| cx.open_with_system(&open))
+                .on_click(move |e, _, cx| {
+                    if !e.is_right_click() {
+                        cx.open_with_system(&open)
+                    }
+                })
                 .into_any_element()
         }
         Some(p) => Button::new(ElementId::NamedInteger("file".into(), id as u64))
@@ -2810,7 +2979,11 @@ fn render_attachment(id: i64, a: Attachment, cx: &mut App) -> AnyElement {
                 None => a.name.clone(),
             })
             .tooltip("Open")
-            .on_click(move |_, _, cx| cx.open_with_system(&p))
+            .on_click(move |e, _, cx| {
+                if !e.is_right_click() {
+                    cx.open_with_system(&p)
+                }
+            })
             .into_any_element(),
         None => h_flex()
             .gap_2()
@@ -2830,7 +3003,14 @@ fn human_size(n: u64) -> String {
     }
 }
 
-fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) -> AnyElement {
+fn render_message(
+    messages: &[Message],
+    ix: usize,
+    is_room: bool,
+    me: &SharedString,
+    this: WeakEntity<ChatApp>,
+    cx: &mut App,
+) -> AnyElement {
     let Some(m) = messages.get(ix) else {
         return div().into_any_element();
     };
@@ -2863,7 +3043,28 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
         .when(m.encryption.as_ref().is_some_and(|e| e.error.is_some()), |b| {
             b.with_variant(BubbleVariant::Outline)
         })
-        .when(m.attachment.is_none(), |b| {
+        .when_some(m.reply_to.and_then(|r| messages.iter().find(|x| x.id == r)), |b, q| {
+            let who = if q.own {
+                "You".to_owned()
+            } else {
+                q.nick.clone().unwrap_or_else(|| local_part(&q.from))
+            };
+            b.child(
+                div()
+                    .mb_1()
+                    .pl_2()
+                    .border_l_2()
+                    .border_color(theme.muted_foreground.opacity(0.6))
+                    .text_xs()
+                    .opacity(0.8)
+                    .truncate()
+                    .child(format!("{who}: {}", preview_text(q).replace('\n', " "))),
+            )
+        })
+        .when(m.retracted, |b| {
+            b.child(div().italic().opacity(0.7).child("This message was deleted"))
+        })
+        .when(m.attachment.is_none() && !m.retracted, |b| {
             b.child(SelectableText::new(
                 ElementId::NamedInteger("body".into(), m.id as u64),
                 m.body.clone(),
@@ -2890,10 +3091,38 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
                     .on_click(move |_, _, cx| cx.open_url(&url))
             }))
     });
+    let reaction_row = (!m.reactions.is_empty()).then(|| {
+        h_flex()
+            .gap_1()
+            .flex_wrap()
+            .children(m.reactions.iter().enumerate().map(|(i, r)| {
+                let mine = r.by.iter().any(|b| b.eq_ignore_ascii_case(me));
+                let (this, msg, emoji) = (this.clone(), m.clone(), r.emoji.clone());
+                Button::new(SharedString::from(format!("reaction-{}-{i}", m.id)))
+                    .xsmall()
+                    .when(mine, |b| b.primary())
+                    .when(!mine, |b| b.ghost())
+                    .label(if r.by.len() > 1 {
+                        format!("{} {}", r.emoji, r.by.len())
+                    } else {
+                        r.emoji.clone()
+                    })
+                    .tooltip(r.by.iter().map(|b| local_part(b)).collect::<Vec<_>>().join(", "))
+                    .on_click(move |_, _, cx| {
+                        let _ = this.update(cx, |a, cx| a.toggle_reaction(&msg, &emoji, cx));
+                    })
+            }))
+    });
+    let show_seen = m.own && m.seen && !messages[ix + 1..].iter().any(|x| x.own && x.seen);
     let mut view = MessageView::new()
         .id(ElementId::NamedInteger("msg".into(), m.id as u64))
         .alignment(align)
-        .content(MessageContent::new().bubble(bubble).children(link_row))
+        .content(
+            MessageContent::new()
+                .bubble(bubble)
+                .children(link_row)
+                .children(reaction_row),
+        )
         .footer(
             MessageFooter::new().child(
                 h_flex()
@@ -2906,7 +3135,9 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
                         el.child(Icon::new(icon).xsmall().text_color(lock_color))
                     })
                     .when_some(lock_text, |el, t| el.child(div().text_color(lock_color).child(t)))
-                    .when(m.delayed && !m.own, |el| el.child("· delayed")),
+                    .when(m.delayed && !m.own, |el| el.child("· delayed"))
+                    .when(m.edited && !m.retracted, |el| el.child("· edited"))
+                    .when(show_seen, |el| el.child("· Seen")),
             ),
         );
     if !m.own {
@@ -2945,12 +3176,56 @@ fn render_message(messages: &[Message], ix: usize, is_room: bool, cx: &mut App) 
             )
         })
         .child(view)
-        .context_menu(move |menu, _, _| {
-            let body = body.clone();
-            menu.item(
-                PopupMenuItem::new("Copy Message")
-                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(body.clone()))),
-            )
+        .context_menu({
+            let m = m.clone();
+            move |menu, _, _| {
+                let mut menu = menu;
+                if m.retracted {
+                    let (this, id) = (this.clone(), m.id);
+                    return menu.item(PopupMenuItem::new("Delete for Me").on_click(move |_, _, cx| {
+                        let _ = this.update(cx, |a, cx| a.delete_message(id, false, cx));
+                    }));
+                }
+                {
+                    let (this, msg) = (this.clone(), m.clone());
+                    menu = menu.item(PopupMenuItem::new("Reply").on_click(move |_, window, cx| {
+                        let _ = this.update(cx, |a, cx| a.start_reply(msg.clone(), window, cx));
+                    }));
+                }
+                for emoji in QUICK_REACTIONS {
+                    let (this, msg) = (this.clone(), m.clone());
+                    menu = menu.item(PopupMenuItem::new(format!("React {emoji}")).on_click(move |_, _, cx| {
+                        let _ = this.update(cx, |a, cx| a.toggle_reaction(&msg, emoji, cx));
+                    }));
+                }
+                if m.attachment.is_none() {
+                    let body = body.clone();
+                    menu = menu.separator().item(
+                        PopupMenuItem::new("Copy Message")
+                            .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(body.clone()))),
+                    );
+                }
+                if m.own && m.attachment.is_none() {
+                    let (this, msg) = (this.clone(), m.clone());
+                    menu = menu.item(PopupMenuItem::new("Edit").on_click(move |_, window, cx| {
+                        let _ = this.update(cx, |a, cx| a.start_edit(msg.clone(), window, cx));
+                    }));
+                }
+                menu = menu.separator();
+                {
+                    let (this, id) = (this.clone(), m.id);
+                    menu = menu.item(PopupMenuItem::new("Delete for Me").on_click(move |_, _, cx| {
+                        let _ = this.update(cx, |a, cx| a.delete_message(id, false, cx));
+                    }));
+                }
+                if m.own {
+                    let (this, id) = (this.clone(), m.id);
+                    menu = menu.item(PopupMenuItem::new("Delete for Everyone").on_click(move |_, _, cx| {
+                        let _ = this.update(cx, |a, cx| a.delete_message(id, true, cx));
+                    }));
+                }
+                menu
+            }
         })
         .into_any_element()
 }

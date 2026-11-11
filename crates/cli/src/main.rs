@@ -99,7 +99,25 @@ enum Cmd {
         /// given, follows as a caption.
         #[arg(long, value_name = "PATH")]
         file: Option<std::path::PathBuf>,
+        /// Reply to this message (its id), quoting it.
+        #[arg(long, value_name = "ID")]
+        reply_to: Option<i64>,
     },
+    /// Replace the text of one of your messages (XEP-0308).
+    Edit {
+        id: i64,
+        /// The new text.
+        text: Vec<String>,
+    },
+    /// Delete a message on this device, or one of yours for everyone.
+    Delete {
+        id: i64,
+        /// Delete your message for everyone (XEP-0424).
+        #[arg(long)]
+        for_everyone: bool,
+    },
+    /// React to a message with emoji (XEP-0444); none removes your reactions.
+    React { id: i64, emojis: Vec<String> },
     /// Download a message's photo or file and print the message with its
     /// local path (`attachment.path`).
     Download {
@@ -801,6 +819,7 @@ async fn run(cli: Cli) -> Result<()> {
             plaintext,
             require_encryption,
             file,
+            reply_to,
         } => {
             let room = if room {
                 Some(true)
@@ -834,6 +853,7 @@ async fn run(cli: Cli) -> Result<()> {
                             body: text.join(" "),
                             room,
                             encryption,
+                            reply_to: None,
                         })
                         .await?;
                     print_message(fmt, &m);
@@ -853,8 +873,30 @@ async fn run(cli: Cli) -> Result<()> {
                     body,
                     room,
                     encryption,
+                    reply_to,
                 })
                 .await?;
+            print_message(fmt, &m);
+        }
+        Cmd::Edit { id, text } => {
+            let m: Message = client
+                .call(Request::Edit {
+                    id,
+                    body: text.join(" "),
+                })
+                .await?;
+            print_message(fmt, &m);
+        }
+        Cmd::Delete { id, for_everyone } => {
+            let m: Message = if for_everyone {
+                client.call(Request::Retract { id }).await?
+            } else {
+                client.call(Request::DeleteMessage { id }).await?
+            };
+            print_message(fmt, &m);
+        }
+        Cmd::React { id, emojis } => {
+            let m: Message = client.call(Request::React { id, emojis }).await?;
             print_message(fmt, &m);
         }
         Cmd::Download { id } => {
@@ -1384,6 +1426,7 @@ fn print_message(fmt: Format, m: &Message) {
                 None => "",
             };
             let body = match &m.attachment {
+                _ if m.retracted => "[deleted]".to_owned(),
                 Some(a) => format!(
                     "[file: {}] {}",
                     a.name,
@@ -1391,6 +1434,7 @@ fn print_message(fmt: Format, m: &Message) {
                         .clone()
                         .unwrap_or_else(|| format!("(agent-chat download {})", m.id))
                 ),
+                None if m.edited => format!("{} (edited)", m.body),
                 None => m.body.clone(),
             };
             println!(

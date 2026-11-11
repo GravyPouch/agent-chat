@@ -95,6 +95,29 @@ pub struct Message {
     /// A shared photo or file; `body` is then its link.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<Attachment>,
+    /// The sender corrected the text (XEP-0308); `body` is the latest version.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub edited: bool,
+    /// The sender deleted the message for everyone (XEP-0424); `body` is empty.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retracted: bool,
+    /// The local id of the message this one replies to (XEP-0461).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<i64>,
+    /// Emoji reactions (XEP-0444).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reactions: Vec<Reaction>,
+    /// Our message was seen by the recipient (XEP-0333; 1:1 chats).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub seen: bool,
+}
+
+/// One emoji on a message and who reacted with it: bare JIDs in 1:1 chats,
+/// `room/nick` in group chats.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reaction {
+    pub emoji: String,
+    pub by: Vec<String>,
 }
 
 /// A photo or file shared in a message: an XEP-0363 upload, linked with

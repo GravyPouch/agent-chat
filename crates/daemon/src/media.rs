@@ -329,8 +329,12 @@ pub async fn send_file(
         encrypted: encrypt_file,
         path: Some(local.to_string_lossy().into_owned()),
     };
-    let oob = (!encrypt_file).then(|| url.clone());
-    crate::xmpp::actions::send_message_with(core, handle, to, url, room, mode, oob, Some(attachment)).await
+    let extras = crate::xmpp::actions::SendExtras {
+        oob: (!encrypt_file).then(|| url.clone()),
+        attachment: Some(attachment),
+        reply_to: None,
+    };
+    crate::xmpp::actions::send_message_with(core, handle, to, url, room, mode, extras).await
 }
 
 // ------------------------------------------------------------- receiving

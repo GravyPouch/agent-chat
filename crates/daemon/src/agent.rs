@@ -538,6 +538,11 @@ mod tests {
             own,
             encryption: None,
             attachment: None,
+            edited: false,
+            retracted: false,
+            reply_to: None,
+            reactions: vec![],
+            seen: false,
         }
     }
 

@@ -23,7 +23,8 @@ gpui_kit::assets::icon_assets!(
         ShieldAlert,
         UserPlus,
         MessageSquare,
-        Paperclip
+        Paperclip,
+        Reply
     ]
 );
 

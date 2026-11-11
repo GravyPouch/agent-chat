@@ -176,7 +176,8 @@ fn classify_inner(
     if m.type_ != MessageType::Groupchat && parse_invite(&m).is_some() {
         return Classified::Ignore("invitation");
     }
-    let has_body = body_of(&m).is_some_and(|b| !b.is_empty());
+    // Retractions, reactions and markers have no body but act on a message.
+    let has_body = body_of(&m).is_some_and(|b| !b.is_empty()) || action_of(&m).is_some();
     let encrypted = has_omemo(&m);
 
     let stamp = forwarded_delay.or_else(|| find_payload::<Delay>(&m).map(|d| d.stamp.0.to_utc()));
@@ -441,7 +442,147 @@ pub async fn on_message(core: &Arc<Core>, handle: &SessionHandle, m: Message) {
     }
 }
 
+/// A message that acts on an earlier one.
+#[derive(Debug, Clone, PartialEq)]
+enum Action {
+    /// XEP-0308: new text for the message with this id.
+    Correct(String),
+    /// XEP-0424: deleted for everyone.
+    Retract(String),
+    /// XEP-0444: the sender's reactions are now these.
+    React(String, Vec<String>),
+    /// XEP-0333: the sender has seen up to this message.
+    Displayed(String),
+}
+
+fn child<'a>(m: &'a Message, name: &str, ns: &str) -> Option<&'a Element> {
+    m.payloads.iter().find(|e| e.is(name, ns))
+}
+
+fn action_of(m: &Message) -> Option<Action> {
+    use crate::xmpp::actions::{NS_CORRECT, NS_MARKERS, NS_REACTIONS, NS_RETRACT};
+    if let Some(r) = child(m, "replace", NS_CORRECT).and_then(|e| e.attr("id")) {
+        return Some(Action::Correct(r.to_owned()));
+    }
+    if let Some(r) = child(m, "retract", NS_RETRACT).and_then(|e| e.attr("id")) {
+        return Some(Action::Retract(r.to_owned()));
+    }
+    if let Some(e) = child(m, "reactions", NS_REACTIONS)
+        && let Some(id) = e.attr("id")
+    {
+        let emojis = e
+            .children()
+            .filter(|r| r.is("reaction", NS_REACTIONS))
+            .map(|r| r.text().trim().to_owned())
+            .filter(|t| !t.is_empty() && t.chars().count() <= 8)
+            .collect();
+        return Some(Action::React(id.to_owned(), emojis));
+    }
+    if let Some(r) = child(m, "displayed", NS_MARKERS).and_then(|e| e.attr("id")) {
+        return Some(Action::Displayed(r.to_owned()));
+    }
+    None
+}
+
+/// The same author: bare JIDs in chats, `room/nick` in group chats.
+fn same_sender(a: &str, b: &str, groupchat: bool) -> bool {
+    if groupchat {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        let bare = |j: &str| j.split('/').next().unwrap_or("").to_ascii_lowercase();
+        bare(a) == bare(b)
+    }
+}
+
+async fn apply_action(core: &Arc<Core>, handle: &SessionHandle, p: Parsed, action: Action) -> anyhow::Result<()> {
+    let groupchat = p.kind == MessageKind::Groupchat;
+    // Carbons and the archive repeat actions: apply each once.
+    if let Some(key) = p.origin_id.as_ref().or(p.xmpp_id.as_ref()).or(p.stanza_id.as_ref())
+        && !core
+            .store()
+            .apply_once(&format!("{}|{}|{key}", p.conversation.to_lowercase(), p.sender))?
+    {
+        return Ok(());
+    }
+    let target_ref = match &action {
+        Action::Correct(r) | Action::Retract(r) | Action::React(r, _) | Action::Displayed(r) => r.clone(),
+    };
+    let Some(target) = core.store().find_target(&p.conversation, groupchat, &target_ref)? else {
+        tracing::debug!(?action, "action for an unknown message");
+        return Ok(());
+    };
+    match action {
+        Action::Displayed(_) => {
+            if !groupchat && target.own && !p.own {
+                core.store().mark_seen(&p.conversation, target.id)?;
+                core.emit(Event::MessagesSeen {
+                    conversation: p.conversation.clone(),
+                    up_to_id: target.id,
+                });
+            }
+            return Ok(());
+        }
+        Action::Correct(_) => {
+            if !same_sender(&target.from, &p.sender, groupchat) {
+                return Ok(());
+            }
+            let body = if has_omemo(&p.message) {
+                match crate::omemo::xmpp::decrypt_message(core, handle, &p).await {
+                    Some((body, Some(info))) if info.error.is_none() => body,
+                    _ => return Ok(()),
+                }
+            } else {
+                body_of(&p.message).cloned().unwrap_or_default()
+            };
+            let body = strip_reply_fallback(&p.message, body);
+            if body.trim().is_empty() {
+                return Ok(());
+            }
+            core.store().edit_message(target.id, &body)?;
+        }
+        Action::Retract(_) => {
+            if !same_sender(&target.from, &p.sender, groupchat) {
+                return Ok(());
+            }
+            core.store().retract_message(target.id)?;
+        }
+        Action::React(_, emojis) => {
+            core.store().set_reactions(target.id, &p.sender, &emojis)?;
+        }
+    }
+    if let Some(m) = core.store().get_message(target.id)? {
+        core.emit(Event::MessageUpdated(m));
+    }
+    Ok(())
+}
+
+/// XEP-0461 + XEP-0428: drop the quoted part other clients see.
+fn strip_reply_fallback(m: &Message, body: String) -> String {
+    use crate::xmpp::actions::{NS_FALLBACK, NS_REPLY};
+    let range = m
+        .payloads
+        .iter()
+        .filter(|e| e.is("fallback", NS_FALLBACK) && e.attr("for") == Some(NS_REPLY))
+        .find_map(|f| f.get_child("body", NS_FALLBACK))
+        .and_then(|b| {
+            Some((
+                b.attr("start")?.parse::<usize>().ok()?,
+                b.attr("end")?.parse::<usize>().ok()?,
+            ))
+        });
+    match range {
+        Some((start, end)) if start < end && end <= body.chars().count() => {
+            let chars: Vec<char> = body.chars().collect();
+            chars[..start].iter().chain(chars[end..].iter()).collect::<String>()
+        }
+        _ => body,
+    }
+}
+
 async fn store_parsed(core: &Arc<Core>, handle: &SessionHandle, p: Parsed) -> anyhow::Result<()> {
+    if let Some(action) = action_of(&p.message) {
+        return apply_action(core, handle, p, action).await;
+    }
     // Deduplicate BEFORE decrypting: carbons and MAM replay the same OMEMO
     // ciphertext, and decrypting it twice would fail or advance the ratchet.
     let duplicate = core.store().find_duplicate(&DedupeKeys {
@@ -469,7 +610,24 @@ async fn store_parsed(core: &Arc<Core>, handle: &SessionHandle, p: Parsed) -> an
     } else {
         (body_of(&p.message).cloned().unwrap_or_default(), None)
     };
-    core.store_message(&new_message(&p, body, encryption))?;
+    // XEP-0461: a reply to an earlier message.
+    let reply_ref = child(&p.message, "reply", crate::xmpp::actions::NS_REPLY)
+        .and_then(|e| e.attr("id"))
+        .map(str::to_owned);
+    let mut reply_to = None;
+    let body = match reply_ref {
+        Some(r) => {
+            reply_to = core
+                .store()
+                .find_target(&p.conversation, p.kind == MessageKind::Groupchat, &r)?
+                .map(|t| t.id);
+            strip_reply_fallback(&p.message, body)
+        }
+        None => body,
+    };
+    let mut m = new_message(&p, body, encryption);
+    m.reply_to = reply_to;
+    core.store_message(&m)?;
     Ok(())
 }
 
@@ -490,6 +648,7 @@ fn new_message(p: &Parsed, body: String, encryption: Option<agent_chat_proto::mo
         attachment: agent_chat_proto::model::Attachment::from_body(&body, oob_url(&p.message).as_deref()),
         body,
         encryption,
+        reply_to: None,
     }
 }
 
