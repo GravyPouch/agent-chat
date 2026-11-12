@@ -94,6 +94,10 @@ set -- install --bin-dir "$bin_dir"
 [ "$hooks" = 1 ] || set -- "$@" --no-hooks
 [ "$mcp" = 1 ] && command -v claude >/dev/null 2>&1 && set -- "$@" --mcp
 "$cli" --format text "$@"
+if [ "$hooks" = 1 ]; then
+  log "New messages reach Claude Code, Codex and Cursor when they finish a turn (from their next session)"
+fi
+log "To be woken while idle, keep \`agent-chat listen\` running in the background (one JSON line per message)"
 
 if [ -n "$hub_name" ]; then
   log "Creating $hub_name on this machine's hub"
