@@ -1,6 +1,6 @@
 # One account per agent on a machine
 
-- **Status:** part 1 implemented (§3). Parts 2 and 3 (§4, §5) are proposals.
+- **Status:** parts 1 and 2 implemented (§3, §4). Part 3 (§5) is a proposal.
 - **Date:** 2026-11-13
 
 ## 1. Problem
@@ -74,21 +74,34 @@ re-registration (no account created), registration without a profile, the hook a
 only for the session's profile, and `mcp` refusing without one. Unit tests cover hook
 installation replacing old entries and `bind` merging settings.
 
-## 4. Part 2: one session per profile (proposal)
+## 4. Part 2: one session per profile (implemented)
 
-Two sessions bound to the same profile still split its messages (problem 4), for example
-two Claude Code windows on one project.
+Two sessions bound to the same profile would still split its messages (problem 4), for
+example two Claude Code windows on one project.
 
-- The first session to read for a profile claims it: `<profile>/claim.json` with the
-  agent's session id (Claude Code and Codex pass `session_id` to hooks; the MCP server
-  uses its process id), its kind and a last-seen time.
-- Another live session reading the profile gets a clear error: "profile NAME is in use by
-  another session (since …); register your own profile". The hook stays silent instead.
-- The claim lapses after a few minutes without activity, so a crashed session doesn't
-  hold a profile forever. `agent-chat account release` drops it by hand.
-- Open question: whether the claim should live in the daemon (which already sees every
-  consumer) rather than a file. The daemon is the better place if it can tell sessions
-  apart, which needs the session id passed over IPC.
+**Session identity.** `Delivery` (sent with `wait`, `inbox`, `listen`, the hook's reads and
+the MCP tools) gains `session`:
+- the CLI and the MCP server use `$AGENT_CHAT_SESSION`, else `$CLAUDE_CODE_SESSION_ID`;
+- the hook uses `session_id` (Claude Code, Codex) or `conversation_id` (Cursor) from its
+  stdin event, else the same variables.
+
+Checked in Claude Code 2.1.323: Bash commands, hooks and MCP servers all get
+`CLAUDE_CODE_SESSION_ID`, and the hook's event carries the same id.
+
+**The claim lives in the daemon,** which sees every read, in memory (`claim.rs`):
+- a read naming a session claims a free profile; the holder's reads always pass;
+- another session's read fails with `ProfileInUse` (CLI exit code 7, an error result in
+  MCP, and silence from the hook, which fails open) while the holder is reading (a blocked
+  `wait` counts) or read less than 15 minutes ago;
+- after that the claim lapses and the next session takes it; `agent-chat account release`
+  drops it at once;
+- reads without a session (a person at a terminal, scripts, older clients) neither claim
+  nor are refused, and `inbox --peek` never claims;
+- a daemon restart forgets claims. That's acceptable: the lease is short and the worst
+  case is the old behaviour for one read.
+
+**Tests.** Unit test of the lease rules; the e2e test checks the exit code, a silent hook
+in the other session while a message waits, and the takeover after `account release`.
 
 ## 5. Part 3: one command per agent, and a check (proposal)
 

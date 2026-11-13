@@ -168,8 +168,8 @@ fn require(args: &Value, key: &str) -> Result<String, String> {
 async fn call_tool(client: &IpcClient, consumer: &str, name: &str, args: &Value) -> Result<Value, String> {
     let delivery = Delivery {
         consumer: consumer.to_owned(),
-        include_own: false,
-        from_start: false,
+        session: agent_chat_proto::paths::session_from_env(),
+        ..Delivery::default()
     };
     let remote = |e: CallError| e.to_string();
     let request = match name {
@@ -342,8 +342,7 @@ async fn unread_note(client: &IpcClient, consumer: &str, tool: &str) -> Option<S
         .call(Request::Inbox {
             delivery: Delivery {
                 consumer: consumer.to_owned(),
-                include_own: false,
-                from_start: false,
+                ..Delivery::default()
             },
             filter: Filter::default(),
             peek: true,

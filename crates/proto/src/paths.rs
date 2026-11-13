@@ -11,6 +11,19 @@ use anyhow::{Context, Result, bail};
 pub const DEFAULT_PROFILE: &str = "default";
 pub const HOME_ENV: &str = "AGENT_CHAT_HOME";
 pub const PROFILE_ENV: &str = "AGENT_CHAT_PROFILE";
+/// Names the agent session reading a profile (see [`session_from_env`]).
+pub const SESSION_ENV: &str = "AGENT_CHAT_SESSION";
+
+/// The agent session this process runs in: `$AGENT_CHAT_SESSION`, else the
+/// id Claude Code gives its commands, hooks and MCP servers. `None` outside
+/// a known agent session: such reads don't claim the profile.
+pub fn session_from_env() -> Option<String> {
+    [SESSION_ENV, "CLAUDE_CODE_SESSION_ID"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .map(|s| s.trim().to_owned())
+        .find(|s| !s.is_empty())
+}
 
 /// Unix socket paths are limited to ~104 bytes on macOS.
 const MAX_SOCKET_PATH: usize = 100;

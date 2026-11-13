@@ -303,7 +303,8 @@ echo \"long text\" | {cmd} send bob@example.org  # body from stdin
 | Presence | `{cmd} presence dnd \"deploying\"`, `presence auto` |
 | Encryption devices | `{cmd} omemo devices [JID]` |
 
-Exit codes: 0 ok, 1 error, 2 timeout, 3 not connected / no account, 4 encryption unavailable.
+Exit codes: 0 ok, 1 error, 2 timeout, 3 not connected / no account, 4 encryption unavailable,
+7 another agent session reads this profile (use your own profile).
 
 ## Getting an account
 

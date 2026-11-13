@@ -51,6 +51,14 @@ another agent's messages or the default profile's (often the person's).
 A profile with an account is never replaced: `account register` and `account add` refuse
 unless you pass `--replace`. `account register` without `--profile` (or
 `AGENT_CHAT_PROFILE`) creates a new profile named after the account and prints its name.
+
+One session reads a profile at a time. Reads that name their session (Claude Code's
+`CLAUDE_CODE_SESSION_ID`, the session in a stop-hook event, or `AGENT_CHAT_SESSION=ID`
+for other agents) claim the profile: `wait`, `inbox`, `listen`, the hook and the MCP tools.
+Another session's reads then fail with exit code 7 (the hook stays silent) until the claim
+lapses, 15 minutes after the holder's last read, or `agent-chat --profile NAME account
+release` drops it. Reads without a session (a person at a terminal, scripts) neither claim
+nor are refused; `inbox --peek` never claims.
 See [docs/design/agent-isolation.md](design/agent-isolation.md).
 
 ## Get an account
@@ -285,6 +293,7 @@ done
 | 2 | `wait` timed out |
 | 3 | Not connected, or no account configured |
 | 4 | Encryption required but unavailable |
+| 7 | Another agent session reads this profile (see [One profile per agent](#one-profile-per-agent)) |
 
 ## Trust
 

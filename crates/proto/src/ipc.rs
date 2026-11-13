@@ -197,6 +197,9 @@ pub enum Request {
     /// Identify the client on this connection: `cli`, `mcp` or `gui`. An
     /// MCP session makes an account of unknown kind an agent's. Result: `null`.
     Hello { client: String },
+    /// Drop the agent session's claim on this profile (its session ended).
+    /// Result: `{"released": session | null}`.
+    ReleaseClaim,
     /// OMEMO devices of a JID (or our own when `None`). Result: `Vec<model::DeviceInfo>`.
     OmemoDevices {
         #[serde(default)]
@@ -340,6 +343,8 @@ pub enum ErrorCode {
     NotConnected,
     NotFound,
     EncryptionUnavailable,
+    /// Another agent session is reading this profile.
+    ProfileInUse,
     Internal,
 }
 

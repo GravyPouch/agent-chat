@@ -588,6 +588,10 @@ pub struct Delivery {
     /// instead of "now".
     #[serde(default)]
     pub from_start: bool,
+    /// The agent session reading (e.g. Claude Code's session id). One
+    /// session at a time reads a profile; `None` reads without claiming.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 impl Default for Delivery {
@@ -596,6 +600,7 @@ impl Default for Delivery {
             consumer: "default".into(),
             include_own: false,
             from_start: false,
+            session: None,
         }
     }
 }

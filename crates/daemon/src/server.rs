@@ -154,6 +154,12 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             require_trusted,
             no_typing,
         } => {
+            // Peeking takes nothing from anyone, so it needs no claim.
+            let _claim = if peek {
+                None
+            } else {
+                Some(crate::claim::enter(core, &delivery)?)
+            };
             crate::agent::note_consumer(core);
             let msgs = {
                 let store = core.store();
@@ -179,6 +185,7 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
             require_trusted,
             no_typing,
         } => {
+            let _claim = crate::claim::enter(core, &delivery)?;
             let m = wait(core, &delivery, &filter, timeout_secs, require_trusted).await?;
             if let Some(m) = &m
                 && !no_typing
@@ -336,6 +343,7 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
         }
         // Handled per connection in `handle_connection`.
         Request::Hello { .. } => Ok(Value::Null),
+        Request::ReleaseClaim => json(serde_json::json!({ "released": core.claim().release() })),
         Request::OmemoDevices { jid } => json(crate::omemo::xmpp::list_devices(core, jid).await?),
         Request::OmemoSetTrust {
             jid,

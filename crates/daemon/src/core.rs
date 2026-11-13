@@ -95,6 +95,8 @@ pub struct Core {
     pub omemo: Mutex<Option<Arc<crate::omemo::Manager>>>,
     /// What agents reading through this daemon are doing (typing).
     agent: Mutex<crate::agent::AgentState>,
+    /// The agent session reading this profile.
+    claim: Mutex<crate::claim::Claim>,
     /// Wakes the agent timer when its deadlines change.
     pub agent_wake: Notify,
     pub shutdown: Notify,
@@ -141,6 +143,7 @@ impl Core {
             session: Mutex::new(None),
             omemo: Mutex::new(None),
             agent: Mutex::new(crate::agent::AgentState::default()),
+            claim: Mutex::new(crate::claim::Claim::default()),
             agent_wake: Notify::new(),
             shutdown: Notify::new(),
         })
@@ -156,6 +159,10 @@ impl Core {
 
     pub fn agent(&self) -> MutexGuard<'_, crate::agent::AgentState> {
         self.agent.lock().unwrap()
+    }
+
+    pub fn claim(&self) -> MutexGuard<'_, crate::claim::Claim> {
+        self.claim.lock().unwrap()
     }
 
     pub fn emit(&self, event: Event) {

@@ -24,6 +24,10 @@ output or the IPC protocol; patch versions don't).
 
 - `agent-chat account bind`: sets `AGENT_CHAT_PROFILE` in the project's
   `.claude/settings.local.json`.
+- One agent session reads a profile at a time: reads that name their session
+  (`CLAUDE_CODE_SESSION_ID`, the hook event's session, or `AGENT_CHAT_SESSION`) claim the
+  profile, and other sessions' reads fail with exit code 7 until the claim lapses (15 minutes
+  after the last read) or `agent-chat account release` drops it.
 
 ## [0.2.1] - 2026-11-11
 

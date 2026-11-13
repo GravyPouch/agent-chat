@@ -97,7 +97,7 @@ pub fn reason(messages: &[Message]) -> Option<String> {
 
 /// Read the unread messages of `consumers`, mark them read, merged and
 /// oldest first. Never starts the daemon: no daemon, no messages.
-async fn take_unread(profile: &Profile, consumers: &[String]) -> Result<Vec<Message>> {
+async fn take_unread(profile: &Profile, consumers: &[String], session: Option<String>) -> Result<Vec<Message>> {
     let client = IpcClient::connect(&profile.socket_path()).await?;
     // Only an agent's account: the hook runs in every session of these
     // agents, and a person's messages are for the person (reading them would
@@ -110,10 +110,11 @@ async fn take_unread(profile: &Profile, consumers: &[String]) -> Result<Vec<Mess
     for (i, consumer) in consumers.iter().enumerate() {
         let msgs: Vec<Message> = client
             .call(Request::Inbox {
+                // Another session's profile: refused, so nothing to do.
                 delivery: Delivery {
                     consumer: consumer.clone(),
-                    include_own: false,
-                    from_start: false,
+                    session: session.clone(),
+                    ..Delivery::default()
                 },
                 filter: Filter::default(),
                 peek: false,
@@ -133,8 +134,8 @@ async fn take_unread(profile: &Profile, consumers: &[String]) -> Result<Vec<Mess
 /// `agent-chat hook stop`: print the agent's hook output. Fails open: any
 /// error prints "nothing to do", so a broken setup never traps the agent.
 pub async fn stop(profile: &Profile, agent: Agent, consumers: &[String]) -> Value {
-    drain_stdin();
-    let messages = tokio::time::timeout(Duration::from_secs(5), take_unread(profile, consumers))
+    let session = session_of(&read_stdin()).or_else(agent_chat_proto::paths::session_from_env);
+    let messages = tokio::time::timeout(Duration::from_secs(5), take_unread(profile, consumers, session))
         .await
         .ok()
         .and_then(Result::ok)
@@ -144,15 +145,28 @@ pub async fn stop(profile: &Profile, agent: Agent, consumers: &[String]) -> Valu
 
 /// The hook in a session that names no profile: nothing to do.
 pub fn unbound(agent: Agent) -> Value {
-    drain_stdin();
+    read_stdin();
     agent.output(None)
 }
 
-/// Drain the event the agent sends on stdin; we don't need it.
-fn drain_stdin() {
+/// The event the agent sends on stdin (read whole, so it never blocks).
+fn read_stdin() -> Value {
+    let mut s = String::new();
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+        let _ = std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut s);
     }
+    serde_json::from_str(&s).unwrap_or(Value::Null)
+}
+
+/// The session in a stop-hook event: Claude Code's and Codex's
+/// `session_id`, Cursor's `conversation_id`.
+fn session_of(event: &Value) -> Option<String> {
+    ["session_id", "conversation_id"]
+        .iter()
+        .filter_map(|k| event[*k].as_str())
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 // ------------------------------------------------------------ installing

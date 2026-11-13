@@ -31,6 +31,8 @@ impl Env {
             .env("AGENT_CHAT_HOME", self.home.path())
             .env_remove("AGENT_CHAT_PASSWORD")
             .env_remove("AGENT_CHAT_PROFILE")
+            .env_remove("AGENT_CHAT_SESSION")
+            .env_remove("CLAUDE_CODE_SESSION_ID")
             .env_remove("AGENT_CHAT_CONSUMER")
             .env_remove("AGENT_CHAT_HUB_CONFIG")
             .stdin(Stdio::null());
@@ -600,6 +602,53 @@ fn account_register_solves_the_hubs_proof_of_work() {
     );
     let mcp = env.run(&["mcp"]);
     assert_eq!(mcp.status.code(), Some(3), "MCP without a profile refuses");
+
+    // One session reads a profile at a time.
+    let inbox = |session: &str| {
+        env.cmd(&["--profile", "agent", "inbox"])
+            .env("AGENT_CHAT_SESSION", session)
+            .output()
+            .unwrap()
+    };
+    assert!(inbox("session-1").status.success());
+    let refused = inbox("session-2");
+    assert_eq!(refused.status.code(), Some(7));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("another agent session"));
+    // The hook in another session stays silent, even with a message waiting.
+    env.json(&["--profile", "second-bot", "send", &jid, "still for session 1"]);
+    let hook_in = |session: &str| {
+        let mut child = env
+            .cmd(&["hook", "stop", "--agent", "claude"])
+            .env("AGENT_CHAT_PROFILE", "agent")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        let event = json!({"session_id": session, "hook_event_name": "Stop"}).to_string();
+        child.stdin.take().unwrap().write_all(event.as_bytes()).unwrap();
+        serde_json::from_slice::<Value>(&child.wait_with_output().unwrap().stdout).unwrap()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        assert_eq!(hook_in("session-2"), json!({}));
+        let peek = env.json(&["--profile", "agent", "inbox", "--peek"]);
+        if !peek.as_array().unwrap().is_empty() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "second message never arrived");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert_eq!(hook_in("session-2"), json!({}));
+    // Released, the other session takes over.
+    let released = env.json(&["--profile", "agent", "account", "release"]);
+    assert_eq!(released["released"], "session-1");
+    let pushed = hook_in("session-2");
+    assert!(
+        pushed["reason"].as_str().unwrap().contains("still for session 1"),
+        "{pushed}"
+    );
+    assert_eq!(inbox("session-1").status.code(), Some(7));
 }
 
 /// A hub provisioning token: `account register --invite-env` sends it with

@@ -2,7 +2,8 @@
 //!
 //! Agent-facing commands print JSON to stdout (one compact document per
 //! line). Exit codes: 0 ok, 1 error, 2 timeout, 3 not connected / no
-//! account, 4 encryption unavailable.
+//! account, 4 encryption unavailable, 7 profile read by another agent
+//! session.
 
 mod hooks;
 mod install;
@@ -304,6 +305,7 @@ impl ReadArgs {
             consumer: self.consumer.clone(),
             include_own: self.include_own,
             from_start: self.from_start,
+            session: agent_chat_proto::paths::session_from_env(),
         }
     }
 
@@ -398,6 +400,10 @@ enum AccountCmd {
         #[arg(long)]
         replace: bool,
     },
+    /// Let another agent session read this profile: drops the claim of the
+    /// session that last read it (one session reads a profile at a time;
+    /// a claim otherwise lapses 15 minutes after its last read).
+    Release,
     /// Make the agent sessions started in a project use this profile: sets
     /// AGENT_CHAT_PROFILE in the project's Claude Code settings
     /// (.claude/settings.local.json), which the stop hook and the MCP server
@@ -558,6 +564,7 @@ fn main() -> ExitCode {
                 Some(CallError::Remote(r)) => match r.code {
                     ErrorCode::NotConnected | ErrorCode::NoAccount => 3,
                     ErrorCode::EncryptionUnavailable => 4,
+                    ErrorCode::ProfileInUse => 7,
                     _ => 1,
                 },
                 Some(CallError::Disconnected) => 3,
@@ -1165,6 +1172,16 @@ async fn run(cli: Cli) -> Result<()> {
         Cmd::Account(AccountCmd::Show) => {
             let status: StatusInfo = client.call(Request::Status).await?;
             print_status(fmt, &status);
+        }
+        Cmd::Account(AccountCmd::Release) => {
+            let v = client.call_value(Request::ReleaseClaim).await?;
+            match fmt {
+                Format::Json => print_json(&v),
+                Format::Text => match v["released"].as_str() {
+                    Some(s) => println!("Released profile {} (was read by session {s})", profile.name),
+                    None => println!("Profile {} wasn't claimed", profile.name),
+                },
+            }
         }
         Cmd::Account(AccountCmd::Kind { kind }) => {
             let status: StatusInfo = match kind {

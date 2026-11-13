@@ -554,8 +554,7 @@ impl Store {
     pub fn ensure_consumer(&self, name: &str) -> Result<()> {
         self.consumer_start(&Delivery {
             consumer: name.to_owned(),
-            include_own: false,
-            from_start: false,
+            ..Delivery::default()
         })?;
         Ok(())
     }
@@ -791,8 +790,7 @@ mod tests {
     fn delivery(name: &str) -> Delivery {
         Delivery {
             consumer: name.into(),
-            include_own: false,
-            from_start: false,
+            ..Delivery::default()
         }
     }
 
