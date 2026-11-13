@@ -7,8 +7,12 @@
 //! with messages waiting, even if it forgot to check.
 //!
 //! `agent-chat install` registers the hook for each of these agents it finds
-//! in the home directory. It only acts for a profile used by an agent
-//! (`agent-chat account kind`), never a person's.
+//! in the home directory. The hook is the same for every session, so it
+//! reads for the profile the session names in `AGENT_CHAT_PROFILE` (set per
+//! project by `agent-chat account bind`) and does nothing without one: two
+//! agents on one machine never take each other's messages. It also only acts
+//! for a profile used by an agent (`agent-chat account kind`), never a
+//! person's.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -129,16 +133,26 @@ async fn take_unread(profile: &Profile, consumers: &[String]) -> Result<Vec<Mess
 /// `agent-chat hook stop`: print the agent's hook output. Fails open: any
 /// error prints "nothing to do", so a broken setup never traps the agent.
 pub async fn stop(profile: &Profile, agent: Agent, consumers: &[String]) -> Value {
-    // Drain the event the agent sends on stdin; we don't need it.
-    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
-    }
+    drain_stdin();
     let messages = tokio::time::timeout(Duration::from_secs(5), take_unread(profile, consumers))
         .await
         .ok()
         .and_then(Result::ok)
         .unwrap_or_default();
     agent.output(reason(&messages).as_deref())
+}
+
+/// The hook in a session that names no profile: nothing to do.
+pub fn unbound(agent: Agent) -> Value {
+    drain_stdin();
+    agent.output(None)
+}
+
+/// Drain the event the agent sends on stdin; we don't need it.
+fn drain_stdin() {
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+    }
 }
 
 // ------------------------------------------------------------ installing
@@ -151,50 +165,32 @@ fn shell_quote(s: &str) -> String {
     }
 }
 
-fn profile_args(profile: &str) -> String {
-    if profile == agent_chat_proto::paths::DEFAULT_PROFILE {
-        String::new()
-    } else {
-        format!(" --profile {}", shell_quote(profile))
-    }
+/// The hook names no profile: each session's AGENT_CHAT_PROFILE picks it.
+fn hook_command(cli: &str, agent: Agent) -> String {
+    format!("{} hook stop --agent {}", shell_quote(cli), agent.name())
 }
 
-fn hook_command(cli: &str, profile: &str, agent: Agent) -> String {
-    format!(
-        "{}{} hook stop --agent {}",
-        shell_quote(cli),
-        profile_args(profile),
-        agent.name()
-    )
-}
-
-/// Whether `command` is our stop hook (for `profile`, or any with `None`).
-fn is_ours(command: &str, profile: Option<&str>) -> bool {
-    if !(command.contains("agent-chat") && command.contains(" hook stop --agent ")) {
-        return false;
-    }
-    match profile {
-        None => true,
-        Some(p) if p == agent_chat_proto::paths::DEFAULT_PROFILE => !command.contains(" --profile "),
-        Some(p) => command.contains(&format!("{} hook stop", profile_args(p))),
-    }
+/// Whether `command` is our stop hook (any version, with or without a
+/// `--profile`).
+fn is_ours(command: &str) -> bool {
+    command.contains("agent-chat") && command.contains(" hook stop --agent ")
 }
 
 /// Remove our entries from a stop-hook list; returns how many.
-fn strip(list: &mut Vec<Value>, agent: Agent, profile: Option<&str>) -> usize {
+fn strip(list: &mut Vec<Value>, agent: Agent) -> usize {
     let before = list.len();
     match agent {
         // [{"hooks": [{"type": "command", "command": ...}]}]
         Agent::Claude | Agent::Codex => {
             for group in list.iter_mut() {
                 if let Some(hooks) = group.get_mut("hooks").and_then(Value::as_array_mut) {
-                    hooks.retain(|h| !h["command"].as_str().is_some_and(|c| is_ours(c, profile)));
+                    hooks.retain(|h| !h["command"].as_str().is_some_and(is_ours));
                 }
             }
             list.retain(|g| g.get("hooks").and_then(Value::as_array).is_none_or(|h| !h.is_empty()));
         }
         // [{"command": ...}]
-        Agent::Cursor => list.retain(|h| !h["command"].as_str().is_some_and(|c| is_ours(c, profile))),
+        Agent::Cursor => list.retain(|h| !h["command"].as_str().is_some_and(is_ours)),
     }
     before - list.len()
 }
@@ -223,7 +219,7 @@ fn write_json(path: &Path, value: &Value) -> Result<()> {
 }
 
 /// Add (or replace) the stop hook in one agent's config.
-fn install_one(home: &Path, agent: Agent, cli: &str, profile: &str) -> Result<PathBuf> {
+fn install_one(home: &Path, agent: Agent, cli: &str) -> Result<PathBuf> {
     let path = agent.hooks_file(home);
     let mut doc = read_json(&path)?;
     let root = doc
@@ -240,8 +236,10 @@ fn install_one(home: &Path, agent: Agent, cli: &str, profile: &str) -> Result<Pa
         .or_insert_with(|| json!([]))
         .as_array_mut()
         .ok_or_else(|| anyhow!("`hooks.{}` in {} is not a list", event(agent), path.display()))?;
-    strip(list, agent, Some(profile));
-    let command = hook_command(cli, profile, agent);
+    // Replaces every older entry too, including per-profile ones (which
+    // ran in every session, whatever agent it was).
+    strip(list, agent);
+    let command = hook_command(cli, agent);
     list.push(match agent {
         Agent::Claude | Agent::Codex => {
             json!({"hooks": [{"type": "command", "command": command, "timeout": 15}]})
@@ -255,19 +253,39 @@ fn install_one(home: &Path, agent: Agent, cli: &str, profile: &str) -> Result<Pa
 
 /// Register the stop hook with every agent that has a config directory under
 /// `home`. Per agent: the file written, or the error.
-pub fn install(home: &Path, cli: &str, profile: &str) -> Value {
+pub fn install(home: &Path, cli: &str) -> Value {
     let mut out = serde_json::Map::new();
     for agent in Agent::ALL {
         if !agent.dir(home).is_dir() {
             continue;
         }
-        let v = match install_one(home, agent, cli, profile) {
+        let v = match install_one(home, agent, cli) {
             Ok(path) => json!({"installed": path}),
             Err(e) => json!({"installed": false, "error": format!("{e:#}")}),
         };
         out.insert(agent.name().to_owned(), v);
     }
     Value::Object(out)
+}
+
+/// `agent-chat account bind`: make Claude Code sessions in `dir` use
+/// `profile` by setting AGENT_CHAT_PROFILE in the project's local settings
+/// (not checked in; Claude Code passes `env` to hooks and MCP servers).
+pub fn bind(dir: &Path, profile: &str) -> Result<PathBuf> {
+    let claude = dir.join(".claude");
+    std::fs::create_dir_all(&claude).with_context(|| format!("creating {}", claude.display()))?;
+    let path = claude.join("settings.local.json");
+    let mut doc = read_json(&path)?;
+    let root = doc
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("{} is not a JSON object", path.display()))?;
+    root.entry("env")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("`env` in {} is not an object", path.display()))?
+        .insert(agent_chat_proto::paths::PROFILE_ENV.to_owned(), json!(profile));
+    write_json(&path, &doc)?;
+    Ok(path)
 }
 
 /// Remove every agent-chat stop hook from the agents' configs.
@@ -282,7 +300,7 @@ pub fn uninstall(home: &Path) -> Vec<PathBuf> {
         else {
             continue;
         };
-        if strip(list, agent, None) > 0 {
+        if strip(list, agent) > 0 {
             if list.is_empty()
                 && let Some(h) = doc["hooks"].as_object_mut()
             {
@@ -317,19 +335,20 @@ mod tests {
         let home = home.path();
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         std::fs::create_dir_all(home.join(".cursor")).unwrap();
+        // An older per-profile hook, which ran in every session.
         std::fs::write(
             home.join(".claude/settings.json"),
-            r#"{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}"#,
+            r#"{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]},
+               {"hooks":[{"type":"command","command":"/old/agent-chat --profile bot1 hook stop --agent claude"}]}]}}"#,
         )
         .unwrap();
 
         let cli = "/home/me/.local/bin/agent-chat";
-        let out = install(home, cli, "default");
+        let out = install(home, cli);
         assert!(out["claude"]["installed"].is_string());
         assert!(out["cursor"]["installed"].is_string());
         assert!(out.get("codex").is_none(), "no ~/.codex, so no Codex hook");
-        install(home, cli, "default");
-        install(home, cli, "bot1");
+        install(home, cli);
 
         let claude = read_json(&home.join(".claude/settings.json")).unwrap();
         assert_eq!(claude["model"], "opus");
@@ -342,15 +361,11 @@ mod tests {
             .collect();
         assert_eq!(
             cmds,
-            [
-                "say done",
-                "/home/me/.local/bin/agent-chat hook stop --agent claude",
-                "/home/me/.local/bin/agent-chat --profile bot1 hook stop --agent claude",
-            ]
+            ["say done", "/home/me/.local/bin/agent-chat hook stop --agent claude"]
         );
         let cursor = read_json(&home.join(".cursor/hooks.json")).unwrap();
         assert_eq!(cursor["version"], 1);
-        assert_eq!(cursor["hooks"]["stop"].as_array().unwrap().len(), 2);
+        assert_eq!(cursor["hooks"]["stop"].as_array().unwrap().len(), 1);
 
         assert_eq!(uninstall(home).len(), 2);
         let claude = read_json(&home.join(".claude/settings.json")).unwrap();
@@ -367,7 +382,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join(".codex")).unwrap();
         std::fs::write(home.path().join(".codex/hooks.json"), "{not json").unwrap();
-        let out = install(home.path(), "agent-chat", "default");
+        let out = install(home.path(), "agent-chat");
         assert_eq!(out["codex"]["installed"], false);
         assert_eq!(
             std::fs::read_to_string(home.path().join(".codex/hooks.json")).unwrap(),
@@ -378,16 +393,30 @@ mod tests {
     #[test]
     fn quoting() {
         assert_eq!(
-            hook_command("/Applications/My Tools/agent-chat", "my bot", Agent::Codex),
-            "'/Applications/My Tools/agent-chat' --profile 'my bot' hook stop --agent codex"
+            hook_command("/Applications/My Tools/agent-chat", Agent::Codex),
+            "'/Applications/My Tools/agent-chat' hook stop --agent codex"
         );
-        assert!(is_ours(
-            "'/x y/agent-chat' --profile 'my bot' hook stop --agent codex",
-            Some("my bot")
-        ));
-        assert!(!is_ours(
-            "agent-chat --profile other hook stop --agent codex",
-            Some("my bot")
-        ));
+        assert!(is_ours("'/x y/agent-chat' --profile 'my bot' hook stop --agent codex"));
+        assert!(!is_ours("say done"));
+    }
+
+    #[test]
+    fn bind_sets_the_profile_and_keeps_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude/settings.local.json"),
+            r#"{"permissions":{"allow":["Bash(ls)"]},"env":{"FOO":"1"}}"#,
+        )
+        .unwrap();
+        let path = bind(dir.path(), "bot1").unwrap();
+        bind(dir.path(), "bot2").unwrap();
+        let doc = read_json(&path).unwrap();
+        assert_eq!(doc["env"], json!({"FOO": "1", "AGENT_CHAT_PROFILE": "bot2"}));
+        assert_eq!(doc["permissions"]["allow"][0], "Bash(ls)");
+        // A project without settings yet.
+        let fresh = tempfile::tempdir().unwrap();
+        let doc = read_json(&bind(fresh.path(), "bot1").unwrap()).unwrap();
+        assert_eq!(doc, json!({"env": {"AGENT_CHAT_PROFILE": "bot1"}}));
     }
 }

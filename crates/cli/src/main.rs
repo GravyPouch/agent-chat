@@ -343,6 +343,9 @@ enum AccountCmd {
         /// `listen` and MCP make it an agent's).
         #[arg(long, value_enum)]
         kind: Option<KindArg>,
+        /// Replace the profile's account if it already has a different one.
+        #[arg(long)]
+        replace: bool,
     },
     /// Show the configured account and connection state.
     Show,
@@ -353,7 +356,9 @@ enum AccountCmd {
         kind: Option<KindArg>,
     },
     /// Create a new account on a server (solving its proof-of-work challenge
-    /// if it has one) and use it for this profile.
+    /// if it has one) and use it for this profile. Without --profile (or
+    /// AGENT_CHAT_PROFILE) it goes in a new profile named after the username,
+    /// so one agent's registration never replaces another's account.
     ///
     /// Exit codes: 0 registered, 1 error, 2 timeout, 5 refused by the server,
     /// 6 username taken.
@@ -389,6 +394,18 @@ enum AccountCmd {
         /// process list. A valid one skips the proof of work.
         #[arg(long, value_name = "VAR")]
         invite_env: Option<String>,
+        /// Replace the profile's account if it already has one.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Make the agent sessions started in a project use this profile: sets
+    /// AGENT_CHAT_PROFILE in the project's Claude Code settings
+    /// (.claude/settings.local.json), which the stop hook and the MCP server
+    /// read. Other agents: start them with AGENT_CHAT_PROFILE=NAME.
+    Bind {
+        /// Project directory (default: the current directory).
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
     },
     /// Print the sign-in details, password included, to use this account in
     /// another XMPP app.
@@ -708,6 +725,13 @@ async fn run(cli: Cli) -> Result<()> {
             }
             return Ok(());
         }
+        // The hook runs in every session of the agent, so it reads only for
+        // the profile the session names (AGENT_CHAT_PROFILE), never a default
+        // one: otherwise any session would take another agent's messages.
+        Cmd::Hook(HookCmd::Stop { agent, .. }) if cli.profile.is_none() => {
+            print_json(&hooks::unbound(*agent));
+            return Ok(());
+        }
         Cmd::Hook(HookCmd::Stop { agent, consumer }) => {
             let consumers = if consumer.is_empty() {
                 hooks::DEFAULT_CONSUMERS.map(str::to_owned).to_vec()
@@ -715,6 +739,42 @@ async fn run(cli: Cli) -> Result<()> {
                 consumer.clone()
             };
             print_json(&hooks::stop(&profile, *agent, &consumers).await);
+            return Ok(());
+        }
+        // Likewise the MCP server: registered once for every session.
+        Cmd::Mcp { .. } if cli.profile.is_none() => {
+            return Err(Exit(
+                3,
+                "no profile: set AGENT_CHAT_PROFILE (in Claude Code: `agent-chat --profile NAME account bind` in \
+                 the project) or pass --profile NAME"
+                    .into(),
+            )
+            .into());
+        }
+        Cmd::Account(AccountCmd::Bind { dir }) => {
+            if cli.profile.is_none() {
+                return Err(anyhow!(
+                    "name the profile to bind: agent-chat --profile NAME account bind"
+                ));
+            }
+            let Some(jid) = existing_account(&profile)? else {
+                return Err(Exit(3, format!("profile {} has no account yet", profile.name)).into());
+            };
+            let dir = match dir {
+                Some(d) => d.clone(),
+                None => std::env::current_dir()?,
+            };
+            let path = hooks::bind(&dir, &profile.name)?;
+            match fmt {
+                Format::Json => print_json(&serde_json::json!({
+                    "ok": true, "profile": profile.name, "jid": jid, "settings": path,
+                })),
+                Format::Text => println!(
+                    "Claude Code sessions in {} now use profile {} ({jid}); restart running sessions to pick it up.",
+                    dir.display(),
+                    profile.name
+                ),
+            }
             return Ok(());
         }
         _ => {}
@@ -733,10 +793,27 @@ async fn run(cli: Cli) -> Result<()> {
             timeout,
             store,
             invite_env,
+            replace,
         }) = cli.cmd
         else {
             unreachable!()
         };
+        // No profile named: a new one named after the account, so this
+        // never replaces the default profile's account (often the person's)
+        // or another agent's.
+        let (profile, username) = match (&cli.profile, username) {
+            (Some(_), username) => (profile, username),
+            (None, username) => {
+                let username = username.unwrap_or_else(agent_chat_daemon::register::generate_username);
+                (Profile::resolve(Some(&profile_name_for(&username)))?, Some(username))
+            }
+        };
+        if !replace && let Some(jid) = existing_account(&profile)? {
+            return Err(anyhow!(
+                "profile {} already has the account {jid}; register under another --profile (or pass --replace)",
+                profile.name
+            ));
+        }
         let invite = match invite_env {
             Some(var) => Some(
                 std::env::var(&var)
@@ -955,7 +1032,7 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Cmd::Account(AccountCmd::Register { .. })
+        Cmd::Account(AccountCmd::Register { .. } | AccountCmd::Bind { .. })
         | Cmd::Install { .. }
         | Cmd::Uninstall { .. }
         | Cmd::Gui { .. }
@@ -1108,7 +1185,17 @@ async fn run(cli: Cli) -> Result<()> {
             insecure_plaintext,
             store,
             kind,
+            replace,
         }) => {
+            if !replace
+                && let Some(existing) = existing_account(&profile)?
+                && !same_account(&existing, &jid, hub)
+            {
+                return Err(anyhow!(
+                    "profile {} already has the account {existing}; use another --profile (or pass --replace)",
+                    profile.name
+                ));
+            }
             let (jid, password, host, port, insecure_plaintext) = if hub {
                 hub_account(&jid, password_stdin).await?
             } else {
@@ -1312,6 +1399,41 @@ async fn run(cli: Cli) -> Result<()> {
 }
 
 fn ok(_: serde_json::Value) {}
+
+/// The account a profile is set up with, read from its config file.
+fn existing_account(profile: &Profile) -> Result<Option<String>> {
+    Ok(agent_chat_daemon::config::Config::load(&profile.config_path())?
+        .account
+        .map(|a| a.jid))
+}
+
+/// Whether `account add JID` (with `--hub`: just a name) names `existing`.
+fn same_account(existing: &str, jid: &str, hub: bool) -> bool {
+    let existing = existing.to_ascii_lowercase();
+    let jid = jid.to_ascii_lowercase();
+    if hub && !jid.contains('@') {
+        existing.split('@').next() == Some(jid.as_str())
+    } else {
+        existing == jid
+    }
+}
+
+/// A profile name for an account's username (profile names allow letters,
+/// digits, '-' and '_').
+fn profile_name_for(username: &str) -> String {
+    let name: String = username
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(64)
+        .collect();
+    if name.is_empty() { "agent".into() } else { name }
+}
 
 type AccountSettings = (String, String, Option<String>, Option<u16>, bool);
 

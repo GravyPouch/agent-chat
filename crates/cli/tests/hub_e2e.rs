@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const BIN: &str = env!("CARGO_BIN_EXE_agent-chat");
 
@@ -65,7 +65,7 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        for p in ["alice", "bob", "agent"] {
+        for p in ["alice", "bob", "agent", "second-bot"] {
             let _ = self.run(&["--profile", p, "daemon", "stop"]);
         }
         let _ = self.run(&["hub", "stop"]);
@@ -524,6 +524,82 @@ fn account_register_solves_the_hubs_proof_of_work() {
         .find(|u| u["jid"] == jid.as_str())
         .unwrap();
     assert_eq!(created["created_via"], "pow");
+
+    // Isolation between agents on one machine. Registering again under the
+    // same profile would replace its account: refused before any work.
+    let register = |profile: Option<&str>, username: &str| {
+        let mut args: Vec<String> = Vec::new();
+        if let Some(p) = profile {
+            args.extend(["--profile".into(), p.into()]);
+        }
+        let port = port.to_string();
+        args.extend(
+            [
+                "account",
+                "register",
+                "--server",
+                "hubtest.local",
+                "--username",
+                username,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &port,
+                "--insecure-plaintext",
+                "--store",
+                "config",
+            ]
+            .map(String::from),
+        );
+        env.run(&args.iter().map(String::as_str).collect::<Vec<_>>())
+    };
+    let again = register(Some("agent"), "intruder");
+    assert!(!again.status.success());
+    assert!(String::from_utf8_lossy(&again.stderr).contains("already has the account"));
+    let users = env.json(&["hub", "user", "list"]);
+    assert!(
+        !users.to_string().contains("intruder"),
+        "refused before registering: {users}"
+    );
+
+    // No profile named: a new profile named after the account, never the
+    // default one.
+    let r = ok_json(register(None, "second.bot"), &["account register (no profile)"]);
+    assert_eq!(r["profile"], "second-bot", "{r}");
+    let second = r["jid"].as_str().unwrap().to_owned();
+    wait_for_state(&env, "second-bot", "online", Duration::from_secs(30));
+    assert!(!env.home.path().join("profiles/default/config.toml").exists());
+    assert!(second.starts_with("second.bot@"), "{second}");
+
+    // The stop hook and the MCP server act only for the session's profile.
+    let hook = |profile: Option<&str>| {
+        let mut c = env.cmd(&["hook", "stop", "--agent", "claude"]);
+        if let Some(p) = profile {
+            c.env("AGENT_CHAT_PROFILE", p);
+        }
+        let out = c.output().unwrap();
+        assert!(out.status.success());
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    env.json(&["--profile", "second-bot", "send", &jid, "for the first agent"]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let pushed = loop {
+        assert_eq!(hook(None), json!({}), "no profile: the hook does nothing");
+        assert_eq!(hook(Some("second-bot")), json!({}), "not second-bot's message");
+        let v = hook(Some("agent"));
+        if v != json!({}) {
+            break v;
+        }
+        assert!(std::time::Instant::now() < deadline, "message never reached the hook");
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    assert_eq!(pushed["decision"], "block");
+    assert!(
+        pushed["reason"].as_str().unwrap().contains("for the first agent"),
+        "{pushed}"
+    );
+    let mcp = env.run(&["mcp"]);
+    assert_eq!(mcp.status.code(), Some(3), "MCP without a profile refuses");
 }
 
 /// A hub provisioning token: `account register --invite-env` sends it with

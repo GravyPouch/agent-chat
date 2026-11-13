@@ -95,9 +95,10 @@ set -- install --bin-dir "$bin_dir"
 [ "$mcp" = 1 ] && command -v claude >/dev/null 2>&1 && set -- "$@" --mcp
 "$cli" --format text "$@"
 if [ "$hooks" = 1 ]; then
-  log "New messages reach Claude Code, Codex and Cursor when they finish a turn (from their next session)"
+  log "New messages reach Claude Code, Codex and Cursor when they finish a turn, in sessions with AGENT_CHAT_PROFILE set"
 fi
-log "To be woken while idle, keep \`agent-chat listen\` running in the background (one JSON line per message)"
+log "Each agent uses its own profile: agent-chat --profile NAME account register / account bind (see agent-chat setup)"
+log "To be woken while idle, keep \`agent-chat --profile NAME listen\` running in the background (one JSON line per message)"
 
 if [ -n "$hub_name" ]; then
   log "Creating $hub_name on this machine's hub"

@@ -113,30 +113,20 @@ pub fn install(profile: &Profile, opts: InstallOptions) -> Result<Value> {
     let mcp = if opts.mcp {
         match find_on_path("claude") {
             Some(claude) => {
-                // Re-registering replaces an older entry.
-                let name = if setup.profile == agent_chat_proto::paths::DEFAULT_PROFILE {
-                    "agent-chat".to_owned()
-                } else {
-                    format!("agent-chat-{}", setup.profile)
-                };
-                let _ = Command::new(&claude)
-                    .args(["mcp", "remove", "--scope", "user", &name])
-                    .output();
-                let mut args = vec![
-                    "mcp".to_owned(),
-                    "add".into(),
-                    "--scope".into(),
-                    "user".into(),
-                    name,
-                    "--".into(),
-                ];
-                args.push(setup.cli.clone());
+                // One entry for every session, naming no profile: each
+                // session's AGENT_CHAT_PROFILE picks the account. Replaces
+                // older entries, including this profile's per-profile one.
+                let mut stale = vec!["agent-chat".to_owned()];
                 if setup.profile != agent_chat_proto::paths::DEFAULT_PROFILE {
-                    args.push("--profile".into());
-                    args.push(setup.profile.clone());
+                    stale.push(format!("agent-chat-{}", setup.profile));
                 }
-                args.push("mcp".into());
-                let out = Command::new(&claude).args(&args).output()?;
+                for name in &stale {
+                    let _ = Command::new(&claude)
+                        .args(["mcp", "remove", "--scope", "user", name])
+                        .output();
+                }
+                let args = ["mcp", "add", "--scope", "user", "agent-chat", "--", &setup.cli, "mcp"];
+                let out = Command::new(&claude).args(args).output()?;
                 if out.status.success() {
                     json!({"registered": true, "client": "claude-code"})
                 } else {
@@ -156,7 +146,7 @@ pub fn install(profile: &Profile, opts: InstallOptions) -> Result<Value> {
             Some(h) => h,
             None => home()?,
         };
-        crate::hooks::install(&home, &setup.cli, &setup.profile)
+        crate::hooks::install(&home, &setup.cli)
     } else {
         Value::Null
     };

@@ -41,7 +41,7 @@ pub fn invite(jid: &str) -> String {
     } else {
         [
             "2. Create an account on my server (no sign-up form; it solves a small proof of work):".to_owned(),
-            format!("   agent-chat account register --server {domain}"),
+            format!("   agent-chat --profile default account register --server {domain}"),
             "   Or use an XMPP account you already have: agent-chat account add YOU@SERVER".to_owned(),
         ]
         .join("\n")
@@ -96,7 +96,8 @@ AI agents. My address is {person_jid}.
 
 {account}
    Use `--profile NAME` with every command (or set AGENT_CHAT_PROFILE=NAME): never use
-   my account or the default profile.
+   my account, the default profile or another agent's. In Claude Code, also run
+   `{cmd} account bind` in your project, so new messages reach you when you finish a turn.
 2. Say hello, so I have your address:
    {cmd} send {person_jid} \"Hi! I'm connected.\"
 3. Wait for messages (exit code 2 = nothing arrived) and reply to their \"conversation\":
@@ -131,18 +132,13 @@ impl AgentSetup {
         a
     }
 
-    /// Command that registers the MCP server with Claude Code.
+    /// Command that registers the MCP server with Claude Code: once for
+    /// every session, naming no profile (AGENT_CHAT_PROFILE, set per project
+    /// by `account bind`, picks the account).
     pub fn claude_mcp_add(&self) -> String {
-        let name = if self.profile == crate::paths::DEFAULT_PROFILE {
-            "agent-chat".to_owned()
-        } else {
-            format!("agent-chat-{}", self.profile)
-        };
-        let args: Vec<String> = self.args().iter().map(|a| shell_quote(a)).collect();
         format!(
-            "claude mcp add --scope user {name} -- {} {}",
-            shell_quote(&self.cli),
-            args.join(" ")
+            "claude mcp add --scope user agent-chat -- {} mcp",
+            shell_quote(&self.cli)
         )
     }
 
@@ -244,6 +240,8 @@ description: Send and receive chat messages (XMPP, end-to-end encrypted) with pe
 # agent-chat
 
 agent-chat is an XMPP messenger with a CLI built for agents. {address}
+If `AGENT_CHAT_PROFILE` is set in your environment, that profile is your own account: use it
+instead (drop `--profile` from the commands below). Never use another agent's profile.
 A background daemon keeps the connection; the first command starts it. Every command prints
 **one line of JSON** to stdout.
 
@@ -310,9 +308,15 @@ Exit codes: 0 ok, 1 error, 2 timeout, 3 not connected / no account, 4 encryption
 ## Getting an account
 
 ```sh
-{cmd} account register --server example.org   # self-registration (solves a proof of work)
-{cmd} account add you@example.org             # an existing account
+agent-chat --profile NAME account register --server example.org   # your own account (solves a proof of work)
+agent-chat --profile NAME account add you@example.org             # an existing account
+agent-chat --profile NAME account bind   # Claude Code in this project: hook and MCP tools use NAME
 ```
+
+One profile per agent: pick a NAME no other agent on this machine uses. A profile that already
+has an account is never replaced (unless you pass `--replace`). The stop hook and MCP server act
+only for the profile in `AGENT_CHAT_PROFILE`; `account bind` sets it for this project's Claude
+Code sessions (restart them to pick it up). Other agents: start them with `AGENT_CHAT_PROFILE=NAME`.
 
 ## Safety
 
@@ -370,7 +374,7 @@ mod tests {
         assert_eq!(setup("bot1").cmd(), "'/opt/agent chat/agent-chat' --profile bot1");
         assert_eq!(
             setup("bot1").claude_mcp_add(),
-            "claude mcp add --scope user agent-chat-bot1 -- '/opt/agent chat/agent-chat' --profile bot1 mcp"
+            "claude mcp add --scope user agent-chat -- '/opt/agent chat/agent-chat' mcp"
         );
         let json: serde_json::Value = serde_json::from_str(&setup("bot1").mcp_json()).unwrap();
         assert_eq!(json["mcpServers"]["agent-chat-bot1"]["args"][2], "mcp");

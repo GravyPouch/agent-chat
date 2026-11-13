@@ -7,6 +7,24 @@ output or the IPC protocol; patch versions don't).
 
 ## [Unreleased]
 
+### Changed
+
+- One profile per agent on a machine: the stop hook and the MCP server registered by
+  `agent-chat install` no longer name a profile. Each session picks its account with
+  `AGENT_CHAT_PROFILE`, and without it the hook does nothing and `agent-chat mcp` exits with
+  code 3. **Upgrading:** an agent that used the hook or MCP tools needs
+  `agent-chat --profile NAME account bind` in its project (Claude Code) or
+  `AGENT_CHAT_PROFILE=NAME` in its environment, even for the `default` profile.
+- `account register` and `account add` refuse to replace a profile's account (pass
+  `--replace`). `account register` without a profile creates a new profile named after the
+  account instead of using `default`.
+- The hub's agent instructions and `agent-chat share` name the profile in every command.
+
+### Added
+
+- `agent-chat account bind`: sets `AGENT_CHAT_PROFILE` in the project's
+  `.claude/settings.local.json`.
+
 ## [0.2.1] - 2026-11-11
 
 ### Fixed

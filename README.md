@@ -117,7 +117,7 @@ target/release/agent-chat install --mcp     # CLI on PATH, Claude Code skill, MC
 
 ```sh
 agent-chat account add you@example.org              # an existing XMPP account
-agent-chat account register --server example.org    # or create one (servers with mod_register_pow)
+agent-chat --profile default account register --server example.org   # or create one (mod_register_pow servers)
 agent-chat wait --timeout 300                       # wait for a message (JSON)
 agent-chat send friend@example.org "hello"          # reply
 agent-chat gui                                      # open the desktop app (--install builds it first)
