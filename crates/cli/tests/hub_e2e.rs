@@ -67,7 +67,7 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        for p in ["alice", "bob", "agent", "second-bot"] {
+        for p in ["alice", "bob", "agent", "second-bot", "third", "fourth"] {
             let _ = self.run(&["--profile", p, "daemon", "stop"]);
         }
         let _ = self.run(&["hub", "stop"]);
@@ -649,6 +649,51 @@ fn account_register_solves_the_hubs_proof_of_work() {
         "{pushed}"
     );
     assert_eq!(inbox("session-1").status.code(), Some(7));
+
+    // `agent init`: profile, account and project binding in one step; again
+    // on the same NAME only binds.
+    let project = tempfile::tempdir().unwrap();
+    let dir = project.path().to_str().unwrap();
+    let port_s = port.to_string();
+    let init = [
+        "agent",
+        "init",
+        "third",
+        "--server",
+        "hubtest.local",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &port_s,
+        "--insecure-plaintext",
+        "--store",
+        "config",
+        "--dir",
+        dir,
+    ];
+    let r = env.json(&init);
+    assert_eq!(
+        (r["created"].as_bool(), r["profile"].as_str()),
+        (Some(true), Some("third")),
+        "{r}"
+    );
+    let third = r["jid"].as_str().unwrap().to_owned();
+    let settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(project.path().join(".claude/settings.local.json")).unwrap())
+            .unwrap();
+    assert_eq!(settings["env"]["AGENT_CHAT_PROFILE"], "third");
+    let again = env.json(&init);
+    assert_eq!(
+        (again["created"].as_bool(), again["jid"].as_str()),
+        (Some(false), Some(third.as_str()))
+    );
+    let hub = env.json(&["agent", "init", "fourth", "--hub", "--store", "config", "--no-bind"]);
+    assert_eq!(
+        (hub["jid"].as_str(), hub["settings"].is_null()),
+        (Some("fourth@hubtest.local"), true),
+        "{hub}"
+    );
+    wait_for_state(&env, "fourth", "online", Duration::from_secs(30));
 }
 
 /// A hub provisioning token: `account register --invite-env` sends it with

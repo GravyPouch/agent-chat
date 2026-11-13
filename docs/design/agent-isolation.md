@@ -1,6 +1,6 @@
 # One account per agent on a machine
 
-- **Status:** parts 1 and 2 implemented (§3, §4). Part 3 (§5) is a proposal.
+- **Status:** parts 1 and 2 and `agent init` implemented (§3–§5); `doctor` (§5) is a proposal.
 - **Date:** 2026-11-13
 
 ## 1. Problem
@@ -103,11 +103,17 @@ Checked in Claude Code 2.1.323: Bash commands, hooks and MCP servers all get
 **Tests.** Unit test of the lease rules; the e2e test checks the exit code, a silent hook
 in the other session while a message waits, and the takeover after `account release`.
 
-## 5. Part 3: one command per agent, and a check (proposal)
+## 5. Part 3: one command per agent, and a check
 
-- `agent-chat agent init NAME --server DOMAIN`: create the profile, register (or
-  `--hub`), and bind the current project. The hub page, `setup` and the connect-agent
-  prompt then show that single command.
-- `agent-chat doctor`: warn about leftover per-profile hooks or MCP entries, profiles
-  marked as an agent's that no project binds, a person's profile marked as an agent's,
-  and projects bound to a profile without an account.
+**`agent-chat agent init NAME (--server DOMAIN | --hub)` (implemented).** Creates the
+profile NAME, registers its account on DOMAIN (proof of work, generated username unless
+`--username`) or creates `NAME@` on this machine's hub, marks it an agent's, and binds the
+current project (`--dir`, or `--no-bind`). On a profile that already has an account it
+only binds; it refuses when that account is on a different server than `--server`. Prints
+one JSON object: `profile`, `jid`, `created`, `settings`, `next`. The hub page and the
+connect-agent prompt now show this one command instead of register + bind.
+
+**`agent-chat doctor` (proposal).** Warn about: leftover per-profile hooks or MCP entries
+(re-run `install`), profiles marked as an agent's that no project binds, a person's profile
+marked as an agent's, projects bound to a profile without an account, and live claims with
+their age.

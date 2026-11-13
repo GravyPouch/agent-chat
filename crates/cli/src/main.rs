@@ -147,6 +147,9 @@ enum Cmd {
     /// Configure the XMPP account.
     #[command(subcommand)]
     Account(AccountCmd),
+    /// Agents on this machine: one profile and account each.
+    #[command(subcommand)]
+    Agent(AgentCmd),
     /// Manage contacts (roster).
     Contacts {
         #[command(subcommand)]
@@ -416,6 +419,50 @@ enum AccountCmd {
     /// Print the sign-in details, password included, to use this account in
     /// another XMPP app.
     Export,
+}
+
+#[derive(Subcommand)]
+enum AgentCmd {
+    /// Set up an agent in one step: the profile NAME with its own account
+    /// (registered on --server, or created on this machine's hub with
+    /// --hub), and the current project bound to it (`account bind`). On a
+    /// profile that already has an account it only binds.
+    Init {
+        /// Profile name: letters, digits, '-' or '_'. With --hub also the
+        /// account name.
+        name: String,
+        /// Register the account on this server (solving its proof of work).
+        #[arg(long, conflicts_with = "hub")]
+        server: Option<String>,
+        /// Create the account on this machine's agent-chat hub.
+        #[arg(long)]
+        hub: bool,
+        /// Username on --server (default: generated, like agent-k2m9qx4td7).
+        #[arg(long, requires = "server")]
+        username: Option<String>,
+        /// Server host (skips DNS SRV lookup).
+        #[arg(long, requires = "server")]
+        host: Option<String>,
+        #[arg(long, requires = "server")]
+        port: Option<u16>,
+        /// Unencrypted connection; only allowed to localhost (development).
+        #[arg(long, requires = "server")]
+        insecure_plaintext: bool,
+        /// An invitation or provisioning token, read from this environment
+        /// variable.
+        #[arg(long, value_name = "VAR", requires = "server")]
+        invite_env: Option<String>,
+        /// Where to keep the password.
+        #[arg(long, value_enum, default_value_t = Storage::Keychain)]
+        store: Storage,
+        /// Project to bind (default: the current directory).
+        #[arg(long, conflicts_with = "no_bind")]
+        dir: Option<std::path::PathBuf>,
+        /// Don't bind a project (agents other than Claude Code: start them
+        /// with AGENT_CHAT_PROFILE=NAME).
+        #[arg(long)]
+        no_bind: bool,
+    },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -787,6 +834,10 @@ async fn run(cli: Cli) -> Result<()> {
         _ => {}
     }
 
+    if let Cmd::Agent(cmd) = cli.cmd {
+        return agent_init(cli.profile.as_deref(), cmd, fmt).await;
+    }
+
     // Registration runs before there is an account (no daemon needed yet).
     if let Cmd::Account(AccountCmd::Register { .. }) = &cli.cmd {
         let Cmd::Account(AccountCmd::Register {
@@ -1040,6 +1091,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
         Cmd::Account(AccountCmd::Register { .. } | AccountCmd::Bind { .. })
+        | Cmd::Agent(_)
         | Cmd::Install { .. }
         | Cmd::Uninstall { .. }
         | Cmd::Gui { .. }
@@ -1476,6 +1528,17 @@ async fn hub_account(_name: &str, _password_stdin: bool) -> Result<AccountSettin
 
 /// `account register`: progress as JSON lines on stderr, one result object on stdout.
 async fn register(profile: &Profile, opts: agent_chat_daemon::register::RegisterOptions, store: Storage) -> Result<()> {
+    println!("{}", register_account(profile, opts, store).await?);
+    Ok(())
+}
+
+/// Register an account and use it for `profile`; the result object (on
+/// failure the error object is printed and an exit code returned).
+async fn register_account(
+    profile: &Profile,
+    opts: agent_chat_daemon::register::RegisterOptions,
+    store: Storage,
+) -> Result<serde_json::Value> {
     use agent_chat_daemon::register::{Progress, register as do_register};
     let progress = |p: Progress| eprintln!("{}", serde_json::to_string(&p).expect("serializable"));
     let registered = match do_register(&opts, &progress).await {
@@ -1506,17 +1569,139 @@ async fn register(profile: &Profile, opts: agent_chat_daemon::register::Register
             kind: Some(AccountKind::Agent),
         }))
         .await?;
-    println!(
-        "{}",
-        serde_json::json!({
-            "ok": true,
-            "jid": registered.jid,
-            "profile": profile.name,
-            "state": status.state,
-            "password_stored": match store { Storage::Keychain => "keychain", Storage::Config => "config" },
-            "pow": registered.pow,
-        })
+    Ok(serde_json::json!({
+        "ok": true,
+        "jid": registered.jid,
+        "profile": profile.name,
+        "state": status.state,
+        "password_stored": match store { Storage::Keychain => "keychain", Storage::Config => "config" },
+        "pow": registered.pow,
+    }))
+}
+
+/// `agent init`: profile, account and binding for one agent.
+async fn agent_init(cli_profile: Option<&str>, cmd: AgentCmd, fmt: Format) -> Result<()> {
+    let AgentCmd::Init {
+        name,
+        server,
+        hub,
+        username,
+        host,
+        port,
+        insecure_plaintext,
+        invite_env,
+        store,
+        dir,
+        no_bind,
+    } = cmd;
+    if let Some(p) = cli_profile
+        && p != name
+    {
+        return Err(anyhow!(
+            "agent init {name}: the profile is NAME; drop --profile {p} (or AGENT_CHAT_PROFILE)"
+        ));
+    }
+    let profile = Profile::resolve(Some(&name))?;
+    let existing = existing_account(&profile)?;
+    let (jid, created) = match (existing, server, hub) {
+        (Some(jid), Some(server), _)
+            if !jid
+                .to_ascii_lowercase()
+                .ends_with(&format!("@{}", server.to_ascii_lowercase())) =>
+        {
+            return Err(anyhow!(
+                "profile {name} already has the account {jid}, not one on {server}; pick another NAME"
+            ));
+        }
+        (Some(jid), _, _) => (jid, false),
+        (None, Some(server), _) => {
+            let invite = match invite_env {
+                Some(var) => Some(
+                    std::env::var(&var)
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                        .with_context(|| format!("--invite-env: ${var} is not set"))?,
+                ),
+                None => None,
+            };
+            let r = register_account(
+                &profile,
+                agent_chat_daemon::register::RegisterOptions {
+                    domain: server,
+                    username,
+                    password: agent_chat_daemon::register::generate_password(),
+                    host,
+                    port,
+                    insecure_plaintext,
+                    threads: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+                    timeout: std::time::Duration::from_secs(900),
+                    invite,
+                },
+                store,
+            )
+            .await?;
+            (r["jid"].as_str().unwrap_or_default().to_owned(), true)
+        }
+        (None, None, true) => {
+            let (jid, password, host, port, insecure_plaintext) = hub_account(&name, false).await?;
+            let launcher = DaemonLauncher::new(std::env::current_exe()?);
+            let client = IpcClient::connect_or_spawn(&profile, &launcher).await?;
+            let _: StatusInfo = client
+                .call(Request::SetAccount(AccountParams {
+                    jid: jid.clone(),
+                    password,
+                    host,
+                    port,
+                    insecure_plaintext,
+                    password_storage: match store {
+                        Storage::Keychain => PasswordStorage::Keychain,
+                        Storage::Config => PasswordStorage::ConfigFile,
+                    },
+                    kind: Some(AccountKind::Agent),
+                }))
+                .await?;
+            (jid, true)
+        }
+        (None, None, false) => {
+            return Err(anyhow!(
+                "profile {name} has no account yet: pass --server DOMAIN (register one) or --hub (this machine's hub)"
+            ));
+        }
+    };
+    let settings = if no_bind {
+        None
+    } else {
+        let dir = match dir {
+            Some(d) => d,
+            None => std::env::current_dir()?,
+        };
+        Some(hooks::bind(&dir, &profile.name)?)
+    };
+    let next = format!(
+        "Use `agent-chat --profile {name}` for every command (or AGENT_CHAT_PROFILE={name}).{}",
+        if settings.is_some() {
+            " Claude Code sessions started in this project from now on use this account for the stop hook and MCP tools."
+        } else {
+            ""
+        }
     );
+    match fmt {
+        Format::Json => print_json(&serde_json::json!({
+            "ok": true,
+            "profile": name,
+            "jid": jid,
+            "created": created,
+            "settings": settings,
+            "next": next,
+        })),
+        Format::Text => {
+            println!("{} {jid} (profile {name})", if created { "Created" } else { "Using" });
+            if let Some(s) = &settings {
+                println!("Bound: {}", s.display());
+            }
+            println!("{next}");
+        }
+    }
     Ok(())
 }
 

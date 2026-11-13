@@ -265,7 +265,7 @@ async fn web_page_and_web_sign_up() {
     let web = info.http[0];
     let (status, page) = http(web, "GET", "/", None).await;
     assert!(status.contains("200"), "{status}");
-    assert!(page.contains(DOMAIN) && page.contains("account register --server hubtest.local"));
+    assert!(page.contains(DOMAIN) && page.contains("agent init NAME --server hubtest.local"));
     assert!(!page.contains("{{"), "all placeholders filled");
     let (status, health) = http(web, "GET", "/healthz", None).await;
     assert!(status.contains("200"));

@@ -74,18 +74,20 @@ pub fn is_local_server(domain: &str) -> bool {
 /// under its own profile, and says hello so the person has its address.
 pub fn connect_agent_prompt(person_jid: &str, cli: &str) -> String {
     let domain = person_jid.rsplit('@').next().unwrap_or(person_jid);
-    let cmd = format!("{} --profile NAME", shell_quote(cli));
+    let cli = shell_quote(cli);
+    let cmd = format!("{cli} --profile NAME");
     let account = if is_local_server(domain) {
         format!(
             "1. Create your own account on this computer's agent-chat hub, where my account is. Pick a\n   \
-             short NAME for yourself (letters and digits, e.g. claude):\n   \
-             {cmd} account add --hub NAME --store config"
+             short NAME for yourself (letters and digits, e.g. claude), and run this in your project:\n   \
+             {cli} agent init NAME --hub --store config"
         )
     } else {
         format!(
             "1. Create your own account on {domain}, the server my account is on (it solves a short\n   \
-             proof of work, no CAPTCHA). Pick a short NAME for this profile (e.g. claude):\n   \
-             {cmd} account register --server {domain} --store config\n   \
+             proof of work, no CAPTCHA). Pick a short NAME for this profile (e.g. claude), and run\n   \
+             this in your project:\n   \
+             {cli} agent init NAME --server {domain} --store config\n   \
              If agent-chat isn't installed where you run, install it first:\n   \
              {INSTALL_COMMAND}"
         )
@@ -96,8 +98,8 @@ AI agents. My address is {person_jid}.
 
 {account}
    Use `--profile NAME` with every command (or set AGENT_CHAT_PROFILE=NAME): never use
-   my account, the default profile or another agent's. In Claude Code, also run
-   `{cmd} account bind` in your project, so new messages reach you when you finish a turn.
+   my account, the default profile or another agent's. In Claude Code it also binds the
+   project, so new messages reach you when you finish a turn (from your next session).
 2. Say hello, so I have your address:
    {cmd} send {person_jid} \"Hi! I'm connected.\"
 3. Wait for messages (exit code 2 = nothing arrived) and reply to their \"conversation\":
@@ -309,9 +311,10 @@ Exit codes: 0 ok, 1 error, 2 timeout, 3 not connected / no account, 4 encryption
 ## Getting an account
 
 ```sh
-agent-chat --profile NAME account register --server example.org   # your own account (solves a proof of work)
-agent-chat --profile NAME account add you@example.org             # an existing account
-agent-chat --profile NAME account bind   # Claude Code in this project: hook and MCP tools use NAME
+agent-chat agent init NAME --server example.org   # your own profile + account, this project bound
+agent-chat agent init NAME --hub                  # the same on this machine's hub
+agent-chat --profile NAME account add you@example.org   # an existing account
+agent-chat --profile NAME account bind                  # bind another project to NAME
 ```
 
 One profile per agent: pick a NAME no other agent on this machine uses. A profile that already
@@ -399,12 +402,12 @@ mod tests {
     #[test]
     fn connect_prompt_points_where_the_account_is() {
         let local = connect_agent_prompt("me@localhost", "/u/bin/agent-chat");
-        assert!(local.contains("/u/bin/agent-chat --profile NAME account add --hub NAME"));
-        assert!(local.contains("send me@localhost") && !local.contains("register"));
+        assert!(local.contains("/u/bin/agent-chat agent init NAME --hub"));
+        assert!(local.contains("send me@localhost") && !local.contains("--server"));
         let lan = connect_agent_prompt("me@mac.local", "agent-chat");
-        assert!(lan.contains("account add --hub"));
+        assert!(lan.contains("agent init NAME --hub"));
         let remote = connect_agent_prompt("me@chat.example.org", "agent-chat");
-        assert!(remote.contains("account register --server chat.example.org"));
+        assert!(remote.contains("agent init NAME --server chat.example.org"));
         assert!(remote.contains(INSTALL_COMMAND) && !remote.contains("--hub"));
         assert!(!remote.contains("  \n") && !remote.contains('\\'), "{remote}");
     }

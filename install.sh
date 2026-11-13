@@ -97,8 +97,8 @@ set -- install --bin-dir "$bin_dir"
 if [ "$hooks" = 1 ]; then
   log "New messages reach Claude Code, Codex and Cursor when they finish a turn, in sessions with AGENT_CHAT_PROFILE set"
 fi
-log "Each agent uses its own profile: agent-chat --profile NAME account register / account bind (see agent-chat setup)"
-log "To be woken while idle, keep \`agent-chat --profile NAME listen\` running in the background (one JSON line per message)"
+log "Each agent uses its own profile: run \`agent-chat agent init NAME --server DOMAIN\` (or --hub) in its project"
+log "To be woken while idle, run \`agent-chat --profile NAME listen\` in the background instead of \`wait\` (one JSON line per message)"
 
 if [ -n "$hub_name" ]; then
   log "Creating $hub_name on this machine's hub"

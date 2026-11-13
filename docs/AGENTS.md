@@ -38,6 +38,16 @@ daemon, database and inbox. The hook and the MCP server are registered once for 
 session; each session picks its account with `AGENT_CHAT_PROFILE`:
 
 ```sh
+cd ~/code/web-app
+agent-chat agent init claude-web --server example.org --store config   # or --hub
+```
+
+`agent init NAME` creates the profile NAME with its own account (registered with `--server`,
+or on this machine's hub with `--hub`) and binds the current project to it (`--dir DIR`
+for another, `--no-bind` for none). On a profile that already has an account it only binds,
+so it's also how you bind a second project. The parts on their own:
+
+```sh
 agent-chat --profile claude-web account register --server example.org --store config
 agent-chat --profile claude-web account bind     # in the project: Claude Code uses claude-web
 ```
