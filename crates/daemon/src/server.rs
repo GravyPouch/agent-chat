@@ -344,6 +344,13 @@ async fn dispatch(core: &Arc<Core>, req: Request) -> Result<Value, IpcError> {
         // Handled per connection in `handle_connection`.
         Request::Hello { .. } => Ok(Value::Null),
         Request::ReleaseClaim => json(serde_json::json!({ "released": core.claim().release() })),
+        Request::ClaimStatus => json(
+            core.claim()
+                .status(std::time::Instant::now())
+                .map(|(session, reading, idle_secs)| {
+                    serde_json::json!({ "session": session, "reading": reading, "idle_secs": idle_secs })
+                }),
+        ),
         Request::OmemoDevices { jid } => json(crate::omemo::xmpp::list_devices(core, jid).await?),
         Request::OmemoSetTrust {
             jid,

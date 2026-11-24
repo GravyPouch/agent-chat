@@ -200,6 +200,9 @@ pub enum Request {
     /// Drop the agent session's claim on this profile (its session ended).
     /// Result: `{"released": session | null}`.
     ReleaseClaim,
+    /// The agent session holding this profile, if any. Result:
+    /// `{"session", "reading", "idle_secs"}` or `null`.
+    ClaimStatus,
     /// OMEMO devices of a JID (or our own when `None`). Result: `Vec<model::DeviceInfo>`.
     OmemoDevices {
         #[serde(default)]

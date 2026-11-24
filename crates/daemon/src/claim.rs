@@ -74,6 +74,13 @@ impl Claim {
         }
     }
 
+    /// The live holder: session, reading now, seconds since its last read.
+    pub fn status(&self, now: Instant) -> Option<(String, bool, u64)> {
+        let h = self.holder.as_ref()?;
+        let idle = now.saturating_duration_since(h.last_seen);
+        (h.active > 0 || idle < LEASE).then(|| (h.session.clone(), h.active > 0, idle.as_secs()))
+    }
+
     /// Drop the claim (its session is gone); returns the session it named.
     pub fn release(&mut self) -> Option<String> {
         self.holder.take().map(|h| h.session)

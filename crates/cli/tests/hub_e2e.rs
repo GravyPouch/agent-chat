@@ -694,6 +694,43 @@ fn account_register_solves_the_hubs_proof_of_work() {
         "{hub}"
     );
     wait_for_state(&env, "fourth", "online", Duration::from_secs(30));
+
+    // `doctor`: the project bound to "third" checks out; an older
+    // per-profile hook is reported.
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    std::fs::write(
+        home.path().join(".claude/settings.json"),
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"agent-chat --profile x hook stop --agent claude"}]}]}}"#,
+    )
+    .unwrap();
+    let out = env
+        .cmd(&["doctor", "--dir", dir])
+        .env("HOME", home.path())
+        .env("AGENT_CHAT_PROFILE", "third")
+        .output()
+        .unwrap();
+    let report = ok_json(out, &["doctor"]);
+    let level = |check: &str| -> Vec<String> {
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["check"] == check)
+            .map(|c| c["level"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(level("hook"), ["warn"], "{report}");
+    assert_eq!(level("project"), ["ok"], "{report}");
+    assert_eq!(level("session"), ["ok"], "{report}");
+    assert_eq!(report["problems"], 1, "{report}");
+    let names: Vec<&str> = report["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["agent", "fourth", "second-bot", "third"]);
 }
 
 /// A hub provisioning token: `account register --invite-env` sends it with

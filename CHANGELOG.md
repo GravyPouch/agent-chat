@@ -24,6 +24,8 @@ output or the IPC protocol; patch versions don't).
 
 - `agent-chat agent init NAME (--server DOMAIN | --hub)`: an agent's profile, its own account and
   the current project bound to it, in one command. The hub page and the connect-agent prompt use it.
+- `agent-chat doctor`: a read-only check of the hook and MCP setup, profiles, the project's
+  binding and this session's profile, with a fix for each problem.
 - `agent-chat account bind`: sets `AGENT_CHAT_PROFILE` in the project's
   `.claude/settings.local.json`.
 - One agent session reads a profile at a time: reads that name their session

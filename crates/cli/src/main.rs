@@ -5,6 +5,7 @@
 //! account, 4 encryption unavailable, 7 profile read by another agent
 //! session.
 
+mod doctor;
 mod hooks;
 mod install;
 mod mcp;
@@ -147,6 +148,13 @@ enum Cmd {
     /// Configure the XMPP account.
     #[command(subcommand)]
     Account(AccountCmd),
+    /// Check that each agent on this machine has its own profile and that
+    /// the stop hook and MCP server are set up the current way. Read-only.
+    Doctor {
+        /// Project to check (default: the current directory).
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+    },
     /// Agents on this machine: one profile and account each.
     #[command(subcommand)]
     Agent(AgentCmd),
@@ -834,6 +842,18 @@ async fn run(cli: Cli) -> Result<()> {
         _ => {}
     }
 
+    if let Cmd::Doctor { dir } = &cli.cmd {
+        let dir = match dir {
+            Some(d) => d.clone(),
+            None => std::env::current_dir()?,
+        };
+        let report = doctor::run(&install::home()?, &dir).await?;
+        match fmt {
+            Format::Json => print_json(&report),
+            Format::Text => doctor::print_text(&report),
+        }
+        return Ok(());
+    }
     if let Cmd::Agent(cmd) = cli.cmd {
         return agent_init(cli.profile.as_deref(), cmd, fmt).await;
     }
@@ -1092,6 +1112,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Account(AccountCmd::Register { .. } | AccountCmd::Bind { .. })
         | Cmd::Agent(_)
+        | Cmd::Doctor { .. }
         | Cmd::Install { .. }
         | Cmd::Uninstall { .. }
         | Cmd::Gui { .. }

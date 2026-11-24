@@ -49,6 +49,28 @@ impl Profile {
         })
     }
 
+    /// Every profile on this machine (that has a directory), by name.
+    pub fn list() -> Result<Vec<Self>> {
+        let dir = base_dir()?.join("profiles");
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+        };
+        let mut out: Vec<Self> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            .filter(|n| validate_name(n).is_ok())
+            .map(|name| Self {
+                dir: dir.join(&name),
+                name,
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
     /// Create the profile directory (mode 0700).
     pub fn ensure_dir(&self) -> Result<()> {
         std::fs::create_dir_all(&self.dir).with_context(|| format!("creating {}", self.dir.display()))?;

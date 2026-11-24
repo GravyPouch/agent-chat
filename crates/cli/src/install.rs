@@ -9,7 +9,7 @@ use agent_chat_proto::instructions::AgentSetup;
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 
-fn home() -> Result<PathBuf> {
+pub fn home() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("HOME is not set"))

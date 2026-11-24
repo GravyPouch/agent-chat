@@ -282,6 +282,48 @@ pub fn install(home: &Path, cli: &str) -> Value {
     Value::Object(out)
 }
 
+/// For `doctor`: per installed agent, its hooks file and our stop-hook
+/// commands in it (or the error reading it).
+pub fn installed(home: &Path) -> Vec<(&'static str, PathBuf, Result<Vec<String>>)> {
+    let mut out = Vec::new();
+    for agent in Agent::ALL {
+        if !agent.dir(home).is_dir() {
+            continue;
+        }
+        let path = agent.hooks_file(home);
+        let commands = read_json(&path).map(|doc| {
+            let mut cmds = Vec::new();
+            let list = doc
+                .pointer(&format!("/hooks/{}", event(agent)))
+                .and_then(Value::as_array);
+            for entry in list.into_iter().flatten() {
+                let hooks = match entry.get("hooks").and_then(Value::as_array) {
+                    Some(h) => h.iter().collect::<Vec<_>>(),
+                    None => vec![entry],
+                };
+                cmds.extend(
+                    hooks
+                        .into_iter()
+                        .filter_map(|h| h["command"].as_str())
+                        .filter(|c| is_ours(c))
+                        .map(str::to_owned),
+                );
+            }
+            cmds
+        });
+        out.push((agent.name(), path, commands));
+    }
+    out
+}
+
+/// The profile a project binds Claude Code sessions to, if any.
+pub fn bound_profile(dir: &Path) -> Option<String> {
+    let doc = read_json(&dir.join(".claude/settings.local.json")).ok()?;
+    doc["env"][agent_chat_proto::paths::PROFILE_ENV]
+        .as_str()
+        .map(str::to_owned)
+}
+
 /// `agent-chat account bind`: make Claude Code sessions in `dir` use
 /// `profile` by setting AGENT_CHAT_PROFILE in the project's local settings
 /// (not checked in; Claude Code passes `env` to hooks and MCP servers).

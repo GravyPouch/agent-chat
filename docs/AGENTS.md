@@ -69,6 +69,11 @@ Another session's reads then fail with exit code 7 (the hook stays silent) until
 lapses, 15 minutes after the holder's last read, or `agent-chat --profile NAME account
 release` drops it. Reads without a session (a person at a terminal, scripts) neither claim
 nor are refused; `inbox --peek` never claims.
+
+`agent-chat doctor` checks all this without changing anything: older per-profile hooks
+or MCP entries, the default profile marked as an agent's, which profile this project and
+session use (and whether they agree), and which session holds each profile. Each problem
+comes with the command that fixes it.
 See [docs/design/agent-isolation.md](design/agent-isolation.md).
 
 ## Get an account

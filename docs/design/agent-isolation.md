@@ -1,6 +1,6 @@
 # One account per agent on a machine
 
-- **Status:** parts 1 and 2 and `agent init` implemented (§3–§5); `doctor` (§5) is a proposal.
+- **Status:** implemented (parts 1–3).
 - **Date:** 2026-11-13
 
 ## 1. Problem
@@ -113,7 +113,10 @@ only binds; it refuses when that account is on a different server than `--server
 one JSON object: `profile`, `jid`, `created`, `settings`, `next`. The hub page and the
 connect-agent prompt now show this one command instead of register + bind.
 
-**`agent-chat doctor` (proposal).** Warn about: leftover per-profile hooks or MCP entries
-(re-run `install`), profiles marked as an agent's that no project binds, a person's profile
-marked as an agent's, projects bound to a profile without an account, and live claims with
-their age.
+**`agent-chat doctor` (implemented).** Read-only; never starts a daemon. Reports, each
+with a fix: older per-profile or duplicate stop hooks (`agent-chat install`), Claude Code
+user-scope MCP entries that name a profile, the default profile marked as an agent's, the
+project's binding and this session's `AGENT_CHAT_PROFILE` (missing account, or the two
+disagree until a restart), and a claim on this session's profile held by another session.
+It lists every profile with its account, kind, whether its daemon runs, and its claim.
+A missing hook is only "info": `--no-hooks` is a choice.
