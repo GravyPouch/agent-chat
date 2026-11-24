@@ -7,14 +7,17 @@ output or the IPC protocol; patch versions don't).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-24
+
 ### Changed
 
 - One profile per agent on a machine: the stop hook and the MCP server registered by
   `agent-chat install` no longer name a profile. Each session picks its account with
   `AGENT_CHAT_PROFILE`, and without it the hook does nothing and `agent-chat mcp` exits with
-  code 3. **Upgrading:** an agent that used the hook or MCP tools needs
-  `agent-chat --profile NAME account bind` in its project (Claude Code) or
-  `AGENT_CHAT_PROFILE=NAME` in its environment, even for the `default` profile.
+  code 3. **Upgrading:** re-run the installer, then for each agent that used the hook or MCP
+  tools run `agent-chat agent init NAME` in its project (Claude Code; on an existing profile
+  it only binds) or set `AGENT_CHAT_PROFILE=NAME` in its environment, even for the `default`
+  profile, and restart its sessions. `agent-chat doctor` lists what's left.
 - `account register` and `account add` refuse to replace a profile's account (pass
   `--replace`). `account register` without a profile creates a new profile named after the
   account instead of using `default`.
@@ -32,6 +35,11 @@ output or the IPC protocol; patch versions don't).
   (`CLAUDE_CODE_SESSION_ID`, the hook event's session, or `AGENT_CHAT_SESSION`) claim the
   profile, and other sessions' reads fail with exit code 7 until the claim lapses (15 minutes
   after the last read) or `agent-chat account release` drops it.
+
+### Fixed
+
+- The hub's agent instructions no longer suggest running `listen` beside `wait`: they read
+  the same messages, so each got only some of them.
 
 ## [0.2.1] - 2026-11-11
 
