@@ -102,6 +102,11 @@ async fn prosody_data_imports_and_old_passwords_work() {
     assert!(imported.mechanisms_changed);
     assert!(!imported.mechanisms.iter().any(|m| m.starts_with("SCRAM-SHA-256")));
 
+    // The fixture's archived message has a fixed date: keep it whatever today is.
+    let mut cfg = agent_chat_server::Config::load(paths.config()).unwrap();
+    cfg.archive.expire_after = agent_chat_server::config::Retention(None);
+    std::fs::write(paths.config(), cfg.to_toml().unwrap()).unwrap();
+
     let hub = RunningHub::start(paths.clone()).await.unwrap();
     let addr = hub.listeners()[0];
     let pin = hub.ctx.tls.current().pin.clone();
